@@ -1,0 +1,2 @@
+fn(Auth, axum::extract::State<AppState>) -> impl std::future::Future<Output = Result<axum::Json<routes::auth::TotpSetupResponse>, ApiError>> {totp_setup}
+fn(Auth, axum::extract::State<AppState>) -> impl std::future::Future<Output = Result<axum::Json<routes::auth::TotpSetupResponse>, ApiError>> {totp_setup}: Handler<_, _>

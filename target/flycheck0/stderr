@@ -1,0 +1,369 @@
+   0.280602140s  INFO prepare_target{force=false package_id=pandapass-cli v0.1.0 (/home/zac/git/pandapass/crates/pandapass-cli) target="pandapass-cli"}: cargo::core::compiler::fingerprint: fingerprint error for pandapass-cli v0.1.0 (/home/zac/git/pandapass/crates/pandapass-cli)/Check { test: false }/TargetInner { name: "pandapass-cli", doc: true, ..: with_path("/home/zac/git/pandapass/crates/pandapass-cli/src/main.rs", Edition2021) }
+   0.280624150s  INFO prepare_target{force=false package_id=pandapass-cli v0.1.0 (/home/zac/git/pandapass/crates/pandapass-cli) target="pandapass-cli"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/zac/git/pandapass/target/debug/.fingerprint/pandapass-cli-a647ff40634622ec/bin-pandapass-cli`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/core/src/ops/function.rs:290:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  16: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  17: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  20: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  21: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+  25: __libc_start_main_impl
+             at ./csu/../csu/libc-start.c:392:3
+  26: <unknown>
+   0.397266821s  INFO prepare_target{force=false package_id=pandapass-cli v0.1.0 (/home/zac/git/pandapass/crates/pandapass-cli) target="pandapass-cli"}: cargo::core::compiler::fingerprint: fingerprint error for pandapass-cli v0.1.0 (/home/zac/git/pandapass/crates/pandapass-cli)/Check { test: true }/TargetInner { name: "pandapass-cli", doc: true, ..: with_path("/home/zac/git/pandapass/crates/pandapass-cli/src/main.rs", Edition2021) }
+   0.397284305s  INFO prepare_target{force=false package_id=pandapass-cli v0.1.0 (/home/zac/git/pandapass/crates/pandapass-cli) target="pandapass-cli"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/zac/git/pandapass/target/debug/.fingerprint/pandapass-cli-49ea973d91ea3809/test-bin-pandapass-cli`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/core/src/ops/function.rs:290:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  16: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  17: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  20: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  21: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+  25: __libc_start_main_impl
+             at ./csu/../csu/libc-start.c:392:3
+  26: <unknown>
+   0.399181904s  INFO prepare_target{force=false package_id=pandapass-core v0.1.0 (/home/zac/git/pandapass/crates/pandapass-core) target="pandapass_core"}: cargo::core::compiler::fingerprint: fingerprint error for pandapass-core v0.1.0 (/home/zac/git/pandapass/crates/pandapass-core)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("pandapass_core", ["lib"], "/home/zac/git/pandapass/crates/pandapass-core/src/lib.rs", Edition2021) }
+   0.399197069s  INFO prepare_target{force=false package_id=pandapass-core v0.1.0 (/home/zac/git/pandapass/crates/pandapass-core) target="pandapass_core"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/zac/git/pandapass/target/debug/.fingerprint/pandapass-core-42d18eac3908c1d9/test-lib-pandapass_core`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/core/src/ops/function.rs:290:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  16: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  17: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  20: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  21: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+  25: __libc_start_main_impl
+             at ./csu/../csu/libc-start.c:392:3
+  26: <unknown>
+   0.400736149s  INFO prepare_target{force=false package_id=pandapass-db v0.1.0 (/home/zac/git/pandapass/crates/pandapass-db) target="pandapass_db"}: cargo::core::compiler::fingerprint: fingerprint error for pandapass-db v0.1.0 (/home/zac/git/pandapass/crates/pandapass-db)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("pandapass_db", ["lib"], "/home/zac/git/pandapass/crates/pandapass-db/src/lib.rs", Edition2021) }
+   0.400749227s  INFO prepare_target{force=false package_id=pandapass-db v0.1.0 (/home/zac/git/pandapass/crates/pandapass-db) target="pandapass_db"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/zac/git/pandapass/target/debug/.fingerprint/pandapass-db-619a4405aefcb0c5/test-lib-pandapass_db`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/core/src/ops/function.rs:290:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  16: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  17: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  20: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  21: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+  25: __libc_start_main_impl
+             at ./csu/../csu/libc-start.c:392:3
+  26: <unknown>
+   0.402399319s  INFO prepare_target{force=false package_id=pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server) target="pandapass_server"}: cargo::core::compiler::fingerprint: fingerprint error for pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("pandapass_server", ["lib"], "/home/zac/git/pandapass/crates/pandapass-server/src/lib.rs", Edition2021) }
+   0.402412679s  INFO prepare_target{force=false package_id=pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server) target="pandapass_server"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/zac/git/pandapass/target/debug/.fingerprint/pandapass-server-db99690d3f6ee6b7/lib-pandapass_server`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/core/src/ops/function.rs:290:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  16: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  17: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  20: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  21: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+  25: __libc_start_main_impl
+             at ./csu/../csu/libc-start.c:392:3
+  26: <unknown>
+   0.404451014s  INFO prepare_target{force=false package_id=pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server) target="pandapass_server"}: cargo::core::compiler::fingerprint: fingerprint error for pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("pandapass_server", ["lib"], "/home/zac/git/pandapass/crates/pandapass-server/src/lib.rs", Edition2021) }
+   0.404463909s  INFO prepare_target{force=false package_id=pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server) target="pandapass_server"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/zac/git/pandapass/target/debug/.fingerprint/pandapass-server-4952c199667c0345/test-lib-pandapass_server`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/core/src/ops/function.rs:290:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  16: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  17: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  20: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  21: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+  25: __libc_start_main_impl
+             at ./csu/../csu/libc-start.c:392:3
+  26: <unknown>
+   0.406125167s  INFO prepare_target{force=false package_id=pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server) target="pandapass-server"}: cargo::core::compiler::fingerprint: fingerprint error for pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server)/Check { test: false }/TargetInner { name: "pandapass-server", doc: true, ..: with_path("/home/zac/git/pandapass/crates/pandapass-server/src/main.rs", Edition2021) }
+   0.406137038s  INFO prepare_target{force=false package_id=pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server) target="pandapass-server"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/zac/git/pandapass/target/debug/.fingerprint/pandapass-server-cfb4f5ac400e4cf0/bin-pandapass-server`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/core/src/ops/function.rs:290:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  16: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  17: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  20: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  21: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+  25: __libc_start_main_impl
+             at ./csu/../csu/libc-start.c:392:3
+  26: <unknown>
+   0.407896317s  INFO prepare_target{force=false package_id=pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server) target="pandapass-server"}: cargo::core::compiler::fingerprint: fingerprint error for pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server)/Check { test: true }/TargetInner { name: "pandapass-server", doc: true, ..: with_path("/home/zac/git/pandapass/crates/pandapass-server/src/main.rs", Edition2021) }
+   0.407907974s  INFO prepare_target{force=false package_id=pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server) target="pandapass-server"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/zac/git/pandapass/target/debug/.fingerprint/pandapass-server-4cc6122a7e503d3e/test-bin-pandapass-server`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/core/src/ops/function.rs:290:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  16: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  17: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:589:40
+  20: std::panicking::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:552:19
+  21: std::panic::catch_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+  25: __libc_start_main_impl
+             at ./csu/../csu/libc-start.c:392:3
+  26: <unknown>
+    Checking pandapass-core v0.1.0 (/home/zac/git/pandapass/crates/pandapass-core)
+    Checking pandapass-db v0.1.0 (/home/zac/git/pandapass/crates/pandapass-db)
+    Checking pandapass-server v0.1.0 (/home/zac/git/pandapass/crates/pandapass-server)
+    Checking pandapass-cli v0.1.0 (/home/zac/git/pandapass/crates/pandapass-cli)
+error: could not compile `pandapass-server` (lib test) due to 108 previous errors; 29 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `pandapass-server` (lib) due to 108 previous errors; 29 warnings emitted
+error: could not compile `pandapass-cli` (bin "pandapass-cli") due to 134 previous errors; 8 warnings emitted
+error: could not compile `pandapass-cli` (bin "pandapass-cli" test) due to 134 previous errors; 8 warnings emitted

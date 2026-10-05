@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pandapass-core",
+    "crates/pandapass-db",
+    "crates/pandapass-server",
+    "crates/pandapass-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["PandaPass Contributors"]
+
+[workspace.dependencies]
+# Core
+tokio = { version = "1.40", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.8", features = ["serde", "v7"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+async-trait = "0.1"
+
+# Crypto
+age = { version = "0.12", features = ["armor"] }
+argon2 = { version = "0.6", features = ["rand_core"] }
+secrecy = "0.10"
+zeroize = "1.8"
+totp-rs = { version = "6.0", features = ["std", "gen_secret", "otpauth"] }
+rand = { version = "0.8" }
+chacha20poly1305 = "0.10"
+aes-gcm = "0.10"
+x25519-dalek = "2.0"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "uuid", "chrono", "json", "migrate"] }
+
+# Web
+axum = { version = "0.8", features = ["macros"] }
+axum-extra = { version = "0.9", features = ["cookie"] }
+tower = "0.4"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+http = "1.1"
+mime = "0.3"
+
+# CLI
+clap = { version = "4.6", features = ["derive", "env", "string"] }
+reqwest = { version = "0.12", features = ["json", "cookies", "rustls-tls", "multipart"] }
+
+# MCP
+rmcp = "3.5"
+rmcp-macros = "3.5"
+
+# Utils
+url = "2.5"
+base64 = "0.22"
+hex = "0.4"

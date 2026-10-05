@@ -1,0 +1,2 @@
+fn(Auth, axum::extract::State<AppState>, CookieJar) -> impl std::future::Future<Output = Result<(CookieJar, axum::Json<JsonValue>), ApiError>> {logout}
+fn(Auth, axum::extract::State<AppState>, CookieJar) -> impl std::future::Future<Output = Result<(CookieJar, axum::Json<JsonValue>), ApiError>> {logout}: Handler<_, _>

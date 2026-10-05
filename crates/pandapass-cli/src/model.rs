@@ -1,0 +1,85 @@
+//! Request/response shapes that aren't shared with the server crate.
+//!
+//! Anything both sides agree on lives in `pandapass_core::models`; these are the
+//! endpoint-specific envelopes.
+
+use pandapass_core::models::ProjectRole;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use uuid::Uuid;
+
+#[derive(Deserialize)]
+pub struct LoginResponse {
+    pub user: pandapass_core::models::UserPublic,
+    #[serde(default)]
+    pub session_token: Option<String>,
+    #[serde(default)]
+    pub csrf_token: Option<String>,
+    #[serde(default)]
+    pub requires_totp: bool,
+}
+
+#[derive(Deserialize)]
+pub struct SecretValueResponse {
+    pub key: String,
+    pub value: String,
+    pub version: i32,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Deserialize)]
+pub struct ProjectMemberDetail {
+    #[serde(flatten)]
+    pub member: pandapass_core::models::ProjectMember,
+    pub user: pandapass_core::models::UserPublic,
+}
+
+#[derive(Serialize)]
+pub struct AddMemberRequest {
+    pub email: String,
+    pub role: ProjectRole,
+}
+
+#[derive(Serialize)]
+pub struct CreateTokenRequest {
+    pub name: String,
+    pub project_id: Option<Uuid>,
+    pub env_id: Option<Uuid>,
+    pub scopes: Vec<String>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateTokenResponse {
+    pub token: pandapass_core::models::ServiceToken,
+    pub plain_token: String,
+}
+
+#[derive(Serialize)]
+pub struct BatchSetRequest {
+    pub secrets: HashMap<String, String>,
+}
+
+// ─────────────────────────── MCP internal API ───────────────────────────
+
+#[derive(Serialize)]
+pub struct McpGetSecretRequest {
+    pub key: String,
+    pub project_id: Option<Uuid>,
+    pub env_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+pub struct McpListSecretsRequest {
+    pub project_id: Option<Uuid>,
+    pub env_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+pub struct McpExecRequest {
+    pub keys: Vec<String>,
+    pub command: Vec<String>,
+    pub project_id: Option<Uuid>,
+    pub env_id: Option<Uuid>,
+    pub timeout_secs: u64,
+}

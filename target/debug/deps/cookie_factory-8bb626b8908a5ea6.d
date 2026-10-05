@@ -1,0 +1,12 @@
+/home/zac/git/pandapass/target/debug/deps/cookie_factory-8bb626b8908a5ea6.d: /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/lib.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/gen.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/internal.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/async_bufwriter.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/bytes.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/combinator.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/multi.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/sequence.rs
+
+/home/zac/git/pandapass/target/debug/deps/libcookie_factory-8bb626b8908a5ea6.rmeta: /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/lib.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/gen.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/internal.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/async_bufwriter.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/bytes.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/combinator.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/multi.rs /home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/sequence.rs
+
+/home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/lib.rs:
+/home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/gen.rs:
+/home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/internal.rs:
+/home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/async_bufwriter.rs:
+/home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/bytes.rs:
+/home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/combinator.rs:
+/home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/multi.rs:
+/home/zac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-factory-0.3.3/src/sequence.rs:

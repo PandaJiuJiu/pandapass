@@ -1,0 +1,28 @@
+[package]
+name = "pandapass-server"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+authors = { workspace = true }
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+http = { workspace = true }
+mime = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+pandapass-core = { path = "../pandapass-core" }
+pandapass-db = { path = "../pandapass-db" }
+sqlx = { workspace = true }
+qrcode = "0.14"
+async-trait = { workspace = true }

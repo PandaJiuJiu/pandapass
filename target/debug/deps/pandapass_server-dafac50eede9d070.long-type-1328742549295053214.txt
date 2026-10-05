@@ -1,0 +1,2 @@
+fn(Auth, axum::extract::State<{type error}>, Json<McpExecRequest>) -> impl std::future::Future<Output = Result<Json<{type error}>, ApiError>> {mcp_exec}
+fn(Auth, axum::extract::State<{type error}>, Json<McpExecRequest>) -> impl std::future::Future<Output = Result<Json<{type error}>, ApiError>> {mcp_exec}: Handler<_, _>
