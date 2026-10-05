@@ -18,73 +18,99 @@ pub struct Auth(pub AuthContext);
 impl Auth {
     /// Resolve the caller from request headers.
     ///
-    /// Accepts a service token via `Authorization: Bearer`, or a session cookie.
-    /// The resulting context carries no project scope — handlers that need one
+    /// A `Bearer` credential is tried first as a service token, then as a
+    /// session token — the CLI sends its session token as Bearer, so a failed
+    /// service-token lookup must fall through rather than reject. Cookies are
+    /// the fallback for the web UI.
+    ///
+    /// The resulting context carries no project scope; handlers that need one
     /// resolve it from the URL path.
     pub async fn from_headers(
         headers: &axum::http::HeaderMap,
         state: &AppState,
     ) -> Result<AuthContext, ApiError> {
-        // 1. Try service token (Authorization: Bearer <token>)
-        if let Some(authz) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
-            if let Some(token) = authz.strip_prefix("Bearer ") {
-                let token = token.trim();
-                let hash = hash_token(token).map_err(ApiError::from)?;
-                let svc = db::get_token_by_hash(&state.db, &hash)
-                    .await
-                    .map_err(ApiError::from)?
-                    .ok_or_else(|| ApiError::Unauthorized("Invalid token".into()))?;
+        let bearer = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .map(|s| s.trim().to_string());
 
-                if let Some(exp) = svc.expires_at {
-                    if exp < chrono::Utc::now() {
-                        return Err(ApiError::Unauthorized("Token expired".into()));
-                    }
-                }
+        if let Some(token) = bearer.as_deref() {
+            if let Some(ctx) = Self::from_service_token(token, state).await? {
+                return Ok(ctx);
+            }
+            if let Some(ctx) = Self::from_session_token(token, state).await? {
+                return Ok(ctx);
+            }
+            return Err(ApiError::Unauthorized("Invalid token".into()));
+        }
 
-                let user = db::get_user_by_id(&state.db, svc.created_by)
-                    .await
-                    .map_err(ApiError::from)?;
-                if user.disabled_at.is_some() {
-                    return Err(ApiError::Unauthorized("User disabled".into()));
-                }
-                let _ = db::touch_token(&state.db, svc.id).await;
+        let cookies = axum_extra::extract::cookie::CookieJar::from_headers(headers);
+        let cookie_token = cookies.get(SESSION_COOKIE).map(|c| c.value().to_string());
+        let header_token = headers
+            .get("x-pandapass-session")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
 
-                let role = match (svc.project_id, svc.env_id) {
-                    (Some(pid), _) => db::get_member_role(&state.db, pid, user.id)
-                        .await
-                        .unwrap_or(None),
-                    _ => None,
-                };
+        match cookie_token.or(header_token) {
+            Some(token) => Self::from_session_token(&token, state)
+                .await?
+                .ok_or_else(|| ApiError::Unauthorized("Invalid or expired session".into())),
+            None => Err(ApiError::Unauthorized("Not authenticated".into())),
+        }
+    }
 
-                return Ok(AuthContext {
-                    user: user.into(),
-                    session: None,
-                    service_token: Some(svc),
-                    project_role: role,
-                    project_id: None,
-                    env_id: None,
-                });
+    /// Resolve a service token. `Ok(None)` means "no such token", not an error,
+    /// so the caller can fall through to trying it as a session token.
+    async fn from_service_token(
+        token: &str,
+        state: &AppState,
+    ) -> Result<Option<AuthContext>, ApiError> {
+        let hash = hash_token(token).map_err(ApiError::from)?;
+        let Some(svc) = db::get_token_by_hash(&state.db, &hash).await.map_err(ApiError::from)? else {
+            return Ok(None);
+        };
+
+        if let Some(exp) = svc.expires_at {
+            if exp < chrono::Utc::now() {
+                return Err(ApiError::Unauthorized("Token expired".into()));
             }
         }
 
-        // 2. Try session cookie
-        let cookies = axum_extra::extract::cookie::CookieJar::from_headers(headers);
-        let session_token = cookies
-            .get(SESSION_COOKIE)
-            .map(|c| c.value().to_string())
-            .or_else(|| {
-                headers
-                    .get("x-pandapass-session")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string())
-            })
-            .ok_or_else(|| ApiError::Unauthorized("Not authenticated".into()))?;
-
-        let hash = hash_token(&session_token).map_err(ApiError::from)?;
-        let session = db::get_session_by_hash(&state.db, &hash)
+        let user = db::get_user_by_id(&state.db, svc.created_by)
             .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::Unauthorized("Invalid or expired session".into()))?;
+            .map_err(ApiError::from)?;
+        if user.disabled_at.is_some() {
+            return Err(ApiError::Unauthorized("User disabled".into()));
+        }
+        let _ = db::touch_token(&state.db, svc.id).await;
+
+        let role = match (svc.project_id, svc.env_id) {
+            (Some(pid), _) => db::get_member_role(&state.db, pid, user.id)
+                .await
+                .unwrap_or(None),
+            _ => None,
+        };
+
+        Ok(Some(AuthContext {
+            user: user.into(),
+            session: None,
+            service_token: Some(svc),
+            project_role: role,
+            project_id: None,
+            env_id: None,
+        }))
+    }
+
+    /// Resolve a session token. `Ok(None)` means "no such session".
+    async fn from_session_token(
+        token: &str,
+        state: &AppState,
+    ) -> Result<Option<AuthContext>, ApiError> {
+        let hash = hash_token(token).map_err(ApiError::from)?;
+        let Some(session) = db::get_session_by_hash(&state.db, &hash).await.map_err(ApiError::from)? else {
+            return Ok(None);
+        };
 
         let user = db::get_user_by_id(&state.db, session.user_id)
             .await
@@ -93,14 +119,14 @@ impl Auth {
             return Err(ApiError::Unauthorized("User disabled".into()));
         }
 
-        Ok(AuthContext {
+        Ok(Some(AuthContext {
             user: user.into(),
             session: Some(session),
             service_token: None,
             project_role: None,
             project_id: None,
             env_id: None,
-        })
+        }))
     }
 }
 

@@ -1,5 +1,5 @@
 use axum::{
-    routing::{get, post, delete, patch},
+    routing::{get, post, put, delete, patch},
     Router,
 };
 use tower::ServiceBuilder;
@@ -35,34 +35,37 @@ pub fn build_router(state: AppState) -> Router {
         .allow_headers([http::header::CONTENT_TYPE, http::header::AUTHORIZATION, http::header::COOKIE, "x-csrf-token".parse().unwrap()])
         .allow_credentials(true);
 
-    // Public routes (no auth required)
+    // Truly public: credential exchange itself. Everything that touches an
+    // existing session belongs in `protected_routes` so it inherits CSRF
+    // enforcement — `SameSite=Lax` is a second line of defence, not the only one.
     let public_routes = Router::new()
         .route("/api/v1/health", get(tokens::health))
         .route("/api/v1/auth/register", post(auth::register))
-        .route("/api/v1/auth/login", post(auth::login))
+        .route("/api/v1/auth/login", post(auth::login));
+
+    // Protected routes (require auth)
+    let protected_routes = Router::new()
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/totp/setup", get(auth::totp_setup))
         .route("/api/v1/auth/totp/verify", post(auth::totp_verify))
         .route("/api/v1/auth/totp/disable", post(auth::totp_disable))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/password", post(auth::change_password))
-        .route("/api/v1/auth/logout-all", post(auth::logout_all));
-
-    // Protected routes (require auth)
-    let protected_routes = Router::new()
+        .route("/api/v1/auth/logout-all", post(auth::logout_all))
+        .route("/api/v1/auth/key/enroll", post(auth::enroll_key))
         .route("/api/v1/projects", get(projects::list_projects).post(projects::create_project))
-        .route("/api/v1/projects/:slug", get(projects::get_project).patch(projects::update_project).delete(projects::delete_project))
-        .route("/api/v1/projects/:slug/members", get(projects::list_members).post(projects::add_member))
-        .route("/api/v1/projects/:slug/members/:user_id", patch(projects::update_member).delete(projects::remove_member))
-        .route("/api/v1/projects/:slug/envs", get(projects::list_envs).post(projects::create_env))
-        .route("/api/v1/projects/:slug/envs/:env_slug", delete(projects::delete_env))
-        .route("/api/v1/projects/:slug/envs/:env_slug/secrets", get(secrets::list_secrets).post(secrets::set_secret))
-        .route("/api/v1/projects/:slug/envs/:env_slug/secrets/batch", post(secrets::batch_set_secrets))
-        .route("/api/v1/projects/:slug/envs/:env_slug/secrets/:key", get(secrets::get_secret).delete(secrets::delete_secret))
-        .route("/api/v1/projects/:slug/envs/:env_slug/secrets/:key/ciphertext", get(secrets::get_secret_encrypted))
-        .route("/api/v1/projects/:slug/envs/:env_slug/secrets/:key/versions", get(secrets::list_secret_versions))
+        .route("/api/v1/projects/{slug}", get(projects::get_project).patch(projects::update_project).delete(projects::delete_project))
+        .route("/api/v1/projects/{slug}/members", get(projects::list_members).post(projects::add_member))
+        .route("/api/v1/projects/{slug}/members/{user_id}", patch(projects::update_member).delete(projects::remove_member))
+        .route("/api/v1/projects/{slug}/envs", get(projects::list_envs).post(projects::create_env))
+        .route("/api/v1/projects/{slug}/envs/{env_slug}", delete(projects::delete_env))
+        .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets", get(secrets::list_secrets).post(secrets::set_secret))
+        .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/batch", post(secrets::batch_set_secrets))
+        .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}", put(secrets::set_secret_at_path).get(secrets::get_secret).delete(secrets::delete_secret))
+        .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}/ciphertext", get(secrets::get_secret_encrypted))
+        .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}/versions", get(secrets::list_secret_versions))
         .route("/api/v1/tokens", get(tokens::list_tokens).post(tokens::create_token))
-        .route("/api/v1/tokens/:id", delete(tokens::revoke_token))
+        .route("/api/v1/tokens/{id}", delete(tokens::revoke_token))
         .route("/api/v1/audit", get(tokens::list_audit));
 
     // MCP internal route (service token only)

@@ -37,6 +37,9 @@ pub struct Config {
     pub allowed_origins: Vec<String>,
     pub bootstrap_admin_email: Option<String>,
     pub require_totp: bool,
+    /// Whether `/auth/register` accepts new signups after the bootstrap admin.
+    /// Off by default — a secrets vault should not hand accounts to strangers.
+    pub allow_registration: bool,
     pub max_concurrent_exec: usize,
     pub command_timeout_secs: u64,
     pub command_allowlist: Vec<String>,
@@ -66,6 +69,9 @@ impl Config {
             .collect();
         let bootstrap_admin_email = std::env::var("PANDAPASS_ADMIN_EMAIL").ok();
         let require_totp = std::env::var("PANDAPASS_REQUIRE_TOTP")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let allow_registration = std::env::var("PANDAPASS_ALLOW_REGISTRATION")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         let max_concurrent_exec = std::env::var("PANDAPASS_MAX_CONCURRENT_EXEC")
@@ -101,6 +107,7 @@ impl Config {
             allowed_origins,
             bootstrap_admin_email,
             require_totp,
+            allow_registration,
             max_concurrent_exec,
             command_timeout_secs,
             command_allowlist,

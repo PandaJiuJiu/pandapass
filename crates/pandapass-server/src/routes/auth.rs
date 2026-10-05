@@ -6,7 +6,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar};
 use pandapass_core::audit::{AuditContext, AuditAction, AuditOutcome};
 use pandapass_core::crypto::{
     generate_totp_secret, hash_password, totp_uri, verify_password,
-    verify_totp, EncryptedSecret, MasterKey,
+    verify_totp, AgeIdentity, AgePublicKey, EncryptedSecret, Envelope, MasterKey, SealOptions,
 };
 use pandapass_core::models::*;
 use pandapass_db as db;
@@ -17,22 +17,35 @@ use uuid::Uuid;
 use crate::state::AppState;
 use crate::middleware::auth::{Auth, issue_session, ApiError, SESSION_COOKIE, CSRF_COOKIE};
 
+/// The server's own age public key — the recipient it accepts envelopes under.
+/// `None` when no identity is configured, which means the server is locked out
+/// of every envelope and can only store ciphertext it cannot read back.
+fn server_recipient(state: &AppState) -> Option<AgePublicKey> {
+    let identity = state.config.server_age_identity.as_deref().filter(|s| !s.is_empty())?;
+    AgeIdentity::parse(identity).ok()?.public_key().ok()
+}
+
+/// The server's own age identity, without which it cannot unwrap any envelope.
+fn server_identity(state: &AppState) -> Result<&str, ApiError> {
+    state.config.server_age_identity.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
+        ApiError::Forbidden(
+            "This server has no age identity, so it cannot operate on secrets. \
+             Configure PANDAPASS_SERVER_AGE_IDENTITY."
+                .into(),
+        )
+    })
+}
+
 /// Unwrap a user's master key from their age envelope using the server's identity.
 async fn get_master_key_for_user(
     state: &AppState,
     user_id: Uuid,
 ) -> Result<MasterKey, ApiError> {
-    let identity = state.config.server_age_identity.as_deref().ok_or_else(|| {
-        ApiError::Internal(
-            "Server age identity not configured (set PANDAPASS_SERVER_AGE_IDENTITY)".into(),
-        )
-    })?;
-
     let envelope = db::get_envelope(&state.db, user_id)
         .await?
         .ok_or_else(|| ApiError::Forbidden("No master-key envelope for this account".into()))?;
 
-    envelope.decrypt(identity).map_err(ApiError::from)
+    envelope.decrypt(server_identity(state)?).map_err(ApiError::from)
 }
 
 /// Decrypt a user's TOTP secret using their master key.
@@ -58,6 +71,10 @@ pub struct LoginResponse {
     pub user: UserPublic,
     pub session_token: String,
     pub requires_totp: bool,
+    /// Whether this account has a sealed master-key envelope. False means the
+    /// user must enrol an age key before they can store or read secrets.
+    #[serde(default)]
+    pub key_enrolled: bool,
 }
 
 pub async fn login(
@@ -121,12 +138,15 @@ pub async fn login(
     audit = audit.with_user_agent("".into());
     state.audit.log_success(&mut audit).await.ok();
 
+    let key_enrolled = db::get_envelope(&state.db, user.id).await?.is_some();
+
     Ok((
         jar,
         Json(LoginResponse {
             user: user.into(),
             session_token,
             requires_totp: false,
+            key_enrolled,
         }),
     ))
 }
@@ -135,6 +155,31 @@ pub async fn login(
 pub struct RegisterRequest {
     pub email: String,
     pub password: String,
+    /// The client's age public key (`age1...`), used to wrap this user's
+    /// master-key envelope. Optional: without it the account exists but cannot
+    /// store secrets until a key is enrolled.
+    pub age_public_key: Option<String>,
+}
+
+/// Mint a user's master key and seal it to `recipient` (plus the server, if it
+/// has an identity configured).
+///
+/// This runs on the server, which is what lets an admin onboard teammates
+/// without handling anyone's private key. The plaintext MK exists only in this
+/// function's stack frame; only the sealed envelope is persisted.
+fn create_envelope(
+    state: &AppState,
+    user_id: Uuid,
+    recipient: &AgePublicKey,
+) -> Result<Envelope, ApiError> {
+    let mk = MasterKey::generate();
+    Envelope::create(
+        user_id,
+        &mk,
+        recipient,
+        &SealOptions { server: server_recipient(state) },
+    )
+    .map_err(ApiError::from)
 }
 
 pub async fn register(
@@ -142,20 +187,46 @@ pub async fn register(
     jar: CookieJar,
     Json(req): Json<RegisterRequest>,
 ) -> Result<(CookieJar, Json<LoginResponse>), ApiError> {
-    // Check if registration is allowed (first user becomes admin, or admin exists)
+    // Registration is closed by default: a secrets vault must never accept
+    // self-service signups, or anyone who finds the URL gets an account.
+    // Only the very first user (bootstrap) or an explicit opt-in may register.
     let user_count = db::count_users(&state.db).await?;
     let is_first = user_count == 0;
 
-    // If not first user, only allow if configured or existing admin
-    if !is_first {
-        // Check if there's an admin - if so, registration is closed by default
-        // For now, we allow registration but make them regular users
+    if !is_first && !state.config.allow_registration {
+        return Err(ApiError::Forbidden(
+            "Registration is closed. Ask an admin to create your account.".into(),
+        ));
     }
 
     let global_role = if is_first { GlobalRole::Admin } else { GlobalRole::User };
     let password_hash = hash_password(&req.password)?;
 
     let user = db::create_user(&state.db, &req.email, &password_hash, global_role).await?;
+
+    // Seal a master key to the caller's public key, if they supplied one.
+    let mut enrolled = false;
+    if let Some(pk) = req.age_public_key.as_deref().filter(|s| !s.is_empty()) {
+        let recipient = AgePublicKey(pk.trim().to_string());
+        // Fail loudly on a malformed key rather than silently creating an
+        // account the user can never use.
+        recipient.to_recipient()?;
+
+        // The server is added as a recipient too, so that `get_secret` and
+        // MCP `run_with_secret` can decrypt on the member's behalf. Without a
+        // server identity the envelope is member-only, which still works for
+        // clients that unwrap it locally.
+        if server_recipient(&state).is_none() {
+            tracing::warn!(
+                "No server age identity configured; the new account's envelope is \
+                 member-only, so server-side decryption is unavailable to it."
+            );
+        }
+
+        let env = create_envelope(&state, user.id, &recipient)?;
+        db::put_envelope(&state.db, user.id, &env.ciphertext).await?;
+        enrolled = true;
+    }
 
     db::touch_last_login(&state.db, user.id).await?;
 
@@ -186,6 +257,7 @@ pub async fn register(
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::Register);
     audit = audit.with_ip("".into());
     audit = audit.with_user_agent("".into());
+    audit = audit.with_meta(serde_json::json!({ "key_enrolled": enrolled }));
     state.audit.log_success(&mut audit).await.ok();
 
     Ok((
@@ -194,6 +266,7 @@ pub async fn register(
             user: user.into(),
             session_token,
             requires_totp: false,
+            key_enrolled: enrolled,
         }),
     ))
 }
@@ -336,6 +409,101 @@ pub async fn totp_disable(
 
 pub async fn me(Auth(auth): Auth) -> Json<UserPublic> {
     Json(auth.user.clone())
+}
+
+#[derive(Deserialize)]
+pub struct EnrollKeyRequest {
+    /// The client's age public key (`age1...`).
+    pub age_public_key: String,
+    /// Re-seal the *existing* master key to this key instead of minting a
+    /// new one. Required when the account already holds secrets: a fresh
+    /// master key cannot read anything written under the old one.
+    #[serde(default)]
+    pub rotate: bool,
+}
+
+#[derive(Serialize)]
+pub struct EnrollKeyResponse {
+    pub key_enrolled: bool,
+    /// True when an existing master key was re-wrapped, false when a new one
+    /// was minted. A re-wrap keeps previously-stored secret ciphertext
+    /// readable; a fresh mint does not.
+    pub rewrapped: bool,
+}
+
+/// Seal the caller's master key to an age public key.
+///
+/// This is what makes an account usable. An account that registered without
+/// a public key has no envelope at all and therefore cannot store or read a
+/// single secret — this endpoint is how it fixes that.
+///
+/// CSRF is already enforced by `auth_middleware` for cookie sessions.
+pub async fn enroll_key(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Json(req): Json<EnrollKeyRequest>,
+) -> Result<Json<EnrollKeyResponse>, ApiError> {
+    let recipient = AgePublicKey(req.age_public_key.trim().to_string());
+    recipient.to_recipient()?; // reject malformed keys up front
+
+    let server = server_recipient(&state);
+    if server.is_none() {
+        tracing::warn!(
+            "No server age identity configured; the envelope is member-only, so \
+             server-side decryption and MCP run_with_secret are unavailable."
+        );
+    }
+
+    let existing = db::get_envelope(&state.db, auth.user.id).await?;
+    let rewrapped = match (existing, req.rotate) {
+        // Re-wrap: unwrap the current master key and seal it again to the new
+        // key, so every secret already written under it stays readable.
+        (Some(current), true) => {
+            // Re-wrapping the *existing* master key requires unwrapping it
+            // first, which only the server's own identity can do. An account
+            // whose envelope predates the server's identity is therefore
+            // stuck on the member-only path until the server is configured —
+            // minting a fresh key here instead would silently orphan every
+            // secret already written, so refuse rather than destroy them.
+            let mk = current.decrypt(server_identity(&state)?).map_err(|_| {
+                ApiError::Conflict(
+                    "This account's master key is sealed only to the member, so it \
+                     cannot be re-wrapped here. Either configure the server age \
+                     identity, or mint a new key (rotate=false) and re-enter your \
+                     secrets — existing ones will no longer be readable."
+                        .into(),
+                )
+            })?;
+            let env = Envelope::create(
+                auth.user.id,
+                &mk,
+                &recipient,
+                &SealOptions { server: server.clone() },
+            )?;
+            db::put_envelope(&state.db, auth.user.id, &env.ciphertext).await?;
+            true
+        }
+        // A second enrollment without `rotate` would orphan every secret
+        // already written under the current master key.
+        (Some(_), false) => {
+            return Err(ApiError::Conflict(
+                "This account already has a master key. Re-send with rotate=true to \
+                 re-wrap the existing one to the new key."
+                    .into(),
+            ));
+        }
+        (None, _) => {
+            let env = create_envelope(&state, auth.user.id, &recipient)?;
+            db::put_envelope(&state.db, auth.user.id, &env.ciphertext).await?;
+            false
+        }
+    };
+
+    let mut audit = AuditContext::new(&auth, AuditAction::Register)
+        .with_meta(serde_json::json!({ "enrolled_key": true, "rewrapped": rewrapped }));
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(EnrollKeyResponse { key_enrolled: true, rewrapped }))
 }
 
 #[derive(Deserialize)]

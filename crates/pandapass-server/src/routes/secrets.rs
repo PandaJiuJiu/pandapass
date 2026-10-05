@@ -13,6 +13,9 @@ use crate::middleware::auth::{Auth, ApiError};
 
 #[derive(Deserialize)]
 pub struct SetSecretRequest {
+    /// Secret name. Required for `POST .../secrets`; ignored when the request
+    /// uses `PUT .../secrets/{key}`, where the path is authoritative.
+    #[serde(default)]
     pub key: String,
     pub value: String,
 }
@@ -66,21 +69,40 @@ async fn scope_auth(
 
 /// Unwrap the caller's master key from their age envelope.
 ///
-/// The server holds its own age identity, so it can open any user's envelope.
-/// This is the deliberate trade-off documented in `docs/SECURITY.md`: the
-/// database at rest yields only ciphertext, but a root-level compromise of the
-/// running server can still decrypt. The MCP `run_with_secret` path is what
-/// keeps secrets out of the agent's context.
+/// The server holds its own age identity, so it can open any envelope that was
+/// sealed to it as well as to the member. This is the deliberate trade-off
+/// documented in `docs/SECURITY.md`: the database at rest yields only
+/// ciphertext, but a root-level compromise of the running server can still
+/// decrypt. The MCP `run_with_secret` path is what keeps secrets out of the
+/// agent's context.
 async fn get_master_key(state: &AppState, user_id: uuid::Uuid) -> Result<MasterKey, ApiError> {
-    let identity = state.config.server_age_identity.as_deref().ok_or_else(|| {
-        ApiError::Internal("Server age identity not configured (set PANDAPASS_SERVER_AGE_IDENTITY)".into())
-    })?;
+    let Some(identity) = state.config.server_age_identity.as_deref().filter(|s| !s.is_empty())
+    else {
+        // Not a server fault: this deployment simply cannot decrypt on a
+        // member's behalf. Say so in a way the caller can act on, rather than
+        // surfacing a 500 that reads like a bug.
+        return Err(ApiError::Forbidden(
+            "This server has no age identity, so it cannot encrypt or decrypt on \
+             your behalf. Configure PANDAPASS_SERVER_AGE_IDENTITY, then re-seal your \
+             key with POST /api/v1/auth/key/enroll (rotate=true)."
+                .into(),
+        ));
+    };
 
     let envelope = db::get_envelope(&state.db, user_id)
         .await?
         .ok_or_else(|| ApiError::Forbidden("No master-key envelope for this account".into()))?;
 
-    envelope.decrypt(identity).map_err(ApiError::from)
+    envelope.decrypt(identity).map_err(|_| {
+        // The envelope is sealed to the member's key but not to the server's —
+        // an ordinary state for accounts enrolled before the server had an
+        // identity. The action is the same either way.
+        ApiError::Forbidden(
+            "Your master key is not sealed to this server. Re-enrol it with \
+             POST /api/v1/auth/key/enroll (rotate=true)."
+                .into(),
+        )
+    })
 }
 
 /// List secret metadata (keys and versions) — never values.
@@ -178,49 +200,65 @@ pub async fn get_secret_encrypted(
     }))
 }
 
+/// `POST .../secrets` — the key comes from the request body.
 pub async fn set_secret(
     Auth(auth): Auth,
     State(state): State<AppState>,
     Path((slug, env_slug)): Path<(String, String)>,
     Json(req): Json<SetSecretRequest>,
 ) -> Result<Json<SecretValueResponse>, ApiError> {
-    let project = db::get_project_by_slug(&state.db, &slug).await?;
-    let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
-    let ctx = scope_auth(&state, &auth, &project, &env).await;
+    write_secret(&state, &auth, &slug, &env_slug, req.key, req.value).await
+}
+
+/// `PUT .../secrets/{key}` — the key comes from the path, and the body is only
+/// the value. A `key` in the body is ignored, so a client that sends both
+/// cannot write to a name the URL didn't ask for.
+pub async fn set_secret_at_path(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path((slug, env_slug, key)): Path<(String, String, String)>,
+    Json(req): Json<SetSecretRequest>,
+) -> Result<Json<SecretValueResponse>, ApiError> {
+    write_secret(&state, &auth, &slug, &env_slug, key, req.value).await
+}
+
+async fn write_secret(
+    state: &AppState,
+    auth: &AuthContext,
+    slug: &str,
+    env_slug: &str,
+    key: String,
+    value: String,
+) -> Result<Json<SecretValueResponse>, ApiError> {
+    let project = db::get_project_by_slug(&state.db, slug).await?;
+    let env = db::get_env_by_slug(&state.db, project.id, env_slug).await?;
+    let ctx = scope_auth(state, auth, &project, &env).await;
 
     Rbac::check_secret_access(&ctx, project.id, env.id, false)?;
 
-    if req.key.is_empty() || req.key.len() > 256 {
+    if key.is_empty() || key.len() > 256 {
         return Err(ApiError::BadRequest("Key must be 1-256 characters".into()));
     }
 
-    let existed = db::get_secret(&state.db, project.id, env.id, &req.key).await.is_ok();
+    let existed = db::get_secret(&state.db, project.id, env.id, &key).await.is_ok();
 
-    let mk = get_master_key(&state, ctx.user.id).await?;
-    let value_enc = EncryptedSecret::encrypt(&req.value, &mk)?;
+    let mk = get_master_key(state, ctx.user.id).await?;
+    let value_enc = EncryptedSecret::encrypt(&value, &mk)?;
 
-    db::upsert_secret(
-        &state.db,
-        project.id,
-        env.id,
-        &req.key,
-        &value_enc,
-        ctx.user.id,
-    )
-    .await?;
+    db::upsert_secret(&state.db, project.id, env.id, &key, &value_enc, ctx.user.id).await?;
 
-    let secret = db::get_secret(&state.db, project.id, env.id, &req.key).await?;
+    let secret = db::get_secret(&state.db, project.id, env.id, &key).await?;
 
     let action = if existed { AuditAction::SecretUpdate } else { AuditAction::SecretCreate };
     let mut audit = AuditContext::new(&ctx, action)
         .with_project(project.id)
         .with_env(env.id)
-        .with_secret_key(req.key.clone());
+        .with_secret_key(key.clone());
     state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(SecretValueResponse {
-        key: req.key,
-        value: req.value,
+        key,
+        value,
         version: secret.meta.version,
         updated_at: secret.meta.updated_at,
     }))
