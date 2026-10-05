@@ -7,10 +7,39 @@ use uuid::Uuid;
 use crate::client::ApiClient;
 
 #[derive(Args, Debug)]
-pub struct LoginArgs;
+pub struct LoginArgs {
+    /// Email address. Prompted for when omitted.
+    #[arg(long)]
+    email: Option<String>,
+    /// Password. Prefer --password-stdin: an argument is visible in `ps` and
+    /// in shell history.
+    #[arg(long)]
+    password: Option<String>,
+    /// Read the password from stdin (one line). For scripts and agents.
+    #[arg(long)]
+    password_stdin: bool,
+    /// TOTP code. Prompted for only when the account actually requires it.
+    #[arg(long)]
+    totp: Option<String>,
+}
 
 #[derive(Args, Debug)]
-pub struct RegisterArgs;
+pub struct RegisterArgs {
+    /// Email address. Prompted for when omitted.
+    #[arg(long)]
+    email: Option<String>,
+    /// Password. Prefer --password-stdin: an argument is visible in `ps` and
+    /// in shell history.
+    #[arg(long)]
+    password: Option<String>,
+    /// Read the password from stdin (one line). For scripts and agents.
+    #[arg(long)]
+    password_stdin: bool,
+    /// Path to the age identity whose public key seals this account's master
+    /// key. Without it the account is created but cannot store secrets.
+    #[arg(long)]
+    age_identity: Option<PathBuf>,
+}
 
 #[derive(Args, Debug)]
 pub struct KeygenArgs {
@@ -138,13 +167,6 @@ pub enum ConfigCmd {
 }
 
 #[derive(Args, Debug)]
-pub struct McpArgs {
-    /// Run as MCP server (stdio)
-    #[arg(long)]
-    pub stdio: bool,
-}
-
-#[derive(Args, Debug)]
 pub struct RunArgs {
     /// Project slug
     #[arg(long)]
@@ -152,7 +174,8 @@ pub struct RunArgs {
     /// Environment slug
     #[arg(long)]
     env: String,
-    /// Only inject specific keys (comma-separated)
+    /// Only inject specific keys (comma-separated). A key named here must
+    /// exist, or the command is not run.
     #[arg(long)]
     only: Option<String>,
     /// Command to run
@@ -197,7 +220,6 @@ pub enum Command {
     Audit(AuditCmd),
     #[command(subcommand)]
     Config(ConfigCmd),
-    Mcp(McpArgs),
     Run(RunArgs),
     Inject(InjectArgs),
 }
@@ -221,7 +243,6 @@ pub async fn run_command(
         Command::Token(cmd) => run_token(api, cmd).await,
         Command::Audit(cmd) => run_audit(api, cmd).await,
         Command::Config(cmd) => run_config(config, cmd).await,
-        Command::Mcp(args) => run_mcp(api, args).await,
         Command::Run(args) => run_run(api, config, args).await,
         Command::Inject(args) => run_inject(api, config, args).await,
     }
@@ -229,27 +250,49 @@ pub async fn run_command(
 
 // ─────────────────────────── Auth ───────────────────────────
 
-async fn run_login(api: &ApiClient, config: &mut crate::client::CliConfig, _args: LoginArgs) -> Result<()> {
+async fn run_login(api: &ApiClient, config: &mut crate::client::CliConfig, args: LoginArgs) -> Result<()> {
     use rpassword::read_password;
     use std::io::{stdout, Write};
 
-    print!("Email: ");
-    stdout().flush()?;
-    let mut email = String::new();
-    std::io::stdin().read_line(&mut email)?;
-    let email = email.trim().to_string();
+    let email = match args.email {
+        Some(e) => e,
+        None => {
+            print!("Email: ");
+            stdout().flush()?;
+            let mut e = String::new();
+            std::io::stdin().read_line(&mut e)?;
+            e.trim().to_string()
+        }
+    };
 
-    print!("Password: ");
-    stdout().flush()?;
-    let password = read_password()?;
+    let password = match (&args.password, args.password_stdin) {
+        (Some(p), _) => p.clone(),
+        (_, true) => {
+            let mut p = String::new();
+            std::io::stdin().read_line(&mut p)?;
+            // Trailing newline is not part of the password.
+            p.trim_end_matches(['\n', '\r']).to_string()
+        }
+        (None, false) => {
+            print!("Password: ");
+            stdout().flush()?;
+            read_password()?
+        }
+    };
 
-    let totp_code = {
-        print!("TOTP code (optional): ");
-        stdout().flush()?;
-        let mut code = String::new();
-        std::io::stdin().read_line(&mut code)?;
-        let code = code.trim();
-        if code.is_empty() { None } else { Some(code.to_string()) }
+    // Only prompt for TOTP when we have no code and no better option; a script
+    // that hangs waiting on a TTY is worse than one that fails clearly.
+    let totp_code = match args.totp {
+        Some(c) => Some(c),
+        None if args.password.is_some() || args.password_stdin => None,
+        None => {
+            print!("TOTP code (optional): ");
+            stdout().flush()?;
+            let mut code = String::new();
+            std::io::stdin().read_line(&mut code)?;
+            let code = code.trim();
+            if code.is_empty() { None } else { Some(code.to_string()) }
+        }
     };
 
     let resp = api.login(&email, &password, totp_code.as_deref()).await?;
@@ -257,40 +300,88 @@ async fn run_login(api: &ApiClient, config: &mut crate::client::CliConfig, _args
     config.auth_token = Some(session_token.clone());
     api.set_auth_token(Some(session_token)).await;
 
-    println!("Logged in as {}", resp.user.email);
+    if resp.key_enrolled {
+        println!("Logged in as {} (master key enrolled)", resp.user.email);
+    } else {
+        // Without an age key this account exists but cannot store or read a
+        // single secret — worth saying before they wonder why writes 403.
+        println!("Logged in as {}", resp.user.email);
+        println!(
+            "Note: no master key enrolled. Run `pandapass keygen`, then register \
+             again or POST /api/v1/auth/key/enroll to become able to use secrets."
+        );
+    }
     Ok(())
 }
 
-async fn run_register(api: &ApiClient, config: &mut crate::client::CliConfig, _args: RegisterArgs) -> Result<()> {
+async fn run_register(api: &ApiClient, config: &mut crate::client::CliConfig, args: RegisterArgs) -> Result<()> {
     use rpassword::read_password;
     use std::io::{stdout, Write};
 
-    print!("Email: ");
-    stdout().flush()?;
-    let mut email = String::new();
-    std::io::stdin().read_line(&mut email)?;
-    let email = email.trim().to_string();
+    let email = match args.email {
+        Some(e) => e,
+        None => {
+            print!("Email: ");
+            stdout().flush()?;
+            let mut e = String::new();
+            std::io::stdin().read_line(&mut e)?;
+            e.trim().to_string()
+        }
+    };
 
-    print!("Password: ");
-    stdout().flush()?;
-    let password = read_password()?;
-    println!();
+    let interactive = args.password.is_none() && !args.password_stdin;
+    let password = match (&args.password, args.password_stdin) {
+        (Some(p), _) => p.clone(),
+        (_, true) => {
+            let mut p = String::new();
+            std::io::stdin().read_line(&mut p)?;
+            p.trim_end_matches(['\n', '\r']).to_string()
+        }
+        (None, false) => {
+            print!("Password: ");
+            stdout().flush()?;
+            let p = read_password()?;
+            println!();
+            print!("Confirm password: ");
+            stdout().flush()?;
+            let confirm = read_password()?;
+            println!();
+            if p != confirm {
+                anyhow::bail!("Passwords do not match");
+            }
+            p
+        }
+    };
+    let _ = interactive;
 
-    print!("Confirm password: ");
-    stdout().flush()?;
-    let confirm = read_password()?;
-    println!();
+    // Seal the account's master key to this user's age key, if one is
+    // available. Without it the account exists but cannot store a single
+    // secret, which is a confusing state to be handed silently.
+    let age_public_key = match &args.age_identity {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("cannot read age identity {}: {}", path.display(), e))?;
+            let identity = pandapass_core::crypto::AgeIdentity::parse(&raw)
+                .map_err(|e| anyhow::anyhow!("invalid age identity in {}: {}", path.display(), e))?;
+            Some(identity.public_key()?.as_str().to_string())
+        }
+        None => None,
+    };
 
-    if password != confirm {
-        anyhow::bail!("Passwords do not match");
-    }
-
-    let resp = api.register(&email, &password).await?;
+    let resp = api.register(&email, &password, age_public_key.as_deref()).await?;
     let session_token = resp.session_token.ok_or_else(|| anyhow::anyhow!("No session token returned"))?;
     config.auth_token = Some(session_token.clone());
     api.set_auth_token(Some(session_token)).await;
 
-    println!("Registered and logged in as {}", resp.user.email);
+    if resp.key_enrolled {
+        println!("Registered and logged in as {}", resp.user.email);
+    } else {
+        println!("Registered and logged in as {}", resp.user.email);
+        println!(
+            "This account has no master key yet, so it cannot store or read secrets.\n\
+             Run `pandapass keygen` and re-run with --age-identity <path>."
+        );
+    }
     Ok(())
 }
 
@@ -511,38 +602,104 @@ async fn run_config(config: &mut crate::client::CliConfig, cmd: ConfigCmd) -> Re
 
 // ─────────────────────────── MCP / Run / Inject ───────────────────────────
 
-async fn run_mcp(api: &ApiClient, args: McpArgs) -> Result<()> {
-    if args.stdio {
-        println!("MCP server starting on stdio...");
-        // TODO: implement MCP stdio server
-        // This would use rmcp to serve tools
-    } else {
-        println!("Use --stdio to run MCP server");
-    }
-    Ok(())
-}
-
-async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunArgs) -> Result<()> {
+/// Inject secrets into a subprocess environment, run a command, and exit with
+/// its status.
+///
+/// This is the path that keeps secrets out of an agent's context: the values
+/// exist only in this process's memory and in the child's `environ`, never in
+/// anything the model can read. The command is spawned as an argv array, never
+/// through a shell, so a key name or value containing shell metacharacters
+/// cannot turn into command injection.
+///
+/// Decryption happens server-side (the age private key never leaves the
+/// operator's machine), so a plain `pandapass login` session is enough.
+async fn run_run(api: &ApiClient, _config: &crate::client::CliConfig, args: RunArgs) -> Result<()> {
     if args.command.is_empty() {
-        anyhow::bail!("No command specified");
+        anyhow::bail!("No command specified. Usage: pandapass run --project P --env E -- cmd args...");
     }
 
-    // Get secrets
-    let resp = api.list_secrets(&args.project, &args.env).await?;
-    let keys: Vec<String> = if let Some(only) = args.only {
-        only.split(',').map(|s| s.trim().to_string()).collect()
-    } else {
-        resp.items.iter().map(|s| s.key.clone()).collect()
+    let metas = api.list_secrets(&args.project, &args.env).await?;
+    let available: Vec<String> = metas.items.iter().map(|m| m.key.clone()).collect();
+
+    // An explicit --only is a contract with the caller: if a named key is
+    // missing, run nothing rather than silently starting a command that will
+    // fail confusingly halfway through. Injecting "everything" by default is
+    // the opposite failure — it hands a subprocess keys it never asked for.
+    let keys: Vec<String> = match args.only.as_deref() {
+        Some(only) => {
+            let requested: Vec<String> = only
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            if requested.is_empty() {
+                anyhow::bail!("--only was given but lists no keys");
+            }
+            let missing: Vec<&String> = requested
+                .iter()
+                .filter(|k| !available.contains(k))
+                .collect();
+            if !missing.is_empty() {
+                anyhow::bail!(
+                    "No such key(s) in {}/{}: {}. Available: {}",
+                    args.project,
+                    args.env,
+                    missing
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    if available.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        available.join(", ")
+                    }
+                );
+            }
+            requested
+        }
+        None => {
+            if available.is_empty() {
+                anyhow::bail!(
+                    "{}/{} has no secrets, and running without --only would inject nothing",
+                    args.project,
+                    args.env
+                );
+            }
+            available
+        }
     };
 
-    // Decrypt secrets using age identity
-    // This requires the age private key to be loaded
-    // For now, we'll use the MCP internal endpoint
-    println!("Run with secrets not fully implemented - needs age private key for decryption");
-    println!("Keys to inject: {:?}", keys);
-    println!("Command: {:?}", args.command);
+    let mut envs: Vec<(String, String)> = Vec::with_capacity(keys.len());
+    for key in &keys {
+        let secret = api.get_secret(&args.project, &args.env, key).await?;
+        envs.push((key.clone(), secret.value));
+    }
 
-    Ok(())
+    // `args.command[0]` is the program, the rest are its arguments. Spawned
+    // directly: no `sh -c`, so nothing in a key name or value is ever parsed
+    // as shell syntax.
+    let program = &args.command[0];
+    let status = tokio::process::Command::new(program)
+        .args(&args.command[1..])
+        .envs(envs.iter().map(|(k, v)| (k, v)))
+        .status()
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("failed to run `{}`: {}", program, e)
+        })?;
+
+    // Drop the values before doing anything else that could log or panic.
+    for (_, v) in &mut envs {
+        v.clear();
+        v.shrink_to_fit();
+    }
+    drop(envs);
+
+    // Propagate the child's exit status so a caller (or an agent) can branch on
+    // success without parsing output.
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 async fn run_inject(api: &ApiClient, _config: &crate::client::CliConfig, args: InjectArgs) -> Result<()> {

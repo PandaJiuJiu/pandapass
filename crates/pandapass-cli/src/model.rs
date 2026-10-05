@@ -12,6 +12,9 @@ use uuid::Uuid;
 pub struct RegisterRequest {
     pub email: String,
     pub password: String,
+    /// The caller's age public key, sealing this account's master key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_public_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -23,6 +26,10 @@ pub struct LoginResponse {
     pub csrf_token: Option<String>,
     #[serde(default)]
     pub requires_totp: bool,
+    /// Whether this account has a sealed master-key envelope. False means it
+    /// exists but cannot store or read secrets.
+    #[serde(default)]
+    pub key_enrolled: bool,
 }
 
 #[derive(Deserialize)]
@@ -69,20 +76,20 @@ pub struct BatchSetRequest {
 // ─────────────────────────── MCP internal API ───────────────────────────
 
 #[derive(Serialize)]
-pub struct McpGetSecretRequest {
+pub struct InternalGetSecretRequest {
     pub key: String,
     pub project_id: Option<Uuid>,
     pub env_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
-pub struct McpListSecretsRequest {
+pub struct InternalListSecretsRequest {
     pub project_id: Option<Uuid>,
     pub env_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
-pub struct McpExecRequest {
+pub struct InternalExecRequest {
     pub keys: Vec<String>,
     pub command: Vec<String>,
     pub project_id: Option<Uuid>,
