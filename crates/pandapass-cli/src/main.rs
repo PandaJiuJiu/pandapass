@@ -39,6 +39,8 @@ enum Commands {
     Login(commands::LoginArgs),
     /// Register a new account
     Register(commands::RegisterArgs),
+    /// Generate an age keypair for sealing your master key
+    Keygen(commands::KeygenArgs),
     /// Logout and clear local session
     Logout,
     /// Show current user info
@@ -88,6 +90,7 @@ impl From<Commands> for commands::Command {
         match c {
             Commands::Login(a) => C::Login(a),
             Commands::Register(a) => C::Register(a),
+            Commands::Keygen(a) => C::Keygen(a),
             Commands::Logout => C::Logout,
             Commands::Me => C::Me,
             Commands::Project(x) => C::Project(x),
@@ -112,6 +115,12 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // `keygen` is purely local — it must work before any server is configured,
+    // and before we try to load a (possibly absent) identity file.
+    if let Commands::Keygen(args) = &cli.command {
+        return commands::keygen(args);
+    }
 
     // Load config
     let config_path = cli.config.unwrap_or_else(|| {

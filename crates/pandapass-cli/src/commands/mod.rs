@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use std::io::Write as _;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -10,6 +11,79 @@ pub struct LoginArgs;
 
 #[derive(Args, Debug)]
 pub struct RegisterArgs;
+
+#[derive(Args, Debug)]
+pub struct KeygenArgs {
+    /// Where to write the age identity. Defaults to ~/.pandapass/age.key
+    #[arg(long, default_value = None)]
+    pub out: Option<PathBuf>,
+
+    /// Print the public key only, without writing an identity to disk
+    #[arg(long)]
+    pub print: bool,
+}
+
+/// Generate an age keypair. The private half is written to disk with `0600`
+/// and is never transmitted; only the public key goes to the server.
+pub fn keygen(args: &KeygenArgs) -> Result<()> {
+    use pandapass_core::crypto::AgeIdentity;
+
+    let identity = AgeIdentity::generate();    let public = identity.public_key()?.as_str().to_string();
+
+    if args.print {
+        println!("{public}");
+        return Ok(());
+    }
+
+    let path = match &args.out {
+        Some(p) => p.clone(),
+        None => home_dir()?.join(".pandapass").join("age.key"),
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if path.exists() {
+        // Overwriting a private key silently locks the user out of every
+        // secret sealed to it, so refuse and make them choose.
+        anyhow::bail!(
+            "{} already exists. Move it aside first — overwriting it makes every \
+             secret sealed to the current key unreadable.",
+            path.display()
+        );
+    }
+
+    // Create with 0600 from the start: a world-readable private key is worse
+    // than no encryption at all.
+    let mut opts = std::fs::OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.create_new(true).write(true).open(&path)?;
+    use std::io::Write;
+    writeln!(f, "{}", identity.as_str())?;
+    drop(f);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    println!("Wrote identity to {}", path.display());
+    println!("Public key: {public}");
+    println!();
+    println!("Back this file up somewhere safe. If you lose it, the secrets sealed");
+    println!("to it cannot be recovered by anyone, including the server.");
+    Ok(())
+}
+
+fn home_dir() -> Result<PathBuf> {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .map_err(|_| anyhow::anyhow!("HOME is not set; pass --out explicitly"))
+}
 
 #[derive(Subcommand, Debug)]
 pub enum ProjectCmd {
@@ -106,6 +180,7 @@ pub struct InjectArgs {
 pub enum Command {
     Login(LoginArgs),
     Register(RegisterArgs),
+    Keygen(KeygenArgs),
     Logout,
     Me,
     #[command(subcommand)]
@@ -135,6 +210,8 @@ pub async fn run_command(
     match cmd {
         Command::Login(args) => run_login(api, config, args).await,
         Command::Register(args) => run_register(api, config, args).await,
+        // Handled before the client is built; unreachable via this path.
+        Command::Keygen(args) => keygen(&args),
         Command::Logout => run_logout(api, config).await,
         Command::Me => run_me(api).await,
         Command::Project(cmd) => run_project(api, cmd).await,
