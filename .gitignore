@@ -1,0 +1,34 @@
+# Rust
+/target
+**/*.rs.bk
+# Cargo.lock is intentionally NOT ignored: every crate here ships a binary, so
+# the resolved dependency graph is part of the build's reproducibility.
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PandaPass local data
+/data
+*.db
+*.db-wal
+*.db-shm
+*.age
+*.pem
+*.key
+credentials*
+.env*
+!.env.example
+
+# Logs
+*.log
+
+# Build output
+dist/
+build/
