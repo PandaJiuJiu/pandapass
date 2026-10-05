@@ -1,0 +1,114 @@
+# PandaPass — single-host deployment.
+#
+# The design assumption is that this runs on a machine you control, reachable
+# over Tailscale or a VPN. Do not expose port 8233 to the public internet: the
+# server holds an age private key that can unwrap every envelope, so an
+# unauthenticated network path to it is a path to every secret in the vault.
+
+services:
+  pandapass:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    image: pandapass/server:latest
+    restart: unless-stopped
+
+    # Bind to loopback by default. Put a TLS-terminating reverse proxy in front
+    # (or set PANDAPASS_PUBLIC_URL and expose deliberately) rather than
+    # publishing 8233 on all interfaces.
+    ports:
+      - "127.0.0.1:8233:8233"
+
+    environment:
+      # Three slashes is correct. `sqlite://data/...` is a *relative* path, and
+      # the server would then write inside the container instead of the volume,
+      # losing every secret on each recreate.
+      PANDAPASS_DB_URL: sqlite:///data/pandapass.db?mode=rwc
+      PANDAPASS_LISTEN: 0.0.0.0:8233
+      PANDAPASS_PUBLIC_URL: ${PANDAPASS_PUBLIC_URL:-http://localhost:8233}
+
+      # Off by default and kept off: a vault that hands accounts to whoever
+      # finds the URL is not a vault. Register the first admin by hand, then
+      # leave this unset.
+      PANDAPASS_ALLOW_REGISTRATION: ${PANDAPASS_ALLOW_REGISTRATION:-false}
+
+      # Comma-separated. Empty means same-origin only, which is right behind a
+      # proxy serving the web UI from the same host.
+      PANDAPASS_ALLOWED_ORIGINS: ${PANDAPASS_ALLOWED_ORIGINS:-}
+
+      # Cookies get the Secure flag automatically when PUBLIC_URL is https.
+      PANDAPASS_COOKIE_SECURE: ${PANDAPASS_COOKIE_SECURE:-}
+
+      # Force TOTP on every account. Worth turning on for any real deployment.
+      PANDAPASS_REQUIRE_TOTP: ${PANDAPASS_REQUIRE_TOTP:-false}
+      PANDAPASS_SESSION_TTL_DAYS: ${PANDAPASS_SESSION_TTL_DAYS:-30}
+
+      # Set when a command allowlist is configured: `pandapass run` refuses to
+      # spawn anything not named here, which bounds what an agent can do even
+      # with a valid token.
+      PANDAPASS_COMMAND_ALLOWLIST: ${PANDAPASS_COMMAND_ALLOWLIST:-}
+      PANDAPASS_COMMAND_TIMEOUT_SECS: ${PANDAPASS_COMMAND_TIMEOUT_SECS:-120}
+
+      # The server's age private key is read from a file so it never appears in
+      # the process environment, where `docker inspect` would show it.
+      PANDAPASS_SERVER_AGE_IDENTITY_FILE: /data/server-age.key
+
+      # Structured logs. These carry request metadata only — never secret values.
+      RUST_LOG: ${RUST_LOG:-info}
+
+    volumes:
+      # The database and the age identity. This volume is the vault: losing it
+      # loses every secret, and losing only the age identity makes every
+      # envelope sealed to the server unopenable.
+      - pandapass-data:/data
+
+    # The server generates its own age identity on first boot. This has to be in
+    # the binary rather than an entrypoint script because the runtime image is
+    # distroless — there is no /bin/sh to run one, which is the whole reason
+    # the image is worth having.
+    command: ["--init"]
+
+    # `read_only` is safe here: the only writable path is the /data volume, and
+    # the age key is written there.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    build:
+      context: ./web
+      dockerfile: ../docker/Dockerfile.web
+    image: pandapass/web:latest
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:8080:80"
+
+    depends_on:
+      pandapass:
+        condition: service_healthy
+
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pandapass-data:

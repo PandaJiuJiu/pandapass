@@ -31,6 +31,13 @@ async fn run() -> anyhow::Result<()> {
         return health_check().await;
     }
 
+    // `--init` generates the server's age identity on first boot, before any
+    // config is read. It lives here rather than in a compose entrypoint script
+    // because the runtime image is distroless and has no shell to run one.
+    if std::env::args().any(|a| a == "--init") {
+        init_storage()?;
+    }
+
     // Initialize tracing
     fmt()
         .with_env_filter(EnvFilter::from_default_env())
@@ -76,6 +83,48 @@ async fn run() -> anyhow::Result<()> {
         .await?;
 
     info!("Server stopped");
+    Ok(())
+}
+
+/// Create the server's age identity if it does not exist yet.
+///
+/// Runs before the config is read so it works even on a first boot where
+/// `PANDAPASS_SERVER_AGE_IDENTITY` points at a file that has not been written.
+/// Idempotent: an existing key is left alone, because regenerating it would
+/// make every envelope already sealed to this server unopenable, with no
+/// recovery for anyone including the operator.
+fn init_storage() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = std::env::var("PANDAPASS_SERVER_AGE_IDENTITY_FILE")
+        .ok()
+        .filter(|p| !p.is_empty());
+
+    let Some(path) = path else {
+        // An inline identity was supplied, or there is no storage to manage.
+        return Ok(());
+    };
+    let path = std::path::Path::new(&path);
+
+    if path.exists() {
+        return Ok(());
+    }
+
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let identity = pandapass_core::crypto::AgeIdentity::generate();
+    // Create with the final permissions rather than writing then chmod-ing:
+    // there is no window in which the key is readable by anyone else.
+    std::fs::write(path, identity.as_str().as_bytes())?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+
+    info!(
+        "Generated a server age identity at {}. BACK THIS UP: without it, secrets \
+         sealed to this server cannot be unwrapped by anyone, including you.",
+        path.display()
+    );
     Ok(())
 }
 
