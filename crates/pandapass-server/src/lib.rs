@@ -68,11 +68,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/tokens/{id}", delete(tokens::revoke_token))
         .route("/api/v1/audit", get(tokens::list_audit));
 
-    // MCP internal route (service token only)
-    let mcp_routes = Router::new()
-        .route("/api/v1/internal/exec", post(mcp_exec))
-        .route("/api/v1/internal/secret", post(mcp_get_secret))
-        .route("/api/v1/internal/secrets", post(mcp_list_secrets));
+    // Internal routes: service token only. Used by agents and CI where the
+    // age private key must not leave the operator's machine.
+    let internal_routes = Router::new()
+        .route("/api/v1/internal/exec", post(internal_exec))
+        .route("/api/v1/internal/secret", post(internal_get_secret))
+        .route("/api/v1/internal/secrets", post(internal_list_secrets));
 
     // Merge all with middleware
     Router::new()
@@ -82,8 +83,8 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware))
         )
         .merge(
-            mcp_routes
-                .layer(axum::middleware::from_fn_with_state(state.clone(), mcp_auth_middleware))
+            internal_routes
+                .layer(axum::middleware::from_fn_with_state(state.clone(), internal_auth_middleware))
         )
         .layer(
             ServiceBuilder::new()
@@ -109,8 +110,8 @@ async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
-/// MCP internal auth - only service tokens with appropriate scopes
-async fn mcp_auth_middleware(
+/// Internal-route auth: only service tokens with appropriate scopes
+async fn internal_auth_middleware(
     State(state): State<AppState>,
     mut req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
@@ -175,16 +176,16 @@ async fn mcp_auth_middleware(
     Ok(next.run(req).await)
 }
 
-// ─────────────────────────── MCP internal handlers ───────────────────────────
+// ───────────────────── internal handlers (service-token only) ─────────────────────
 
 use axum::{extract::State, Json};
 use pandapass_db as db;
 
-async fn mcp_get_secret(
+async fn internal_get_secret(
     Auth(auth): Auth,
     State(state): State<AppState>,
-    Json(req): Json<McpGetSecretRequest>,
-) -> Result<Json<McpGetSecretResponse>, ApiError> {
+    Json(req): Json<InternalGetSecretRequest>,
+) -> Result<Json<InternalGetSecretResponse>, ApiError> {
     let svc = auth.service_token.as_ref().unwrap();
 
     // Verify scopes
@@ -200,7 +201,8 @@ async fn mcp_get_secret(
     let secret = db::get_secret(&state.db, project_id, env_id, &req.key).await?;
 
     // For MCP, we need to decrypt - but server doesn't have age private key
-    // This endpoint is a placeholder; real decryption happens in CLI/MCP client
+    // This endpoint deliberately returns ciphertext only; the caller holds
+    // the master key. A plaintext variant exists on the session-authed routes.
     // Return encrypted value + metadata
 
     let mut audit = AuditContext::new(&auth, AuditAction::McpGetSecret);
@@ -209,7 +211,7 @@ async fn mcp_get_secret(
     audit = audit.with_secret_key(req.key.clone());
     state.audit.log_success(&mut audit).await.ok();
 
-    Ok(Json(McpGetSecretResponse {
+    Ok(Json(InternalGetSecretResponse {
         key: req.key,
         value_enc: secret.value_enc,
         version: secret.meta.version,
@@ -217,11 +219,11 @@ async fn mcp_get_secret(
     }))
 }
 
-async fn mcp_list_secrets(
+async fn internal_list_secrets(
     Auth(auth): Auth,
     State(state): State<AppState>,
-    Json(req): Json<McpListSecretsRequest>,
-) -> Result<Json<McpListSecretsResponse>, ApiError> {
+    Json(req): Json<InternalListSecretsRequest>,
+) -> Result<Json<InternalListSecretsResponse>, ApiError> {
     let svc = auth.service_token.as_ref().unwrap();
 
     if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::ListSecret)) {
@@ -240,13 +242,13 @@ async fn mcp_list_secrets(
     audit = audit.with_env(env_id);
     state.audit.log_success(&mut audit).await.ok();
 
-    Ok(Json(McpListSecretsResponse { secrets: metas }))
+    Ok(Json(InternalListSecretsResponse { secrets: metas }))
 }
 
-async fn mcp_exec(
+async fn internal_exec(
     Auth(auth): Auth,
     State(state): State<AppState>,
-    Json(req): Json<McpExecRequest>,
+    Json(req): Json<InternalExecRequest>,
 ) -> Result<Json<CommandResult>, ApiError> {
     let svc = auth.service_token.as_ref().unwrap();
 
@@ -260,8 +262,9 @@ async fn mcp_exec(
         .ok_or_else(|| ApiError::BadRequest("Environment ID required".into()))?;
 
     // Decrypt the requested secrets
-    // For now, return error - full implementation needs client-side decryption
-    // This is a placeholder for the MCP run_with_secret tool
+    // Not implemented: this would decrypt server-side and spawn the child
+    // here. Until it exists, use `pandapass run`, which does the same thing
+    // with the age private key held locally.
 
     let mut audit = AuditContext::new(&auth, AuditAction::McpRunCommand);
     audit = audit.with_project(project_id);
@@ -272,18 +275,21 @@ async fn mcp_exec(
     }));
     state.audit.log(&audit).await.ok();
 
-    Err(ApiError::Internal("MCP exec not fully implemented yet - requires client-side decryption".into()))
+    Err(ApiError::NotImplemented(
+        "Server-side exec is not implemented. Use `pandapass run`, which injects the \
+         same secrets locally without sending your age private key anywhere.".into(),
+    ))
 }
 
 #[derive(Deserialize)]
-struct McpGetSecretRequest {
+struct InternalGetSecretRequest {
     key: String,
     project_id: Option<uuid::Uuid>,
     env_id: Option<uuid::Uuid>,
 }
 
 #[derive(Serialize)]
-struct McpGetSecretResponse {
+struct InternalGetSecretResponse {
     key: String,
     value_enc: pandapass_core::crypto::EncryptedSecret,
     version: i32,
@@ -291,18 +297,18 @@ struct McpGetSecretResponse {
 }
 
 #[derive(Deserialize)]
-struct McpListSecretsRequest {
+struct InternalListSecretsRequest {
     project_id: Option<uuid::Uuid>,
     env_id: Option<uuid::Uuid>,
 }
 
 #[derive(Serialize)]
-struct McpListSecretsResponse {
+struct InternalListSecretsResponse {
     secrets: Vec<pandapass_core::models::SecretMeta>,
 }
 
 #[derive(Deserialize)]
-struct McpExecRequest {
+struct InternalExecRequest {
     keys: Vec<String>,
     command: Vec<String>,
     project_id: Option<uuid::Uuid>,

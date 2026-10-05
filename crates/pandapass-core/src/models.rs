@@ -270,7 +270,12 @@ pub enum AuditAction {
     TokenCreate,
     TokenRevoke,
     TokenUse,
-    // MCP
+    // Agent/CI read paths, invoked over the internal API.
+    //
+    // These keep their original `mcp_` names even though the MCP stdio server
+    // was removed: the strings are already persisted in `audit_log.action`, and
+    // renaming the variants would make existing rows unparseable. Renaming the
+    // *stored string* would silently rewrite history. Add new actions instead.
     McpGetSecret,
     McpListSecrets,
     McpRunCommand,

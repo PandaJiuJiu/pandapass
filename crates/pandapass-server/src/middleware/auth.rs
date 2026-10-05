@@ -226,6 +226,10 @@ pub enum ApiError {
     Conflict(String),
     #[error("{0}")]
     TooManyRequests(String),
+    /// A route that exists but has no implementation yet. Distinct from
+    /// `Internal`: the request was well-formed, the feature just isn't built.
+    #[error("{0}")]
+    NotImplemented(String),
     #[error("{0}")]
     Internal(String),
 }
@@ -277,6 +281,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(_) => (http::StatusCode::NOT_FOUND, "not_found"),
             ApiError::Conflict(_) => (http::StatusCode::CONFLICT, "conflict"),
             ApiError::TooManyRequests(_) => (http::StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+            ApiError::NotImplemented(_) => (http::StatusCode::NOT_IMPLEMENTED, "not_implemented"),
             ApiError::Internal(_) => (http::StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
         let body = serde_json::json!({

@@ -53,10 +53,6 @@ mime = "0.3"
 clap = { version = "4.6", features = ["derive", "env", "string"] }
 reqwest = { version = "0.12", features = ["json", "cookies", "rustls-tls", "multipart"] }
 
-# MCP
-rmcp = "3.5"
-rmcp-macros = "3.5"
-
 # Utils
 url = "2.5"
 base64 = "0.22"
