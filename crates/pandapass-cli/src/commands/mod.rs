@@ -120,13 +120,27 @@ pub enum ProjectCmd {
     Create { name: String, slug: String, description: Option<String> },
     Get { slug: String },
     Update { slug: String, name: Option<String>, description: Option<String> },
-    Delete { slug: String },
+    /// Delete a project and every secret in it. Irreversible.
+    Delete {
+        slug: String,
+        /// Skip the confirmation prompt. Refused when stdin is not a terminal.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum EnvCmd {
     List { project: String },
     Create { project: String, name: String, slug: String, description: Option<String> },
+    /// Delete an environment and every secret in it. Irreversible.
+    Delete {
+        project: String,
+        env: String,
+        /// Skip the confirmation prompt. Refused when stdin is not a terminal.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -148,7 +162,25 @@ pub enum MemberCmd {
 #[derive(Subcommand, Debug)]
 pub enum TokenCmd {
     List,
-    Create { name: String, project: Option<String>, env: Option<String>, scopes: Vec<String>, expires_days: Option<u64> },
+    /// Mint a service token. The plaintext is shown once and never stored.
+    Create {
+        /// A label for this token, so it can be recognised later.
+        #[arg(long, required = true)]
+        name: String,
+        /// Project slug to scope the token to. Omit for a token valid across
+        /// all projects — prefer scoping it.
+        #[arg(long)]
+        project: Option<String>,
+        /// Environment slug. Requires --project.
+        #[arg(long)]
+        env: Option<String>,
+        /// Scopes to grant, e.g. --scopes read:secret --scopes list:secret.
+        #[arg(long, required = true, num_args = 1..)]
+        scopes: Vec<String>,
+        /// Expire after this many days. Omit for a non-expiring token.
+        #[arg(long)]
+        expires_days: Option<u64>,
+    },
     Revoke { id: Uuid },
 }
 
@@ -424,15 +456,39 @@ async fn run_project(api: &ApiClient, cmd: ProjectCmd) -> Result<()> {
             println!("Your role: {:?}", proj.user_role);
         }
         ProjectCmd::Update { slug, name, description } => {
-            // TODO: implement
-            println!("Update not yet implemented");
+            let proj = api.update_project(&slug, name, description).await?;
+            println!("Updated project: {} ({})", proj.project.name, proj.project.slug);
         }
-        ProjectCmd::Delete { slug } => {
-            // TODO: implement
-            println!("Delete not yet implemented");
+        ProjectCmd::Delete { slug, yes } => {
+            let proj = api.get_project(&slug).await?;
+            if !yes && !confirm_destructive(&format!(
+                "Delete project '{}' and every secret in it?",
+                proj.project.name
+            ))? {
+                println!("Aborted.");
+                return Ok(());
+            }
+            api.delete_project(&slug).await?;
+            println!("Deleted project {}", proj.project.name);
         }
     }
     Ok(())
+}
+
+/// Ask before an irreversible operation. Refuses to auto-confirm when stdin is
+/// not a TTY: a script or agent piping input should get "no", not a silent
+/// delete of someone's secrets.
+fn confirm_destructive(prompt: &str) -> Result<bool> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        eprintln!("Refusing to proceed without confirmation (stdin is not a terminal). Re-run with --yes.");
+        return Ok(false);
+    }
+    eprint!("{prompt} [y/N] ");
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
 }
 
 // ─────────────────────────── Env ───────────────────────────
@@ -449,6 +505,16 @@ async fn run_env(api: &ApiClient, cmd: EnvCmd) -> Result<()> {
             let req = pandapass_core::models::CreateEnvRequest { name, slug, description };
             let env = api.create_env(&project, &req).await?;
             println!("Created environment: {} ({})", env.name, env.slug);
+        }
+        EnvCmd::Delete { project, env, yes } => {
+            if !yes && !confirm_destructive(&format!(
+                "Delete environment '{project}/{env}' and every secret in it?"
+            ))? {
+                println!("Aborted.");
+                return Ok(());
+            }
+            api.delete_env(&project, &env).await?;
+            println!("Deleted environment {project}/{env}");
         }
     }
     Ok(())
@@ -530,9 +596,32 @@ async fn run_token(api: &ApiClient, cmd: TokenCmd) -> Result<()> {
             }
         }
         TokenCmd::Create { name, project, env, scopes, expires_days } => {
-            let project_id = project.map(|s| Uuid::parse_str(&s)).transpose()?;
-            let env_id = env.map(|s| Uuid::parse_str(&s)).transpose()?;
-            let expires_at = expires_days.map(|d| chrono::Utc::now() + chrono::Duration::days(d as i64));
+            // The flags take slugs, matching every other command. The API
+            // wants ids, so resolve here rather than making the user look one
+            // up — parsing these as UUIDs would have failed on every input.
+            let project_id = match &project {
+                Some(slug) => Some(api.resolve_project_id(slug).await?),
+                None => None,
+            };
+            let env_id = match (&project, &env) {
+                (Some(project_slug), Some(env_slug)) => {
+                    let envs = api.list_envs(project_slug).await?;
+                    let found = envs
+                        .into_iter()
+                        .find(|e| e.slug == *env_slug)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("No environment '{env_slug}' in project '{project_slug}'")
+                        })?;
+                    Some(found.id)
+                }
+                // An env without a project is meaningless; silently ignoring it
+                // would mint a token with wider scope than the user asked for.
+                (None, Some(_)) => anyhow::bail!("--env requires --project"),
+                _ => None,
+            };
+
+            let expires_at = expires_days
+                .map(|d| chrono::Utc::now() + chrono::Duration::days(d as i64));
 
             let req = crate::model::CreateTokenRequest {
                 name,
@@ -542,8 +631,16 @@ async fn run_token(api: &ApiClient, cmd: TokenCmd) -> Result<()> {
                 expires_at,
             };
             let resp = api.create_token(&req).await?;
-            println!("Token created: {}", resp.plain_token);
-            println!("SAVE THIS TOKEN - it will not be shown again!");
+            println!("{}", resp.plain_token);
+            eprintln!(
+                "\nToken created. Shown once; only a hash is stored.\n\
+                 Scopes:  {:?}\n\
+                 Project: {}\n\
+                 Env:     {}",
+                resp.token.scopes,
+                project.as_deref().unwrap_or("(all)"),
+                env.as_deref().unwrap_or("(all)"),
+            );
         }
         TokenCmd::Revoke { id } => {
             api.revoke_token(id).await?;
@@ -558,12 +655,28 @@ async fn run_token(api: &ApiClient, cmd: TokenCmd) -> Result<()> {
 async fn run_audit(api: &ApiClient, cmd: AuditCmd) -> Result<()> {
     match cmd {
         AuditCmd::List { project, page, per_page } => {
-            let project_id = project.map(|s| Uuid::parse_str(&s)).transpose()?;
+            // --project is a slug, like everywhere else; the API filters by id.
+            let project_id = match &project {
+                Some(slug) => Some(api.resolve_project_id(slug).await?),
+                None => None,
+            };
             let resp = api.list_audit(project_id, page.unwrap_or(1), per_page.unwrap_or(20)).await?;
-            for a in resp.items {
-                println!("[{}] {} - {} - {}", a.ts.format("%Y-%m-%d %H:%M:%S"), a.action, a.outcome, a.secret_key.unwrap_or_default());
+            if resp.items.is_empty() {
+                println!("No audit entries.");
+                return Ok(());
             }
-            println!("Page {} / {} (total: {})", resp.page, (resp.total + resp.per_page - 1) / resp.per_page, resp.total);
+            for a in &resp.items {
+                println!(
+                    "{}  {:<18} {:<8} {}",
+                    a.ts.format("%Y-%m-%d %H:%M:%S"),
+                    a.action,
+                    a.outcome,
+                    a.secret_key.as_deref().unwrap_or("-")
+                );
+            }
+            let per_page = resp.per_page.max(1);
+            let pages = (resp.total + per_page - 1) / per_page;
+            println!("\nPage {} of {} ({} entries)", resp.page, pages, resp.total);
         }
     }
     Ok(())

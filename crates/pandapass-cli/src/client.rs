@@ -197,6 +197,35 @@ impl ApiClient {
         self.get(&format!("/projects/{slug}")).await
     }
 
+    pub async fn update_project(
+        &self,
+        slug: &str,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> Result<ProjectWithRole> {
+        let req = pandapass_core::models::UpdateProjectRequest { name, description };
+        self.patch(&format!("/projects/{slug}"), &req).await
+    }
+
+    pub async fn delete_project(&self, slug: &str) -> Result<()> {
+        let _: serde_json::Value = self.delete(&format!("/projects/{slug}")).await?;
+        Ok(())
+    }
+
+    pub async fn delete_env(&self, project_slug: &str, env_slug: &str) -> Result<()> {
+        let _: serde_json::Value = self
+            .delete(&format!("/projects/{project_slug}/envs/{env_slug}"))
+            .await?;
+        Ok(())
+    }
+
+    /// Resolve a project slug to its id. The audit and token endpoints take a
+    /// UUID while every other CLI command speaks slugs, so the conversion is
+    /// done here rather than making the user look up an id by hand.
+    pub async fn resolve_project_id(&self, slug: &str) -> Result<uuid::Uuid> {
+        Ok(self.get_project(slug).await?.project.id)
+    }
+
     pub async fn list_envs(&self, project_slug: &str) -> Result<Vec<pandapass_core::models::Environment>> {
         self.get(&format!("/projects/{project_slug}/envs")).await
     }
