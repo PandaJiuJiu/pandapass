@@ -328,6 +328,18 @@ async fn run_login(api: &ApiClient, config: &mut crate::client::CliConfig, args:
     };
 
     let resp = api.login(&email, &password, totp_code.as_deref()).await?;
+
+    // The server accepts the password first and asks for the second factor
+    // separately, so this response carries no session token. Reporting it as
+    // "No session token returned" would send the user looking for a server
+    // fault when the fix is to type their code.
+    if resp.requires_totp {
+        return Err(anyhow::anyhow!(
+            "This account has TOTP enabled and no code was supplied. Re-run with \
+             --totp <code>, or run `pandapass login` at a terminal to be prompted."
+        ));
+    }
+
     let session_token = resp.session_token.ok_or_else(|| anyhow::anyhow!("No session token returned"))?;
     config.auth_token = Some(session_token.clone());
     api.set_auth_token(Some(session_token)).await;
@@ -537,6 +549,9 @@ async fn run_secret(api: &ApiClient, cmd: SecretCmd) -> Result<()> {
         }
         SecretCmd::Set { project, env, key, value } => {
             let secret = api.set_secret(&project, &env, &key, &value).await?;
+            // The server already prints the value it received; repeating it
+            // would be the only place in this command's output where a secret
+            // appears, so the version is the useful part to report back.
             println!("Set {} (v{})", secret.key, secret.version);
         }
         SecretCmd::Delete { project, env, key } => {

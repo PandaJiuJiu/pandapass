@@ -5,7 +5,6 @@
 
 use pandapass_core::models::ProjectRole;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Serialize)]
@@ -23,8 +22,6 @@ pub struct LoginResponse {
     #[serde(default)]
     pub session_token: Option<String>,
     #[serde(default)]
-    pub csrf_token: Option<String>,
-    #[serde(default)]
     pub requires_totp: bool,
     /// Whether this account has a sealed master-key envelope. False means it
     /// exists but cannot store or read secrets.
@@ -37,6 +34,10 @@ pub struct SecretValueResponse {
     pub key: String,
     pub value: String,
     pub version: i32,
+    /// Present so this mirrors the server's response shape; the CLI does not
+    /// print it, and dropping the field would hide a version bump from
+    /// `secret list` callers that read this struct directly.
+    #[allow(dead_code)]
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -66,33 +67,4 @@ pub struct CreateTokenRequest {
 pub struct CreateTokenResponse {
     pub token: pandapass_core::models::ServiceToken,
     pub plain_token: String,
-}
-
-#[derive(Serialize)]
-pub struct BatchSetRequest {
-    pub secrets: HashMap<String, String>,
-}
-
-// ─────────────────────────── MCP internal API ───────────────────────────
-
-#[derive(Serialize)]
-pub struct InternalGetSecretRequest {
-    pub key: String,
-    pub project_id: Option<Uuid>,
-    pub env_id: Option<Uuid>,
-}
-
-#[derive(Serialize)]
-pub struct InternalListSecretsRequest {
-    pub project_id: Option<Uuid>,
-    pub env_id: Option<Uuid>,
-}
-
-#[derive(Serialize)]
-pub struct InternalExecRequest {
-    pub keys: Vec<String>,
-    pub command: Vec<String>,
-    pub project_id: Option<Uuid>,
-    pub env_id: Option<Uuid>,
-    pub timeout_secs: u64,
 }

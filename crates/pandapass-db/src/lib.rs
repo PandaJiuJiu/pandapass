@@ -75,7 +75,7 @@ pub async fn create_user(
     global_role: GlobalRole,
 ) -> Result<User> {
     let id = uuid::Uuid::now_v7();
-    let now = UtcNow();
+    let now = utc_now();
     sqlx::query(
         "INSERT INTO users (id, email, password_hash, totp_secret_enc, totp_enabled,
          recovery_codes_hash, global_role, created_at)
@@ -92,7 +92,7 @@ pub async fn create_user(
     get_user_by_id(db, id).await
 }
 
-fn UtcNow() -> String {
+fn utc_now() -> String {
     ts(chrono::Utc::now())
 }
 
@@ -194,7 +194,7 @@ pub async fn set_recovery_codes(db: &Db, user_id: uuid::Uuid, hashes: &[String])
 pub async fn touch_last_login(db: &Db, user_id: uuid::Uuid) -> Result<()> {
     sqlx::query("UPDATE users SET last_login_at = ?2 WHERE id = ?1")
         .bind(user_id.to_string())
-        .bind(UtcNow())
+        .bind(utc_now())
         .execute(db)
         .await?;
     Ok(())
@@ -219,7 +219,7 @@ pub async fn set_user_role(db: &Db, user_id: uuid::Uuid, role: GlobalRole) -> Re
 pub async fn disable_user(db: &Db, user_id: uuid::Uuid) -> Result<()> {
     sqlx::query("UPDATE users SET disabled_at = ?2 WHERE id = ?1")
         .bind(user_id.to_string())
-        .bind(UtcNow())
+        .bind(utc_now())
         .execute(db)
         .await?;
     Ok(())
@@ -250,7 +250,7 @@ pub async fn create_project(
     created_by: uuid::Uuid,
 ) -> Result<Project> {
     let id = uuid::Uuid::now_v7();
-    let now = UtcNow();
+    let now = utc_now();
     sqlx::query(
         "INSERT INTO projects (id, name, slug, description, created_by, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
@@ -309,7 +309,7 @@ pub async fn update_project(
         .bind(id.to_string())
         .bind(name)
         .bind(description)
-        .bind(UtcNow())
+        .bind(utc_now())
         .execute(db)
         .await?;
     Ok(())
@@ -378,7 +378,7 @@ pub async fn add_member(
     .bind(user_id.to_string())
     .bind(project_role_str(role))
     .bind(added_by.to_string())
-    .bind(UtcNow())
+    .bind(utc_now())
     .execute(db)
     .await?;
     Ok(())
@@ -470,7 +470,7 @@ pub async fn create_env(
     description: Option<&str>,
 ) -> Result<Environment> {
     let id = uuid::Uuid::now_v7();
-    let now = UtcNow();
+    let now = utc_now();
     sqlx::query(
         "INSERT INTO environments (id, project_id, name, slug, description, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
@@ -544,7 +544,7 @@ pub async fn upsert_secret(
     value_enc: &EncryptedSecret,
     created_by: uuid::Uuid,
 ) -> Result<Secret> {
-    let now = UtcNow();
+    let now = utc_now();
 
     // Try to find an existing (non-deleted) secret
     let existing = sqlx::query(
@@ -678,7 +678,7 @@ pub async fn soft_delete_secret(
     .bind(project_id.to_string())
     .bind(env_id.to_string())
     .bind(key)
-    .bind(UtcNow())
+    .bind(utc_now())
     .execute(db)
     .await?;
     Ok(())
@@ -751,7 +751,7 @@ pub async fn put_envelope(
     .bind(uuid::Uuid::now_v7().to_string())
     .bind(user_id.to_string())
     .bind(ciphertext)
-    .bind(UtcNow())
+    .bind(utc_now())
     .execute(db)
     .await?;
     Ok(())
@@ -860,7 +860,7 @@ pub async fn list_tokens(db: &Db, user_id: uuid::Uuid) -> Result<Vec<ServiceToke
 pub async fn revoke_token(db: &Db, id: uuid::Uuid) -> Result<()> {
     sqlx::query("UPDATE service_tokens SET revoked_at = ?2 WHERE id = ?1")
         .bind(id.to_string())
-        .bind(UtcNow())
+        .bind(utc_now())
         .execute(db)
         .await?;
     Ok(())
@@ -869,7 +869,7 @@ pub async fn revoke_token(db: &Db, id: uuid::Uuid) -> Result<()> {
 pub async fn touch_token(db: &Db, id: uuid::Uuid) -> Result<()> {
     sqlx::query("UPDATE service_tokens SET last_used_at = ?2 WHERE id = ?1")
         .bind(id.to_string())
-        .bind(UtcNow())
+        .bind(utc_now())
         .execute(db)
         .await?;
     Ok(())
@@ -917,7 +917,7 @@ pub async fn create_session(
 pub async fn get_session_by_hash(db: &Db, hash: &str) -> Result<Option<Session>> {
     let row = sqlx::query("SELECT * FROM sessions WHERE token_hash = ?1 AND expires_at > ?2")
         .bind(hash)
-        .bind(UtcNow())
+        .bind(utc_now())
         .fetch_optional(db)
         .await?;
     Ok(row.map(|r| Session {
@@ -951,7 +951,7 @@ pub async fn delete_all_sessions(db: &Db, user_id: uuid::Uuid) -> Result<()> {
 
 pub async fn cleanup_expired_sessions(db: &Db) -> Result<u64> {
     let r = sqlx::query("DELETE FROM sessions WHERE expires_at < ?1")
-        .bind(UtcNow())
+        .bind(utc_now())
         .execute(db)
         .await?;
     Ok(r.rows_affected())

@@ -67,16 +67,8 @@ impl ApiClient {
         })
     }
 
-    pub fn base_url(&self) -> &str {
-        &self.base_url
-    }
-
     pub async fn set_auth_token(&self, token: Option<String>) {
         *self.auth_token.write().await = token;
-    }
-
-    pub async fn auth_token(&self) -> Option<String> {
-        self.auth_token.read().await.clone()
     }
 
     pub async fn set_age_identity(&self, identity: Option<age::x25519::Identity>) {
@@ -277,22 +269,6 @@ impl ApiClient {
             .await
     }
 
-    pub async fn batch_set_secrets(
-        &self,
-        project_slug: &str,
-        env_slug: &str,
-        secrets: &std::collections::HashMap<String, String>,
-    ) -> Result<serde_json::Value> {
-        let req = crate::model::BatchSetRequest {
-            secrets: secrets.clone(),
-        };
-        self.post(
-            &format!("/projects/{project_slug}/envs/{env_slug}/secrets/batch"),
-            &req,
-        )
-        .await
-    }
-
     pub async fn delete_secret(
         &self,
         project_slug: &str,
@@ -383,62 +359,5 @@ impl ApiClient {
             path.push_str(&format!("&project_id={id}"));
         }
         self.get(&path).await
-    }
-
-    // ─────────────────────────── MCP internal ───────────────────────────
-
-    /// Fetch a secret's ciphertext for local decryption.
-    ///
-    /// The server never sends plaintext here: it returns the ChaCha20-Poly1305
-    /// blob and the CLI unwraps it with the user's own master key. A lower-
-    /// trust alternative to [`ApiClient::get_secret`], which does return
-    /// plaintext over the wire.
-    pub async fn fetch_secret_ciphertext(
-        &self,
-        project_id: uuid::Uuid,
-        env_id: uuid::Uuid,
-        key: &str,
-    ) -> Result<pandapass_core::models::Secret> {
-        let req = crate::model::InternalGetSecretRequest {
-            key: key.to_string(),
-            project_id: Some(project_id),
-            env_id: Some(env_id),
-        };
-        self.post("/internal/secret", &req).await
-    }
-
-    pub async fn fetch_secret_metas(
-        &self,
-        project_id: uuid::Uuid,
-        env_id: uuid::Uuid,
-    ) -> Result<Vec<pandapass_core::models::SecretMeta>> {
-        let req = crate::model::InternalListSecretsRequest {
-            project_id: Some(project_id),
-            env_id: Some(env_id),
-        };
-        self.post("/internal/secrets", &req).await
-    }
-
-    /// Ask the server to run a command with secrets injected into its environment.
-    ///
-    /// This is the path that keeps secrets out of the agent's context entirely:
-    /// the values are decrypted server-side, land in the child's `environ`, and
-    /// are never returned. Unimplemented server-side — see the route handler.
-    pub async fn exec_with_secrets(
-        &self,
-        project_id: uuid::Uuid,
-        env_id: uuid::Uuid,
-        keys: &[String],
-        command: &[String],
-        timeout_secs: u64,
-    ) -> Result<pandapass_core::models::CommandResult> {
-        let req = crate::model::InternalExecRequest {
-            keys: keys.to_vec(),
-            command: command.to_vec(),
-            project_id: Some(project_id),
-            env_id: Some(env_id),
-            timeout_secs,
-        };
-        self.post("/internal/exec", &req).await
     }
 }
