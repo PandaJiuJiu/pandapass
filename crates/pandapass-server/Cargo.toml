@@ -27,3 +27,11 @@ sqlx = { workspace = true }
 qrcode = "0.14"
 async-trait = { workspace = true }
 secrecy = { workspace = true }
+
+[dev-dependencies]
+# The integration tests drive the router in-process, so they need a body
+# reader and one-shot dispatch — no HTTP server, no port binding.
+http-body-util = "0.1"
+# `oneshot`, used to dispatch a request through the router without binding a port.
+tower = { workspace = true, features = ["util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

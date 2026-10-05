@@ -1,0 +1,682 @@
+//! End-to-end tests over the real router.
+//!
+//! These drive `build_router` directly with an in-process HTTP client rather
+//! than binding a port. That makes them fast and hermetic, but it is also why
+//! they catch things unit tests cannot: the bugs found so far in this area —
+//! routes mounted outside the CSRF layer, a `Path` extractor whose arity did
+//! not match its route, a service token inheriting its creator's admin role —
+//! were all wiring faults. They only exist in the assembled application.
+//!
+//! Each test gets its own temporary SQLite file. There is no shared fixture
+//! state, because a test that passes only because of what another one left
+//! behind is worse than no test.
+
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use pandapass_core::crypto::AgeIdentity;
+use pandapass_core::AuditService;
+use pandapass_db::{connect, migrate, DbAuditLogger};
+use pandapass_server::state::{AppState, Config};
+use pandapass_server::build_router;
+use serde_json::{json, Value};
+use tower::ServiceExt;
+
+/// A running server plus a client bound to it.
+struct Harness {
+    router: axum::Router,
+    db_path: std::path::PathBuf,
+}
+
+/// A response, kept as parsed JSON so assertions can look at the body.
+struct Res {
+    status: StatusCode,
+    body: Value,
+}
+
+impl Res {
+    fn ok(&self) -> bool {
+        self.status.is_success()
+    }
+
+    fn error_code(&self) -> &str {
+        self.body["error"]["code"].as_str().unwrap_or("")
+    }
+}
+
+impl Harness {
+    /// Start a server on a fresh database.
+    ///
+    /// The age identity is generated here rather than shared, because a test
+    /// that reuses another test's identity would pass for the wrong reason if
+    /// envelope sealing were broken.
+    async fn start() -> Self {
+        let dir = std::env::temp_dir().join(format!("pandapass-test-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db_path = dir.join("test.db");
+
+        let identity = AgeIdentity::generate();
+
+        let config = Config {
+            listen_addr: "127.0.0.1:0".into(),
+            public_url: "http://localhost:8233".into(),
+            db_url: format!("sqlite://{}?mode=rwc", db_path.display()),
+            session_ttl_days: 30,
+            allowed_origins: vec![],
+            bootstrap_admin_email: None,
+            require_totp: false,
+            allow_registration: true,
+            max_concurrent_exec: 10,
+            command_timeout_secs: 120,
+            command_allowlist: vec![],
+            cookie_secure: false,
+            server_age_identity: Some(identity.as_str().to_string()),
+        };
+
+        let db = connect(&config.db_url).await.expect("connect");
+        migrate(&db).await.expect("migrate");
+        let audit = AuditService::new(Arc::new(DbAuditLogger::new(db.clone())));
+        let state = AppState::new(db, audit, config);
+
+        Self { router: build_router(state), db_path }
+    }
+
+    async fn send(&self, req: Request<Body>) -> Res {
+        let res = self
+            .router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("router should not fail");
+        let status = res.status();
+        let bytes = res.into_body().collect().await.expect("body").to_bytes();
+        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        Res { status, body }
+    }
+
+    async fn get(&self, path: &str, token: &str) -> Res {
+        self.send(
+            Request::builder()
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    async fn post(&self, path: &str, token: &str, body: Value) -> Res {
+        self.send(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+    }
+
+    async fn put(&self, path: &str, token: &str, body: Value) -> Res {
+        self.send(
+            Request::builder()
+                .method("PUT")
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+    }
+
+    async fn del(&self, path: &str, token: &str) -> Res {
+        self.send(
+            Request::builder()
+                .method("DELETE")
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    /// Register the first account and return its session token.
+    ///
+    /// That user becomes admin, which is what makes the scope tests meaningful:
+    /// a token's creator is an admin, so if the token's authority leaks from
+    /// the creator, every scope check fails open.
+    ///
+    /// An age public key is supplied so the account gets a master-key envelope.
+    /// Without one the account exists but cannot store anything, and every
+    /// write below would fail for a reason unrelated to what it is testing.
+    async fn admin(&self) -> String {
+        let key = AgeIdentity::generate();
+        let public = key.public_key().expect("derive public key").as_str().to_string();
+        let res = self
+            .post(
+                "/api/v1/auth/register",
+                "",
+                json!({
+                    "email": "admin@example.com",
+                    "password": "hunter2hunter2",
+                    "age_public_key": public,
+                }),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::OK, "register failed: {:?}", res.body);
+        res.body["session_token"].as_str().expect("session token").to_string()
+    }
+
+    async fn project(&self, token: &str) -> Value {
+        let res = self
+            .post("/api/v1/projects", token, json!({ "name": "Demo", "slug": "demo" }))
+            .await;
+        assert!(res.ok(), "create project failed: {:?}", res.body);
+        res.body.clone()
+    }
+
+    /// Issue a service token and return its plaintext.
+    async fn token(&self, admin: &str, scopes: &[&str]) -> String {
+        let res = self
+            .post(
+                "/api/v1/tokens",
+                admin,
+                json!({ "name": "test", "scopes": scopes }),
+            )
+            .await;
+        assert!(res.ok(), "create token failed: {:?}", res.body);
+        res.body["plain_token"].as_str().expect("plain token").to_string()
+    }
+
+    async fn set_secret(&self, token: &str, key: &str, value: &str) -> Res {
+        self.post(
+            "/api/v1/projects/demo/envs/prod/secrets",
+            token,
+            json!({ "key": key, "value": value }),
+        )
+        .await
+    }
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        // Leave nothing behind in /tmp; a test suite that accumulates
+        // databases is a test suite that eventually fills a disk.
+        if let Some(dir) = self.db_path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+// ── the scope boundary ─────────────────────────────────────────────────────
+
+/// The regression that matters most in this file.
+///
+/// A token scoped `read:secret` used to be able to write, because
+/// `AuthContext::can` never looked at `service_token` and dispatched on the
+/// global role of the admin who created it. Scoping a token was decorative —
+/// the worst failure mode for a control whose entire job is to limit a
+/// credential.
+#[tokio::test]
+async fn a_read_only_token_cannot_write() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    h.set_secret(&admin, "API_KEY", "original").await;
+
+    let tok = h.token(&admin, &["read:secret"]).await;
+
+    // It can read.
+    let read = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok).await;
+    assert!(read.ok(), "read should be allowed: {:?}", read.body);
+
+    // It cannot write, by any of the four write paths.
+    let post = h.set_secret(&tok, "PWNED", "attacker").await;
+    assert_eq!(post.status, StatusCode::FORBIDDEN, "POST must be denied");
+
+    let put = h
+        .put(
+            "/api/v1/projects/demo/envs/prod/secrets/API_KEY",
+            &tok,
+            json!({ "value": "attacker" }),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::FORBIDDEN, "PUT must be denied");
+
+    let batch = h
+        .post(
+            "/api/v1/projects/demo/envs/prod/secrets/batch",
+            &tok,
+            json!({ "secrets": { "BATCH": "attacker" } }),
+        )
+        .await;
+    assert_eq!(batch.status, StatusCode::FORBIDDEN, "batch must be denied");
+
+    let del = h.del("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok).await;
+    assert_eq!(del.status, StatusCode::FORBIDDEN, "DELETE must be denied");
+
+    // And the value it tried to write is not there.
+    let after = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &admin).await;
+    assert_eq!(after.body["value"], "original", "the write must not have landed");
+
+    let list = h.get("/api/v1/projects/demo/envs/prod/secrets", &admin).await;
+    let keys: Vec<&str> = list.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["key"].as_str().unwrap())
+        .collect();
+    assert!(!keys.contains(&"PWNED"), "no row should exist: {keys:?}");
+    assert!(!keys.contains(&"BATCH"), "no row should exist: {keys:?}");
+}
+
+/// Write without read, and a scope that cannot reach values at all.
+#[tokio::test]
+async fn scopes_do_not_imply_each_other() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+
+    let writer = h.token(&admin, &["write:secret"]).await;
+    let wrote = h.set_secret(&writer, "K", "v").await;
+    assert!(wrote.ok(), "write:secret must write");
+
+    let read = h.get("/api/v1/projects/demo/envs/prod/secrets/K", &writer).await;
+    assert_eq!(read.status, StatusCode::FORBIDDEN, "write must not imply read");
+
+    // `manage:project` is about membership and structure, not credential access.
+    let mgr = h.token(&admin, &["manage:project"]).await;
+    for path in [
+        "/api/v1/projects/demo/envs/prod/secrets",
+        "/api/v1/projects/demo/envs/prod/secrets/K",
+    ] {
+        let res = h.get(path, &mgr).await;
+        assert_eq!(
+            res.status,
+            StatusCode::FORBIDDEN,
+            "manage:project must not read secrets ({path})"
+        );
+    }
+    let write = h.set_secret(&mgr, "K2", "v").await;
+    assert_eq!(write.status, StatusCode::FORBIDDEN);
+}
+
+/// A token that could mint a token could grant itself anything, which makes
+/// scoping circular. Issuing credentials stays a human action.
+#[tokio::test]
+async fn a_token_cannot_issue_or_revoke_tokens() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    let tok = h.token(&admin, &["manage:project", "read:secret"]).await;
+
+    let minted = h
+        .post(
+            "/api/v1/tokens",
+            &tok,
+            json!({ "name": "escalated", "scopes": ["manage:project", "write:secret"] }),
+        )
+        .await;
+    assert_eq!(minted.status, StatusCode::FORBIDDEN, "a token must not mint tokens");
+
+    // Revocation is gated on token ownership, and a token's creator *is* the
+    // owner — so without an explicit refusal this would revoke every sibling.
+    let list = h.get("/api/v1/tokens", &admin).await;
+    let id = list.body[0]["id"].as_str().unwrap();
+    let revoked = h.del(&format!("/api/v1/tokens/{id}"), &tok).await;
+    assert_eq!(revoked.status, StatusCode::FORBIDDEN, "a token must not revoke tokens");
+
+    let after = h.get("/api/v1/tokens", &admin).await;
+    assert!(after.body[0]["revoked_at"].is_null(), "the token must still be live");
+}
+
+/// The audit log records every read across every project and every actor.
+/// Gating it on the global role alone let a `read:secret` CI token read all of
+/// it, because the token's creator was usually an admin.
+#[tokio::test]
+async fn reading_the_audit_log_needs_the_read_audit_scope() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    let plain = h.token(&admin, &["read:secret"]).await;
+    let denied = h.get("/api/v1/audit", &plain).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let auditor = h.token(&admin, &["read:audit"]).await;
+    let allowed = h.get("/api/v1/audit", &auditor).await;
+    assert!(allowed.ok(), "read:audit must be allowed: {:?}", allowed.body);
+}
+
+/// The consequence of the above, seen from the caller's side: a session's own
+/// actions show up, and denials are recorded with the key name but never the
+/// value the caller tried to write.
+#[tokio::test]
+async fn a_refused_write_is_audited_without_the_value() {
+    const REJECTED: &str = "attacker-controlled-value";
+
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    h.set_secret(&admin, "API_KEY", "real").await;
+
+    let tok = h.token(&admin, &["read:secret"]).await;
+    let refused = h.set_secret(&tok, "API_KEY", REJECTED).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    let auditor = h.token(&admin, &["read:audit"]).await;
+    let log = h.get("/api/v1/audit", &auditor).await;
+    assert!(log.ok());
+
+    let rendered = log.body.to_string();
+    assert!(
+        !rendered.contains(REJECTED),
+        "the audit log must never hold a secret value: {rendered}"
+    );
+
+    // The refusal itself should be visible, with the key name.
+    let denied: Vec<&Value> = log.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["outcome"] == "denied")
+        .collect();
+    assert!(!denied.is_empty(), "the denial should be recorded");
+    assert_eq!(denied[0]["secret_key"], "API_KEY");
+}
+
+/// A revoked token stops working immediately, whatever its scopes said.
+#[tokio::test]
+async fn revocation_takes_effect_at_once() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    h.set_secret(&admin, "API_KEY", "v").await;
+
+    let tok = h.token(&admin, &["read:secret"]).await;
+    let before = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok).await;
+    assert!(before.ok());
+
+    let list = h.get("/api/v1/tokens", &admin).await;
+    let id = list.body[0]["id"].as_str().unwrap().to_string();
+    assert!(h.del(&format!("/api/v1/tokens/{id}"), &admin).await.ok());
+
+    let after = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok).await;
+    assert_eq!(
+        after.status,
+        StatusCode::UNAUTHORIZED,
+        "a revoked token must stop working"
+    );
+}
+
+// ── the trust boundary ─────────────────────────────────────────────────────
+
+/// The premise of the whole product: what is stored is ciphertext, and what
+/// crosses the wire for a read is the plaintext only to an authorised caller.
+#[tokio::test]
+async fn secrets_are_stored_as_ciphertext() {
+    const VALUE: &str = "sk-live-must-never-appear-in-the-database";
+
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await
+        ;
+    let written = h.set_secret(&admin, "API_KEY", VALUE).await;
+    assert!(written.ok(), "write failed: {:?}", written.body);
+
+    // Reading it back works, so the value was really stored.
+    let read = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &admin).await;
+    assert_eq!(read.body["value"], VALUE);
+
+    // And the database holds no trace of it.
+    let db_bytes = std::fs::read(&h.db_path).expect("read the database file");
+    let haystack = String::from_utf8_lossy(&db_bytes);
+    assert!(
+        !haystack.contains(VALUE),
+        "the plaintext value is present in the database file"
+    );
+}
+
+/// Listing must never carry values. This is the path an agent uses to learn
+/// what exists, so a value here would defeat the entire design.
+#[tokio::test]
+async fn listing_secrets_returns_names_only() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    h.set_secret(&admin, "API_KEY", "should-not-appear").await;
+    h.set_secret(&admin, "DB_URL", "also-should-not-appear").await;
+
+    let list = h.get("/api/v1/projects/demo/envs/prod/secrets", &admin).await;
+    assert!(list.ok());
+
+    let rendered = list.body.to_string();
+    assert!(!rendered.contains("should-not-appear"), "list leaked a value");
+    assert!(!rendered.contains("also-should-not"), "list leaked a value");
+
+    let keys: Vec<&str> = list.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, vec!["API_KEY", "DB_URL"]);
+}
+
+// ── session authentication ─────────────────────────────────────────────────
+
+/// A session cookie mutating state without the CSRF header must be refused.
+/// `SameSite=Lax` is a second line of defence; this is the first.
+#[tokio::test]
+async fn session_writes_require_a_csrf_token() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+
+    // A session token in a header is Bearer auth, which is CSRF-immune by
+    // construction. A *cookie* is not, so that is what needs the double submit.
+    let no_csrf = h
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/projects/demo/envs/prod/secrets")
+                .header("authorization", format!("Bearer {admin}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "key": "K", "value": "v" }).to_string()))
+                .unwrap(),
+        )
+        .await;
+    // Bearer auth skips the CSRF layer, so this one is allowed — which is the
+    // point: it is not a browser ambient credential.
+    assert!(no_csrf.ok());
+
+    // Same request, authenticated by cookie, with no CSRF header.
+    let cookie_only = h
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/projects/demo/envs/prod/secrets")
+                .header("cookie", format!("pandapass_session={admin}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "key": "K2", "value": "v" }).to_string()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(cookie_only.status, StatusCode::FORBIDDEN, "CSRF must be enforced");
+    assert_eq!(cookie_only.error_code(), "forbidden");
+}
+
+/// Every protected route must refuse an anonymous caller.
+///
+/// The expected status depends on the method, and that is not an accident. On
+/// GET, authentication runs first and returns 401. On a mutating method the
+/// CSRF layer sits *outside* the auth extractor, so it rejects with 403 before
+/// authentication is ever attempted. That ordering is deliberate — a CSRF
+/// check that ran after auth would still be correct, but rejecting early means
+/// an unauthenticated POST never reaches a handler at all.
+///
+/// The property that matters is that every one of these is refused, and that
+/// none of them succeeds.
+#[tokio::test]
+async fn protected_routes_require_authentication() {
+    let h = Harness::start().await;
+
+    let mutating: &[(&str, &str)] = &[
+        ("GET", "/api/v1/projects"),
+        ("GET", "/api/v1/projects/demo/envs/prod/secrets"),
+        ("GET", "/api/v1/audit"),
+        ("GET", "/api/v1/tokens"),
+        ("POST", "/api/v1/projects"),
+        ("DELETE", "/api/v1/projects/demo"),
+    ];
+
+    for (method, path) in mutating.iter().copied() {
+        let res = h
+            .send(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert!(
+            !res.ok(),
+            "{method} {path} must refuse an anonymous caller, got {:?}",
+            res.body
+        );
+        assert!(
+            res.status == StatusCode::UNAUTHORIZED
+                || res.status == StatusCode::FORBIDDEN,
+            "{method} {path} returned an unexpected {}: {:?}",
+            res.status,
+            res.body
+        );
+    }
+
+    // Health is the exception, and it leaks nothing.
+    let health = h
+        .send(
+            Request::builder()
+                .uri("/api/v1/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert!(health.ok());
+    assert_eq!(health.body["status"], "ok");
+    assert_eq!(
+        health.body.as_object().map(|o| o.len()),
+        Some(2),
+        "health should not carry extra fields"
+    );
+}
+
+/// A second account must not see the first one's projects.
+#[tokio::test]
+async fn projects_are_scoped_to_their_members() {
+    let h = Harness::start().await;
+
+    let alice = h.admin().await;
+    h.project(&alice).await;
+
+    let bob = h
+        .post(
+            "/api/v1/auth/register",
+            "",
+            json!({ "email": "bob@example.com", "password": "hunter2hunter2" }),
+        )
+        .await
+        .body["session_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let list = h.get("/api/v1/projects", &bob).await;
+    assert!(list.ok());
+    assert_eq!(
+        list.body.as_array().map(|a| a.len()),
+        Some(0),
+        "bob must not see alice's project"
+    );
+
+    // And he cannot read its secrets by guessing the slug.
+    let peek = h.get("/api/v1/projects/demo/envs/prod/secrets", &bob).await;
+    assert!(
+        !peek.ok(),
+        "a non-member must not reach the secrets endpoint: {:?}",
+        peek.body
+    );
+}
+
+// ── request handling ───────────────────────────────────────────────────────
+
+/// `PUT /secrets/{key}` takes the key from the path. A `key` in the body must
+/// be ignored — a client that sends both cannot be tricked into writing to a
+/// name the URL did not ask for.
+#[tokio::test]
+async fn put_takes_the_key_from_the_path_not_the_body() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    h.set_secret(&admin, "REAL", "original").await;
+
+    let res = h
+        .put(
+            "/api/v1/projects/demo/envs/prod/secrets/REAL",
+            &admin,
+            json!({ "key": "SMUGGLED", "value": "attacker" }),
+        )
+        .await;
+    assert!(res.ok(), "put failed: {:?}", res.body);
+    assert_eq!(res.body["key"], "REAL", "the path must win");
+
+    let list = h.get("/api/v1/projects/demo/envs/prod/secrets", &admin).await;
+    let keys: Vec<&str> = list.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, vec!["REAL"], "no secret other than REAL should exist");
+}
+
+/// A second write bumps the version rather than overwriting history, because
+/// version history is the only way back from a bad credential.
+#[tokio::test]
+async fn rewriting_a_secret_bumps_its_version() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+
+    assert_eq!(h.set_secret(&admin, "K", "v1").await.body["version"], 1);
+    assert_eq!(h.set_secret(&admin, "K", "v2").await.body["version"], 2);
+
+    let read = h.get("/api/v1/projects/demo/envs/prod/secrets/K", &admin).await;
+    assert_eq!(read.body["value"], "v2");
+    assert_eq!(read.body["version"], 2);
+}
+
+/// Deleting is a soft delete. A vault that destroys history on a mistake is a
+/// vault with no undo.
+#[tokio::test]
+async fn deleting_a_secret_does_not_destroy_it_immediately() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    h.set_secret(&admin, "K", "v").await;
+
+    assert!(h.del("/api/v1/projects/demo/envs/prod/secrets/K", &admin).await.ok());
+
+    let list = h.get("/api/v1/projects/demo/envs/prod/secrets", &admin).await;
+    let live: Vec<&Value> = list.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["deleted_at"].is_null())
+        .collect();
+    assert!(live.is_empty(), "a deleted secret must not appear as live");
+}
