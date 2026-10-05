@@ -234,7 +234,18 @@ async fn write_secret(
     let env = db::get_env_by_slug(&state.db, project.id, env_slug).await?;
     let ctx = scope_auth(state, auth, &project, &env).await;
 
-    Rbac::check_secret_access(&ctx, project.id, env.id, false)?;
+    // A refused write is the single most interesting event in a vault's audit
+    // log: it is what a credential-rolling attacker looks like. Record it
+    // before returning. Only the key *name* is stored — the rejected value is
+    // never written anywhere.
+    if let Err(e) = Rbac::check_secret_access(&ctx, project.id, env.id, false) {
+        let mut denied = AuditContext::new(&ctx, AuditAction::SecretUpdate)
+            .with_project(project.id)
+            .with_env(env.id)
+            .with_secret_key(key.clone());
+        state.audit.log_denied(&mut denied, &e.to_string()).await.ok();
+        return Err(e.into());
+    }
 
     if key.is_empty() || key.len() > 256 {
         return Err(ApiError::BadRequest("Key must be 1-256 characters".into()));
