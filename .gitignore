@@ -32,3 +32,6 @@ credentials*
 # Build output
 dist/
 build/
+# Node / web
+node_modules/
+web/dist/
