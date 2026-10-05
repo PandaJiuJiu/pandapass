@@ -74,8 +74,6 @@ enum Commands {
     #[command(subcommand)]
     Config(commands::ConfigCmd),
 
-    /// MCP Server (for Agent integration)
-    Mcp(commands::McpArgs),
 
     /// Inject secrets into environment and run command
     Run(commands::RunArgs),
@@ -100,7 +98,6 @@ impl From<Commands> for commands::Command {
             Commands::Token(x) => C::Token(x),
             Commands::Audit(x) => C::Audit(x),
             Commands::Config(x) => C::Config(x),
-            Commands::Mcp(x) => C::Mcp(x),
             Commands::Run(x) => C::Run(x),
             Commands::Inject(x) => C::Inject(x),
         }
@@ -171,17 +168,47 @@ async fn main() -> Result<()> {
     // Run command
     let result = run_command(&api, &mut config, cli.command.into()).await;
 
-    // Save config if auth token changed
-    if let Some(dir) = config_path.parent() {
-        tokio::fs::create_dir_all(dir).await.ok();
+    // Persist the session before reporting the command's outcome. A failed
+    // `register` or `login` may still have minted a usable token, and losing
+    // it to a write error would strand the user logged-out with no
+    // diagnostic. Write via a temp file and rename, so an interrupted write
+    // cannot leave a truncated config that silently resets to defaults.
+    let save_result = save_config(&config_path, &config).await;
+    if let Err(e) = &save_result {
+        eprintln!("warning: could not save config to {}: {}", config_path.display(), e);
+        if result.is_ok() {
+            // The command the user asked for worked; losing the session is a
+            // real problem, but not a reason to report their command as failed.
+            eprintln!("The session token was not saved. Re-run `pandapass login` next time.");
+        }
     }
-    let content = serde_json::to_string_pretty(&config)?;
-    tokio::fs::write(&config_path, content).await?;
 
     if let Err(e) = result {
         error!("{}", e);
         std::process::exit(1);
     }
 
+    Ok(())
+}
+
+/// Write the CLI config atomically: temp file in the same directory, then
+/// rename. A half-written config is worse than a stale one — it would fail to
+/// parse and be replaced by defaults, losing the session entirely.
+async fn save_config(path: &std::path::Path, config: &CliConfig) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    let content = serde_json::to_string_pretty(config)?;
+    let tmp = path.with_extension("json.tmp");
+    tokio::fs::write(&tmp, content.as_bytes()).await?;
+
+    // The config holds a live session token: owner-only, like the age key.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
+    }
+
+    tokio::fs::rename(&tmp, path).await?;
     Ok(())
 }
