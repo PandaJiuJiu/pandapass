@@ -435,6 +435,14 @@ pub struct AuthContext {
 
 impl AuthContext {
     pub fn can(&self, action: Permission) -> bool {
+        // A service token is *not* its creator. It carries only the scopes it
+        // was minted with, and the human's admin rights must not leak through
+        // it — otherwise scoping a token to `read:secret` would grant nothing,
+        // because the token would still present as the admin who made it.
+        if let Some(token) = &self.service_token {
+            return self.token_allows(token, action);
+        }
+
         match (self.global_role(), self.project_role) {
             (GlobalRole::Admin, _) => true,
             (GlobalRole::User, Some(ProjectRole::Owner)) => true,
@@ -442,6 +450,53 @@ impl AuthContext {
             (GlobalRole::User, Some(ProjectRole::Viewer)) => action.is_viewer_allowed(),
             (GlobalRole::User, None) => action.is_global_allowed(),
         }
+    }
+
+    /// Map a permission to the scope that would grant it.
+    ///
+    /// `None` means the action cannot be performed by a service token at all.
+    /// Session-authenticated humans are unaffected — they go through `can`.
+    fn required_scope(action: Permission) -> Option<TokenScope> {
+        Some(match action {
+            Permission::ReadSecret => TokenScope::ReadSecret,
+            Permission::WriteSecret | Permission::DeleteSecret => TokenScope::WriteSecret,
+            Permission::ListSecrets => TokenScope::ListSecret,
+            Permission::ReadAudit => TokenScope::ReadAudit,
+            Permission::CreateProject
+            | Permission::UpdateProject
+            | Permission::DeleteProject
+            | Permission::ManageMembers
+            | Permission::CreateEnv
+            | Permission::UpdateEnv
+            | Permission::DeleteEnv => TokenScope::ManageProject,
+
+            // Resolving a slug is a metadata read that any scoped caller needs
+            // before it can do anything else, so `list:secret` carries it.
+            Permission::ReadProject => TokenScope::ListSecret,
+
+            // Minting a token, revoking one, or managing users is how you
+            // escalate: a token able to do these could hand itself broader
+            // scopes, which would make scoping pointless. No scope grants them.
+            Permission::ManageUsers | Permission::CreateToken | Permission::RevokeToken => {
+                return None
+            }
+        })
+    }
+
+    fn token_allows(&self, token: &ServiceToken, action: Permission) -> bool {
+        // A revoked or expired token grants nothing, regardless of scopes.
+        if token.revoked_at.is_some() {
+            return false;
+        }
+        if let Some(exp) = token.expires_at {
+            if exp < Utc::now() {
+                return false;
+            }
+        }
+        let Some(required) = Self::required_scope(action) else {
+            return false;
+        };
+        token.scopes.contains(&required)
     }
 
     fn global_role(&self) -> GlobalRole {
