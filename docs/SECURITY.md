@@ -67,6 +67,11 @@ with it the Skill's fallback for read-only access.
 records **key names, never values**. The read, failure, and command-execution
 paths are asserted in `audit::tests` — a leaked value fails the build.
 
+A refused write is recorded too, with the key name and the reason. For a vault
+a rejected write is the event worth seeing: it is what a credential-rolling
+attacker looks like, and an audit log that only shows successes cannot show
+you that.
+
 The same applies to command execution: the audit entry carries the
 executable name, the list of key *names* used, and the exit code. Not the
 full argv, which may contain a value the user passed by hand.
@@ -89,6 +94,48 @@ a new call site could get it wrong.
 - `pandapass keygen` writes the age identity at 0600 and refuses to
   overwrite an existing one: replacing it would strand every secret sealed
   to the old key with no recovery path.
+- The server generates its own age identity at 0600, and only if the file is
+  absent. Regenerating one would make every envelope already sealed to this
+  server unopenable, for everyone.
+
+### Scopes
+
+Service-token scopes are enforced, not advisory. `AuthContext::can` consults
+the token first and only falls through to the human's roles when no token is
+present, so a token never inherits its creator's authority.
+
+| Scope | Grants |
+|---|---|
+| `read:secret` | Read values |
+| `list:secret` | List names, and resolve slugs |
+| `write:secret` | Create, replace, delete |
+| `read:audit` | Read the audit log |
+| `manage:project` | Projects, environments, members |
+
+Deliberate asymmetries:
+
+- **Write does not imply read.** CI that rotates a credential does not need
+  to read any.
+- **`manage:project` does not imply secret access.** Managing membership is
+  not reading secrets; conflating them would mean one compromised CI token
+  exposes every credential in the environment.
+- **No scope grants minting, revoking, or user management.** A token able to
+  create tokens could grant itself `write:secret`, which makes scoping
+  circular. `create_token` and `revoke_token` refuse service tokens outright.
+- **Revoked and expired tokens grant nothing**, regardless of scopes.
+
+Two of these were bugs found by probing a live server rather than by reading
+the code, and both are now covered by tests: `list_audit` gated on the global
+role, and `revoke_token` gated on ownership — which tokens satisfy, since a
+token's creator *is* the user who minted it. See `crates/pandapass-core/src/rbac.rs`.
+
+### A limit worth stating
+
+Scopes separate *operations*, not *delivery mechanism*. `read:secret` still
+permits a plaintext read, which is the thing the agent integration is trying to
+prevent. A real guarantee needs a `run:secret` scope that permits injection but
+not retrieval. That does not exist yet; see "Known limits".
+
 
 ## Command execution
 
@@ -114,9 +161,18 @@ otherwise have had no CSRF check at all.
 
 - **A skill is advisory, not enforced.** Nothing stops an agent from running
   `secret get` or `cat`-ing a value into its context. The skill tells it
-  not to. A real guarantee needs the API to withhold plaintext from the
-  credentials an agent holds — a scope split where an agent's token cannot
-  call `secret get`, only `run`. That work is not done.
+  not to. A real guarantee needs a `run:secret` scope — one that permits
+  injection but denies retrieval — so the credentials an agent holds cannot
+  call the plaintext path at all. That work is not done.
 - **Root on the host wins**, as above.
 - **The age private key must be backed up.** Losing it makes that account's
   secrets unrecoverable, including by the operator.
+- **A stolen database is only as safe as the server key.** If
+  `PANDAPASS_SERVER_AGE_IDENTITY` and the database are both in the same
+  backup, they are both in the attacker's hands and the encryption buys
+  nothing. Keeping the key off the database host is the meaningful version of
+  this control.
+- **The web UI has never been built.** `npm install` and `npm run build` are
+  unverified — the registry was unreachable from the sandbox. The Dockerfile
+  runs the type-check, so a broken build fails the image rather than shipping,
+  but nobody has confirmed it passes.
