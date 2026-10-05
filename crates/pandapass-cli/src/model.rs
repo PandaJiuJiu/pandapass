@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+#[derive(Serialize)]
+pub struct RegisterRequest {
+    pub email: String,
+    pub password: String,
+}
+
 #[derive(Deserialize)]
 pub struct LoginResponse {
     pub user: pandapass_core::models::UserPublic,

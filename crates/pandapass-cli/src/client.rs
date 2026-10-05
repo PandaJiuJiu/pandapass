@@ -11,8 +11,7 @@ use pandapass_core::models::{
 };
 
 use crate::model::{
-    AddMemberRequest, CreateTokenRequest, CreateTokenResponse, LoginResponse, ProjectMemberDetail,
-    RegisterRequest, SecretValueResponse,
+    AddMemberRequest, CreateTokenRequest, CreateTokenResponse, LoginResponse, ProjectMemberDetail, SecretValueResponse,
 };
 
 /// CLI configuration stored in ~/.pandapass/config.json
@@ -48,6 +47,9 @@ pub struct ApiClient {
     client: Client,
     base_url: String,
     auth_token: Arc<RwLock<Option<String>>>,
+    /// This user's age identity, used to unwrap their master key locally so
+    /// secret values never have to be decrypted by the server on our behalf.
+    age_identity: Arc<RwLock<Option<age::x25519::Identity>>>,
 }
 
 impl ApiClient {
@@ -61,6 +63,7 @@ impl ApiClient {
             client,
             base_url,
             auth_token: Arc::new(RwLock::new(None)),
+            age_identity: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -74,6 +77,10 @@ impl ApiClient {
 
     pub async fn auth_token(&self) -> Option<String> {
         self.auth_token.read().await.clone()
+    }
+
+    pub async fn set_age_identity(&self, identity: Option<age::x25519::Identity>) {
+        *self.age_identity.write().await = identity;
     }
 
     async fn request<T: Serialize, R: for<'de> Deserialize<'de>>(
@@ -139,7 +146,7 @@ impl ApiClient {
     // ─────────────────────────── auth ───────────────────────────
 
     pub async fn register(&self, email: &str, password: &str) -> Result<LoginResponse> {
-        let req = RegisterRequest {
+        let req = crate::model::RegisterRequest {
             email: email.to_string(),
             password: password.to_string(),
         };
@@ -395,12 +402,4 @@ impl ApiClient {
         };
         self.post("/internal/exec", &req).await
     }
-}
-
-// ─────────────────────────── wire types ───────────────────────────
-
-#[derive(Serialize)]
-pub struct RegisterRequest {
-    pub email: String,
-    pub password: String,
 }

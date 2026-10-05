@@ -236,8 +236,9 @@ pub struct AuditLog {
 }
 
 /// Audit actions
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum AuditAction {
     // Auth
     Login,
@@ -393,8 +394,9 @@ impl AuditAction {
 }
 
 /// Audit outcome
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum AuditOutcome {
     Success,
     Failure,
@@ -495,7 +497,7 @@ impl Permission {
 }
 
 /// API request/response types
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
@@ -509,44 +511,44 @@ pub struct LoginResponse {
     pub requires_totp: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateProjectRequest {
     pub name: String,
     pub slug: String,
     pub description: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateProjectRequest {
     pub name: Option<String>,
     pub description: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEnvRequest {
     pub name: String,
     pub slug: String,
     pub description: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetSecretRequest {
     pub key: String,
     pub value: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddMemberRequest {
     pub email: String,
     pub role: ProjectRole,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateMemberRequest {
     pub role: ProjectRole,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTokenRequest {
     pub name: String,
     pub project_id: Option<Uuid>,
@@ -568,18 +570,18 @@ pub struct TotpSetupResponse {
     pub qr_code_svg: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TotpVerifyRequest {
     pub code: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TotpDisableRequest {
     pub code: String,
     pub password: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginatedResponse<T> {
     pub items: Vec<T>,
     pub total: i64,

@@ -1,14 +1,14 @@
-use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, Args};
+use anyhow::Result;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tracing::{info, warn, error};
+use tracing::error;
 
 mod client;
 mod commands;
-mod mcp;
+mod model;
 
 use client::{ApiClient, CliConfig};
-use commands::{Command, run_command};
+use commands::run_command;
 
 #[derive(Parser, Debug)]
 #[command(name = "pandapass", version, about = "PandaPass - Team secrets management", long_about = None)]
@@ -82,6 +82,28 @@ enum Commands {
     Inject(commands::InjectArgs),
 }
 
+impl From<Commands> for commands::Command {
+    fn from(c: Commands) -> Self {
+        use commands::Command as C;
+        match c {
+            Commands::Login(a) => C::Login(a),
+            Commands::Register(a) => C::Register(a),
+            Commands::Logout => C::Logout,
+            Commands::Me => C::Me,
+            Commands::Project(x) => C::Project(x),
+            Commands::Env(x) => C::Env(x),
+            Commands::Secret(x) => C::Secret(x),
+            Commands::Member(x) => C::Member(x),
+            Commands::Token(x) => C::Token(x),
+            Commands::Audit(x) => C::Audit(x),
+            Commands::Config(x) => C::Config(x),
+            Commands::Mcp(x) => C::Mcp(x),
+            Commands::Run(x) => C::Run(x),
+            Commands::Inject(x) => C::Inject(x),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
@@ -114,16 +136,22 @@ async fn main() -> Result<()> {
         config.age_identity_file = Some(age_id);
     }
 
-    // Load age identity if configured
+    // Load age identity if configured. Its parse error is a plain &str, so it
+    // needs an explicit mapping into anyhow.
     let age_identity = if let Some(path) = &config.age_identity_file {
         let content = tokio::fs::read_to_string(path).await?;
-        Some(content.trim().parse::<age::x25519::Identity>()?)
+        Some(
+            content
+                .trim()
+                .parse::<age::x25519::Identity>()
+                .map_err(|e| anyhow::anyhow!("invalid age identity in {}: {}", path.display(), e))?,
+        )
     } else {
         None
     };
 
     // Create API client
-    let api = ApiClient::new(config.server_url.clone())?;
+    let api = ApiClient::new(config.server_url.clone(), cli.insecure)?;
     if let Some(token) = &config.auth_token {
         api.set_auth_token(Some(token.clone())).await;
     }
@@ -132,7 +160,7 @@ async fn main() -> Result<()> {
     }
 
     // Run command
-    let result = run_command(&api, &mut config, cli.command).await;
+    let result = run_command(&api, &mut config, cli.command.into()).await;
 
     // Save config if auth token changed
     if let Some(dir) = config_path.parent() {

@@ -1,19 +1,18 @@
 use axum::{
-    routing::{get, post, put, delete, patch},
+    routing::{get, post, delete, patch},
     Router,
 };
 use tower::ServiceBuilder;
 use tower_http::{
-    cors::{CorsLayer, Any},
+    cors::CorsLayer,
     trace::TraceLayer,
 };
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{AppState, StartupInfo};
 use crate::middleware::auth::{ApiError, require_csrf};
 use crate::routes::{auth, projects, secrets, tokens};
-use pandapass_core::audit::{AuditAction, AuditContext};
+use pandapass_core::{AuditAction, AuditContext, CommandResult};
 
 pub mod state;
 
@@ -60,6 +59,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/projects/:slug/envs/:env_slug/secrets", get(secrets::list_secrets).post(secrets::set_secret))
         .route("/api/v1/projects/:slug/envs/:env_slug/secrets/batch", post(secrets::batch_set_secrets))
         .route("/api/v1/projects/:slug/envs/:env_slug/secrets/:key", get(secrets::get_secret).delete(secrets::delete_secret))
+        .route("/api/v1/projects/:slug/envs/:env_slug/secrets/:key/ciphertext", get(secrets::get_secret_encrypted))
         .route("/api/v1/projects/:slug/envs/:env_slug/secrets/:key/versions", get(secrets::list_secret_versions))
         .route("/api/v1/tokens", get(tokens::list_tokens).post(tokens::create_token))
         .route("/api/v1/tokens/:id", delete(tokens::revoke_token))
@@ -96,17 +96,12 @@ async fn auth_middleware(
     mut req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Result<axum::http::Response<axum::body::Body>, ApiError> {
-    // Check CSRF for mutating cookie requests
-    if req.method() != http::Method::GET
-        && req.method() != http::Method::HEAD
-        && req.method() != http::Method::OPTIONS
-    {
-        let _ = require_csrf(&state, req.headers(), req.method()).await;
-    }
+    // Bearer-token requests skip CSRF entirely; cookie sessions must prove they
+    // meant it for mutating verbs.
+    require_csrf(req.headers(), req.method()).await?;
 
-    // Extract auth
-    let auth = Auth::from_request_parts(&mut req.headers_mut(), &state).await?;
-    req.extensions_mut().insert(auth);
+    let ctx = Auth::from_headers(req.headers(), &state).await?;
+    req.extensions_mut().insert(Auth(ctx));
 
     Ok(next.run(req).await)
 }
@@ -158,17 +153,21 @@ async fn mcp_auth_middleware(
         _ => None,
     };
 
+    let svc_id = svc.id;
+    let svc_project_id = svc.project_id;
+    let svc_env_id = svc.env_id;
+
     let auth = Auth(pandapass_core::models::AuthContext {
         user: user.into(),
         session: None,
         service_token: Some(svc),
         project_role: role,
-        project_id: svc.project_id,
-        env_id: svc.env_id,
+        project_id: svc_project_id,
+        env_id: svc_env_id,
     });
 
     req.extensions_mut().insert(auth);
-    let _ = pandapass_db::touch_token(&state.db, auth.0.service_token.as_ref().unwrap().id).await;
+    let _ = pandapass_db::touch_token(&state.db, svc_id).await;
 
     Ok(next.run(req).await)
 }
@@ -183,7 +182,7 @@ async fn mcp_get_secret(
     State(state): State<AppState>,
     Json(req): Json<McpGetSecretRequest>,
 ) -> Result<Json<McpGetSecretResponse>, ApiError> {
-    let svc = auth.0.service_token.as_ref().unwrap();
+    let svc = auth.service_token.as_ref().unwrap();
 
     // Verify scopes
     if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::ReadSecret)) {
@@ -201,11 +200,11 @@ async fn mcp_get_secret(
     // This endpoint is a placeholder; real decryption happens in CLI/MCP client
     // Return encrypted value + metadata
 
-    let audit = AuditContext::new(&auth.0, AuditAction::McpGetSecret)
-        .with_project(project_id)
-        .with_env(env_id)
-        .with_secret_key(req.key.clone());
-    state.audit.log_success(&audit).await.ok();
+    let mut audit = AuditContext::new(&auth, AuditAction::McpGetSecret);
+    audit = audit.with_project(project_id);
+    audit = audit.with_env(env_id);
+    audit = audit.with_secret_key(req.key.clone());
+    state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(McpGetSecretResponse {
         key: req.key,
@@ -220,7 +219,7 @@ async fn mcp_list_secrets(
     State(state): State<AppState>,
     Json(req): Json<McpListSecretsRequest>,
 ) -> Result<Json<McpListSecretsResponse>, ApiError> {
-    let svc = auth.0.service_token.as_ref().unwrap();
+    let svc = auth.service_token.as_ref().unwrap();
 
     if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::ListSecret)) {
         return Err(ApiError::Forbidden("Token lacks list:secret scope".into()));
@@ -233,10 +232,10 @@ async fn mcp_list_secrets(
 
     let metas = db::list_secret_metas(&state.db, project_id, env_id).await?;
 
-    let audit = AuditContext::new(&auth.0, AuditAction::McpListSecrets)
-        .with_project(project_id)
-        .with_env(env_id);
-    state.audit.log_success(&audit).await.ok();
+    let mut audit = AuditContext::new(&auth, AuditAction::McpListSecrets);
+    audit = audit.with_project(project_id);
+    audit = audit.with_env(env_id);
+    state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(McpListSecretsResponse { secrets: metas }))
 }
@@ -246,7 +245,7 @@ async fn mcp_exec(
     State(state): State<AppState>,
     Json(req): Json<McpExecRequest>,
 ) -> Result<Json<CommandResult>, ApiError> {
-    let svc = auth.0.service_token.as_ref().unwrap();
+    let svc = auth.service_token.as_ref().unwrap();
 
     if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::WriteSecret)) {
         return Err(ApiError::Forbidden("Token lacks write:secret scope".into()));
@@ -261,13 +260,13 @@ async fn mcp_exec(
     // For now, return error - full implementation needs client-side decryption
     // This is a placeholder for the MCP run_with_secret tool
 
-    let audit = AuditContext::new(&auth.0, AuditAction::McpRunCommand)
-        .with_project(project_id)
-        .with_env(env_id)
-        .with_meta(serde_json::json!({
-            "keys": req.keys,
-            "argv0": req.command.first().unwrap_or(&"".to_string()),
-        }));
+    let mut audit = AuditContext::new(&auth, AuditAction::McpRunCommand);
+    audit = audit.with_project(project_id);
+    audit = audit.with_env(env_id);
+    audit = audit.with_meta(serde_json::json!({
+        "keys": req.keys,
+        "argv0": req.command.first().unwrap_or(&"".to_string()),
+    }));
     state.audit.log(&audit).await.ok();
 
     Err(ApiError::Internal("MCP exec not fully implemented yet - requires client-side decryption".into()))

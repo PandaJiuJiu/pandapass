@@ -11,3 +11,4 @@ pub use crypto::{AgePublicKey, EncryptedSecret, Envelope, MasterKey, hash_passwo
 pub use error::{CoreError, Result};
 pub use models::*;
 pub use rbac::{Rbac, RbacError, ResourceAccess, AuditContext};
+pub use models::Permission;

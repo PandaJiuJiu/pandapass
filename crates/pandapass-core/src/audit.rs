@@ -1,5 +1,6 @@
-use crate::models::{AuditAction, AuditLog, AuditOutcome, AuthContext};
-use crate::rbac::AuditContext;
+use crate::models::{AuditLog, AuthContext};
+pub use crate::models::{AuditAction, AuditOutcome};
+pub use crate::rbac::AuditContext;
 use crate::error::Result;
 use crate::crypto::generate_token;
 use chrono::Utc;
@@ -75,21 +76,21 @@ impl AuditService {
 
     /// Convenience method for success
     pub async fn log_success(&self, ctx: &mut AuditContext<'_>) -> Result<()> {
-        ctx.with_outcome(AuditOutcome::Success);
+        ctx.outcome = AuditOutcome::Success;
         self.log(ctx).await
     }
 
     /// Convenience method for failure
     pub async fn log_failure(&self, ctx: &mut AuditContext<'_>, err: &str) -> Result<()> {
-        ctx.with_outcome(AuditOutcome::Failure)
-            .with_meta(json!({ "error": err }));
+        ctx.outcome = AuditOutcome::Failure;
+        ctx.meta = Some(json!({ "error": err }));
         self.log(ctx).await
     }
 
     /// Convenience method for denied
     pub async fn log_denied(&self, ctx: &mut AuditContext<'_>, reason: &str) -> Result<()> {
-        ctx.with_outcome(AuditOutcome::Denied)
-            .with_meta(json!({ "reason": reason }));
+        ctx.outcome = AuditOutcome::Denied;
+        ctx.meta = Some(json!({ "reason": reason }));
         self.log(ctx).await
     }
 
@@ -103,8 +104,8 @@ impl AuditService {
         ip: Option<String>,
         user_agent: Option<String>,
     ) -> Result<()> {
-        let mut ctx = AuditContext::new(auth, AuditAction::SecretRead);
-        ctx.with_project(project_id)
+        let ctx = AuditContext::new(auth, AuditAction::SecretRead)
+            .with_project(project_id)
             .with_env(env_id)
             .with_secret_key(secret_key.to_string())
             .with_ip(ip.unwrap_or_default())
@@ -121,8 +122,8 @@ impl AuditService {
         ip: Option<String>,
         user_agent: Option<String>,
     ) -> Result<()> {
-        let mut ctx = AuditContext::new(auth, AuditAction::SecretList);
-        ctx.with_project(project_id)
+        let ctx = AuditContext::new(auth, AuditAction::SecretList)
+            .with_project(project_id)
             .with_env(env_id)
             .with_ip(ip.unwrap_or_default())
             .with_user_agent(user_agent.unwrap_or_default());
@@ -138,8 +139,8 @@ impl AuditService {
         secret_key: &str,
         ip: Option<String>,
     ) -> Result<()> {
-        let mut ctx = AuditContext::new(auth, AuditAction::McpGetSecret);
-        ctx.with_project(project_id)
+        let ctx = AuditContext::new(auth, AuditAction::McpGetSecret)
+            .with_project(project_id)
             .with_env(env_id)
             .with_secret_key(secret_key.to_string())
             .with_ip(ip.unwrap_or_default());
@@ -157,8 +158,8 @@ impl AuditService {
         exit_code: i32,
         ip: Option<String>,
     ) -> Result<()> {
-        let mut ctx = AuditContext::new(auth, AuditAction::McpRunCommand);
-        ctx.with_project(project_id)
+        let ctx = AuditContext::new(auth, AuditAction::McpRunCommand)
+            .with_project(project_id)
             .with_env(env_id)
             .with_meta(json!({
                 "keys": keys,

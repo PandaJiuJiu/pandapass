@@ -1,10 +1,10 @@
-use pandapass_core::audit::MemoryAuditLogger;
-use pandapass_db::{connect, migrate};
-use pandapass_server::{build_router, bootstrap, AppState, Config};
+use pandapass_db::{connect, migrate, DbAuditLogger};
+use pandapass_server::state::{AppState, Config};
+use pandapass_server::{build_router, bootstrap};
 use std::sync::Arc;
 use tokio::signal;
-use tracing::{error, info};
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing::{info, warn};
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -17,23 +17,29 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env();
     info!("Starting PandaPass server on {}", config.listen_addr);
 
+    if config.server_age_identity.is_none() {
+        warn!(
+            "PANDAPASS_SERVER_AGE_IDENTITY is not set: TOTP setup and server-side \
+             decryption of secret values will be unavailable until it is configured."
+        );
+    }
+
     // Connect to database
     let db = connect(&config.db_url).await?;
     migrate(&db).await?;
 
-    // Setup audit logger
-    let audit_logger = Arc::new(MemoryAuditLogger::new());
-    let audit = pandapass_core::AuditService::new(audit_logger);
+    // Audit entries go to SQLite, not memory — a restart must not lose the trail.
+    let audit = pandapass_core::AuditService::new(Arc::new(DbAuditLogger::new(db.clone())));
 
     // Create app state
     let state = AppState::new(db, audit, config.clone());
 
     // Bootstrap admin user
-    let info = bootstrap(&state).await;
-    if info.admin_bootstrapped {
+    let startup = bootstrap(&state).await;
+    if startup.admin_bootstrapped {
         info!("Admin user bootstrapped");
     }
-    info!("Total users: {}", info.user_count);
+    info!("Total users: {}", startup.user_count);
 
     // Build router
     let app = build_router(state);

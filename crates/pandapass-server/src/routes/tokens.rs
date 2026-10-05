@@ -1,11 +1,9 @@
 use axum::{extract::{Path, Query, State}, Json};
-use pandapass_core::audit::{AuditAction, AuditContext, AuditOutcome};
+use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::crypto::{generate_token, hash_token};
 use pandapass_core::models::*;
-use pandapass_core::rbac::{Permission, Rbac};
 use pandapass_db as db;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 use crate::state::AppState;
 use crate::middleware::auth::{Auth, ApiError};
@@ -29,7 +27,7 @@ pub async fn list_tokens(
     Auth(auth): Auth,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ServiceToken>>, ApiError> {
-    let tokens = db::list_tokens(&state.db, auth.0.user.id).await?;
+    let tokens = db::list_tokens(&state.db, auth.user.id).await?;
     Ok(Json(tokens))
 }
 
@@ -48,8 +46,8 @@ pub async fn create_token(
 
     // If project_id provided, verify user has access
     if let Some(project_id) = req.project_id {
-        if auth.0.user.global_role != GlobalRole::Admin {
-            let role = db::get_member_role(&state.db, project_id, auth.0.user.id).await?;
+        if auth.user.global_role != GlobalRole::Admin {
+            let role = db::get_member_role(&state.db, project_id, auth.user.id).await?;
             if role.is_none() {
                 return Err(ApiError::NotFound("Project not found".into()));
             }
@@ -76,16 +74,16 @@ pub async fn create_token(
         scopes,
         expires_at: req.expires_at,
         last_used_at: None,
-        created_by: auth.0.user.id,
+        created_by: auth.user.id,
         created_at: chrono::Utc::now(),
         revoked_at: None,
     };
 
     db::create_service_token(&state.db, &token).await?;
 
-    let audit = AuditContext::new(&auth.0, AuditAction::TokenCreate)
-        .with_meta(serde_json::json!({ "token_id": token.id, "name": token.name, "scopes": req.scopes }));
-    state.audit.log_success(&audit).await.ok();
+    let mut audit = AuditContext::new(&auth, AuditAction::TokenCreate);
+    audit = audit.with_meta(serde_json::json!({ "token_id": token.id, "name": token.name, "scopes": req.scopes }));
+    state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(CreateTokenResponse {
         token,
@@ -99,16 +97,16 @@ pub async fn revoke_token(
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Verify ownership
-    let tokens = db::list_tokens(&state.db, auth.0.user.id).await?;
+    let tokens = db::list_tokens(&state.db, auth.user.id).await?;
     if !tokens.iter().any(|t| t.id == id) {
         return Err(ApiError::NotFound("Token not found".into()));
     }
 
     db::revoke_token(&state.db, id).await?;
 
-    let audit = AuditContext::new(&auth.0, AuditAction::TokenRevoke)
-        .with_meta(serde_json::json!({ "token_id": id }));
-    state.audit.log_success(&audit).await.ok();
+    let mut audit = AuditContext::new(&auth, AuditAction::TokenRevoke);
+    audit = audit.with_meta(serde_json::json!({ "token_id": id }));
+    state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -136,9 +134,9 @@ pub async fn list_audit(
     Query(query): Query<AuditQuery>,
 ) -> Result<Json<AuditResponse>, ApiError> {
     // Only admin or project owner/editor can view audit
-    if auth.0.user.global_role != GlobalRole::Admin {
+    if auth.user.global_role != GlobalRole::Admin {
         if let Some(project_id) = query.project_id {
-            let role = db::get_member_role(&state.db, project_id, auth.0.user.id).await?;
+            let role = db::get_member_role(&state.db, project_id, auth.user.id).await?;
             if !matches!(role, Some(ProjectRole::Owner) | Some(ProjectRole::Editor)) {
                 return Err(ApiError::Forbidden("Insufficient permissions to view audit".into()));
             }

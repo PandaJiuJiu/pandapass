@@ -9,7 +9,6 @@ use std::fmt;
 use zeroize::ZeroizeOnDrop;
 use totp_rs::{Algorithm, Secret, Builder as TotpBuilder};
 use base64::{Engine, engine::general_purpose};
-use x25519_dalek::PublicKey;
 
 /// Master Key - 32 bytes, encrypted with age per user
 #[derive(ZeroizeOnDrop)]
@@ -29,14 +28,6 @@ impl MasterKey {
     pub fn as_bytes(&self) -> &[u8] {
         self.0.expose_secret()
     }
-
-    pub fn into_secret_box(self) -> SecretBox<Vec<u8>> {
-        // Note: This requires MasterKey to not implement Drop, but we need ZeroizeOnDrop.
-        // For now, we'll just return the inner box by leaking it (unsafe but works for testing).
-        // A better approach would be to use a different zeroization strategy.
-        // For now, let's not have this method and just use as_bytes().
-        unreachable!("Use as_bytes() instead")
-    }
 }
 
 impl fmt::Debug for MasterKey {
@@ -50,21 +41,65 @@ impl fmt::Debug for MasterKey {
 pub struct AgePublicKey(pub String);
 
 impl AgePublicKey {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let arr: [u8; 32] = bytes.try_into()
-            .map_err(|_| CoreError::InvalidInput("Invalid key length".into()))?;
-        let key = PublicKey::from(arr);
-        // x25519-dalek PublicKey doesn't have Display, so use bs58-like encoding
-        // age recipients are bech32m encoded; we'll use the standard age format
-        // For now, just use the hex representation with age1 prefix as placeholder
-        let recipient_str = format!("age1{}", hex::encode(key.as_bytes()));
-        Ok(Self(recipient_str))
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 
     pub fn to_recipient(&self) -> Result<Box<dyn age::Recipient>> {
         let recipient: age::x25519::Recipient = self.0.parse()
             .map_err(|e| CoreError::InvalidInput(format!("Invalid age recipient: {}", e)))?;
         Ok(Box::new(recipient))
+    }
+}
+
+/// An age X25519 identity: the private key that can open an [`Envelope`].
+///
+/// The inner string is a `SecretBox<str>` because `age` treats bech32 private
+/// keys as secret — it zeroizes them on drop and won't hand back a plain
+/// `Display`. Call [`AgeIdentity::expose`] deliberately, at the point of use.
+pub struct AgeIdentity(SecretBox<str>);
+
+impl AgeIdentity {
+    /// Generate a fresh identity.
+    pub fn generate() -> Self {
+        Self(x25519::Identity::generate().to_string())
+    }
+
+    /// Parse the bech32 `AGE-SECRET-KEY-1...` form, tolerating surrounding whitespace.
+    pub fn parse(s: &str) -> Result<Self> {
+        s.trim()
+            .parse::<x25519::Identity>()
+            .map(|id| Self(id.to_string()))
+            .map_err(|e| CoreError::InvalidInput(format!("Invalid age identity: {}", e)))
+    }
+
+    /// The corresponding public key, for wrapping envelopes.
+    pub fn public_key(&self) -> Result<AgePublicKey> {
+        let id: x25519::Identity = self.as_str().parse()
+            .map_err(|e| CoreError::InvalidInput(format!("Invalid age identity: {}", e)))?;
+        Ok(AgePublicKey(id.to_public().to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.expose_secret()
+    }
+
+    /// Borrow the secret string. Named to make the exposure greppable.
+    pub fn expose(&self) -> &str {
+        self.0.expose_secret()
+    }
+}
+
+impl Clone for AgeIdentity {
+    fn clone(&self) -> Self {
+        Self::parse(self.as_str()).expect("stored age identity must stay parseable")
+    }
+}
+
+impl fmt::Debug for AgeIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never print the private half.
+        f.debug_struct("AgeIdentity").field("public_key", &self.public_key().ok()).finish()
     }
 }
 
@@ -233,4 +268,108 @@ pub fn generate_token(bytes: usize) -> String {
 /// Hash a token for storage (argon2)
 pub fn hash_token(token: &str) -> Result<String> {
     hash_password(token)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::ExposeSecret;
+
+    #[test]
+    fn secret_round_trips_through_master_key() {
+        let mk = MasterKey::generate();
+        let enc = EncryptedSecret::encrypt("s3cr3t-value", &mk).unwrap();
+        let dec = enc.decrypt(&mk).unwrap();
+        assert_eq!(dec.expose_secret(), "s3cr3t-value");
+    }
+
+    #[test]
+    fn secret_fails_to_decrypt_with_wrong_key() {
+        let mk = MasterKey::generate();
+        let other = MasterKey::generate();
+        let enc = EncryptedSecret::encrypt("s3cr3t-value", &mk).unwrap();
+        // AEAD authentication must reject this, not return garbage.
+        assert!(enc.decrypt(&other).is_err());
+    }
+
+    #[test]
+    fn envelope_round_trips_through_age_identity() {
+        let identity = AgeIdentity::generate();
+        let public = identity.public_key().unwrap();
+        let mk = MasterKey::generate();
+        let uid = uuid::Uuid::now_v7();
+
+        let env = Envelope::create(uid, &mk, &public).unwrap();
+        let recovered = env.decrypt(identity.as_str()).unwrap();
+
+        assert_eq!(recovered.as_bytes(), mk.as_bytes());
+    }
+
+    #[test]
+    fn envelope_rejects_a_foreign_identity() {
+        let owner = AgeIdentity::generate();
+        let stranger = AgeIdentity::generate();
+        let mk = MasterKey::generate();
+
+        let env = Envelope::create(uuid::Uuid::now_v7(), &mk, &owner.public_key().unwrap()).unwrap();
+        assert!(env.decrypt(stranger.as_str()).is_err());
+    }
+
+    #[test]
+    fn identity_survives_string_round_trip() {
+        let identity = AgeIdentity::generate();
+        // Users store this in ~/.pandapass/age.key; it must reload verbatim.
+        let parsed = AgeIdentity::parse(&identity.as_str()).unwrap();
+        assert_eq!(parsed.as_str(), identity.as_str());
+        assert_eq!(
+            parsed.public_key().unwrap().as_str(),
+            identity.public_key().unwrap().as_str()
+        );
+    }
+
+    #[test]
+    fn identity_parse_tolerates_trailing_newline() {
+        let identity = AgeIdentity::generate();
+        let with_newline = format!("{}\n", identity.as_str());
+        assert!(AgeIdentity::parse(&with_newline).is_ok());
+    }
+
+    #[test]
+    fn password_hash_round_trips() {
+        let hash = hash_password("correct horse battery staple").unwrap();
+        assert!(verify_password("correct horse battery staple", &hash).unwrap());
+        assert!(!verify_password("wrong password", &hash).unwrap());
+    }
+
+    #[test]
+    fn token_hashing_is_deterministic_and_salted() {
+        let a = hash_token("tok").unwrap();
+        let b = hash_token("tok").unwrap();
+        // argon2 hashes are salted, so they differ — which is why the server
+        // can only look tokens up by recomputing the hash per candidate.
+        assert_ne!(a, b);
+        assert!(verify_password("tok", &a).unwrap());
+    }
+
+    #[test]
+    fn generated_tokens_are_distinct_and_url_safe() {
+        let a = generate_token(32);
+        let b = generate_token(32);
+        assert_ne!(a, b);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn totp_verifies_a_freshly_generated_code() {
+        let secret = generate_totp_secret();
+        let totp = TotpBuilder::new()
+            .with_algorithm(Algorithm::SHA1)
+            .with_digits(6)
+            .with_step_duration(30)
+            .with_secret(Secret::try_from_base32(&secret).unwrap())
+            .build()
+            .unwrap();
+        let code = totp.generate_current();
+        assert!(verify_totp(&secret, &code.to_string()));
+        assert!(!verify_totp(&secret, "000000"));
+    }
 }

@@ -1,2 +1,0 @@
-fn(axum::extract::State<{type error}>, CookieJar, Json<RegisterRequest>) -> impl std::future::Future<Output = Result<(CookieJar, Json<routes::auth::LoginResponse>), ApiError>> {routes::auth::register}
-fn(axum::extract::State<{type error}>, CookieJar, Json<RegisterRequest>) -> impl std::future::Future<Output = Result<(CookieJar, Json<routes::auth::LoginResponse>), ApiError>> {routes::auth::register}: Handler<_, _>

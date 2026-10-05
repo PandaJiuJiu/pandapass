@@ -1,4 +1,5 @@
-use crate::models::{AuthContext, Permission, ProjectRole, GlobalRole};
+use crate::models::{AuthContext, ProjectRole, GlobalRole};
+pub use crate::models::Permission;
 
 /// RBAC service for permission checks
 pub struct Rbac;
@@ -129,37 +130,37 @@ impl<'a> AuditContext<'a> {
         }
     }
 
-    pub fn with_project(&mut self, project_id: uuid::Uuid) -> &mut Self {
+    pub fn with_project(mut self, project_id: uuid::Uuid) -> Self {
         self.project_id = Some(project_id);
         self
     }
 
-    pub fn with_env(&mut self, env_id: uuid::Uuid) -> &mut Self {
+    pub fn with_env(mut self, env_id: uuid::Uuid) -> Self {
         self.env_id = Some(env_id);
         self
     }
 
-    pub fn with_secret_key(&mut self, key: String) -> &mut Self {
+    pub fn with_secret_key(mut self, key: String) -> Self {
         self.secret_key = Some(key);
         self
     }
 
-    pub fn with_ip(&mut self, ip: String) -> &mut Self {
+    pub fn with_ip(mut self, ip: String) -> Self {
         self.ip = Some(ip);
         self
     }
 
-    pub fn with_user_agent(&mut self, ua: String) -> &mut Self {
+    pub fn with_user_agent(mut self, ua: String) -> Self {
         self.user_agent = Some(ua);
         self
     }
 
-    pub fn with_outcome(&mut self, outcome: crate::models::AuditOutcome) -> &mut Self {
+    pub fn with_outcome(mut self, outcome: crate::models::AuditOutcome) -> Self {
         self.outcome = outcome;
         self
     }
 
-    pub fn with_meta(&mut self, meta: serde_json::Value) -> &mut Self {
+    pub fn with_meta(mut self, meta: serde_json::Value) -> Self {
         self.meta = Some(meta);
         self
     }

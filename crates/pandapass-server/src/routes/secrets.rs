@@ -1,12 +1,12 @@
 use axum::{extract::{Path, Query, State}, Json};
-use pandapass_core::audit::{AuditAction, AuditContext, AuditOutcome};
-use pandapass_core::crypto::EncryptedSecret;
+use pandapass_core::audit::{AuditAction, AuditContext};
+use pandapass_core::crypto::{EncryptedSecret, MasterKey};
 use pandapass_core::models::*;
-use pandapass_core::rbac::{Permission, Rbac};
+use pandapass_core::rbac::Rbac;
 use pandapass_db as db;
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::state::AppState;
 use crate::middleware::auth::{Auth, ApiError};
@@ -36,6 +36,7 @@ pub struct SecretValueResponse {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Ciphertext only — the caller holds the master key and decrypts locally.
 #[derive(Serialize)]
 pub struct SecretEncryptedResponse {
     pub key: String,
@@ -44,7 +45,45 @@ pub struct SecretEncryptedResponse {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// List secret metadata (keys, versions) — no values.
+/// Resolve the caller into an auth context scoped to a project + environment.
+///
+/// `AuthContext.project_role` is always `None` on a freshly-extracted context, so
+/// every handler has to look the membership up itself before any RBAC check.
+async fn scope_auth(
+    state: &AppState,
+    auth: &AuthContext,
+    project: &Project,
+    env: &Environment,
+) -> AuthContext {
+    let mut ctx = auth.clone();
+    ctx.project_id = Some(project.id);
+    ctx.env_id = Some(env.id);
+    ctx.project_role = db::get_member_role(&state.db, project.id, auth.user.id)
+        .await
+        .unwrap_or(None);
+    ctx
+}
+
+/// Unwrap the caller's master key from their age envelope.
+///
+/// The server holds its own age identity, so it can open any user's envelope.
+/// This is the deliberate trade-off documented in `docs/SECURITY.md`: the
+/// database at rest yields only ciphertext, but a root-level compromise of the
+/// running server can still decrypt. The MCP `run_with_secret` path is what
+/// keeps secrets out of the agent's context.
+async fn get_master_key(state: &AppState, user_id: uuid::Uuid) -> Result<MasterKey, ApiError> {
+    let identity = state.config.server_age_identity.as_deref().ok_or_else(|| {
+        ApiError::Internal("Server age identity not configured (set PANDAPASS_SERVER_AGE_IDENTITY)".into())
+    })?;
+
+    let envelope = db::get_envelope(&state.db, user_id)
+        .await?
+        .ok_or_else(|| ApiError::Forbidden("No master-key envelope for this account".into()))?;
+
+    envelope.decrypt(identity).map_err(ApiError::from)
+}
+
+/// List secret metadata (keys and versions) — never values.
 pub async fn list_secrets(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -53,23 +92,19 @@ pub async fn list_secrets(
 ) -> Result<Json<PaginatedResponse<SecretMeta>>, ApiError> {
     let project = db::get_project_by_slug(&state.db, &slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
+    let ctx = scope_auth(&state, &auth, &project, &env).await;
 
-    let mut auth_with_context = auth.0.clone();
-    auth_with_context.project_id = Some(project.id);
-    auth_with_context.env_id = Some(env.id);
-    auth_with_context.project_role = db::get_member_role(&state.db, project.id, auth.0.user.id).await?;
-
-    Rbac::check_secret_access(&auth_with_context, project.id, env.id, true)?;
+    Rbac::check_secret_access(&ctx, project.id, env.id, true)?;
 
     let metas = db::list_secret_metas(&state.db, project.id, env.id).await?;
 
-    let audit = AuditContext::new(&auth_with_context, AuditAction::SecretList)
-        .with_project(project.id)
-        .with_env(env.id);
-    state.audit.log_success(&audit).await.ok();
+    let mut audit = AuditContext::new(&ctx, AuditAction::SecretList);
+    audit = audit.with_project(project.id);
+    audit = audit.with_env(env.id);
+    state.audit.log_success(&mut audit).await.ok();
 
-    let page = query.page.unwrap_or(1);
-    let per_page = query.per_page.unwrap_or(50).min(200);
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(50).clamp(1, 200);
     let total = metas.len() as i64;
     let start = ((page - 1) * per_page) as usize;
     let end = (start + per_page as usize).min(metas.len());
@@ -82,11 +117,7 @@ pub async fn list_secrets(
     )))
 }
 
-/// Get a secret's plaintext value.
-///
-/// Only works for cookie-authenticated users who provide their age private key
-/// via a header (used by CLI). Service tokens can't decrypt — they must use
-/// the MCP internal endpoint.
+/// Read a secret's plaintext value.
 pub async fn get_secret(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -94,53 +125,19 @@ pub async fn get_secret(
 ) -> Result<Json<SecretValueResponse>, ApiError> {
     let project = db::get_project_by_slug(&state.db, &slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
+    let ctx = scope_auth(&state, &auth, &project, &env).await;
 
-    let mut auth_with_context = auth.0.clone();
-    auth_with_context.project_id = Some(project.id);
-    auth_with_context.env_id = Some(env.id);
-    auth_with_context.project_role = db::get_member_role(&state.db, project.id, auth.0.user.id).await?;
-
-    Rbac::check_secret_access(&auth_with_context, project.id, env.id, true)?;
+    Rbac::check_secret_access(&ctx, project.id, env.id, true)?;
 
     let secret = db::get_secret(&state.db, project.id, env.id, &key).await?;
-
-    // Try to get the master key from the request header (CLI provides it)
-    let mk = if let Some(mk_b64) = state.config.master_key_header_name.as_deref() {
-        // This is a workaround — the CLI sends the age-decrypted MK in a header
-        // This is ONLY for cookie sessions; service tokens cannot do this.
-        if auth.0.session.is_some() {
-            // The header is set by the CLI when making the request
-            let headers = state
-                .http_client
-                .get(state.config.public_url.clone())
-                .header(mk_b64, "")
-                .build()?;
-            // Actually this doesn't work — we need to extract from the request
-            // For now, just error and tell the client to use the internal endpoint
-            return Err(ApiError::BadRequest(
-                "Server-side decryption not available. Use CLI or MCP internal endpoint."
-                    .into(),
-            ));
-        } else {
-            return Err(ApiError::Forbidden(
-                "Service tokens cannot decrypt secrets. Use /internal/secret.".into(),
-            ));
-        }
-    } else {
-        return Err(ApiError::BadRequest(
-            "Server-side decryption not available. Use CLI or MCP internal endpoint."
-                .into(),
-        ));
-    };
-
-    // Decrypt the secret value
+    let mk = get_master_key(&state, ctx.user.id).await?;
     let value = secret.value_enc.decrypt(&mk)?.expose_secret().to_string();
 
-    let audit = AuditContext::new(&auth_with_context, AuditAction::SecretRead)
-        .with_project(project.id)
-        .with_env(env.id)
-        .with_secret_key(key.clone());
-    state.audit.log_success(&audit).await.ok();
+    let mut audit = AuditContext::new(&ctx, AuditAction::SecretRead);
+    audit = audit.with_project(project.id);
+    audit = audit.with_env(env.id);
+    audit = audit.with_secret_key(key.clone());
+    state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(SecretValueResponse {
         key,
@@ -150,7 +147,10 @@ pub async fn get_secret(
     }))
 }
 
-/// Get a secret's encrypted value (for client-side decryption).
+/// Read a secret's ciphertext so the caller can decrypt it with its own MK.
+///
+/// This is the path CLI and MCP clients use: the value never crosses the wire
+/// in plaintext, so it never enters an agent's context.
 pub async fn get_secret_encrypted(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -158,21 +158,17 @@ pub async fn get_secret_encrypted(
 ) -> Result<Json<SecretEncryptedResponse>, ApiError> {
     let project = db::get_project_by_slug(&state.db, &slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
+    let ctx = scope_auth(&state, &auth, &project, &env).await;
 
-    let mut auth_with_context = auth.0.clone();
-    auth_with_context.project_id = Some(project.id);
-    auth_with_context.env_id = Some(env.id);
-    auth_with_context.project_role = db::get_member_role(&state.db, project.id, auth.0.user.id).await?;
-
-    Rbac::check_secret_access(&auth_with_context, project.id, env.id, true)?;
+    Rbac::check_secret_access(&ctx, project.id, env.id, true)?;
 
     let secret = db::get_secret(&state.db, project.id, env.id, &key).await?;
 
-    let audit = AuditContext::new(&auth_with_context, AuditAction::SecretRead)
-        .with_project(project.id)
-        .with_env(env.id)
-        .with_secret_key(key.clone());
-    state.audit.log_success(&audit).await.ok();
+    let mut audit = AuditContext::new(&ctx, AuditAction::SecretRead);
+    audit = audit.with_project(project.id);
+    audit = audit.with_env(env.id);
+    audit = audit.with_secret_key(key.clone());
+    state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(SecretEncryptedResponse {
         key,
@@ -190,23 +186,17 @@ pub async fn set_secret(
 ) -> Result<Json<SecretValueResponse>, ApiError> {
     let project = db::get_project_by_slug(&state.db, &slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
+    let ctx = scope_auth(&state, &auth, &project, &env).await;
 
-    let mut auth_with_context = auth.0.clone();
-    auth_with_context.project_id = Some(project.id);
-    auth_with_context.env_id = Some(env.id);
-    auth_with_context.project_role = db::get_member_role(&state.db, project.id, auth.0.user.id).await?;
-
-    Rbac::check_secret_access(&auth_with_context, project.id, env.id, false)?;
+    Rbac::check_secret_access(&ctx, project.id, env.id, false)?;
 
     if req.key.is_empty() || req.key.len() > 256 {
         return Err(ApiError::BadRequest("Key must be 1-256 characters".into()));
     }
 
-    // Encrypt on the server — the client must have sent the plaintext.
-    // This is for web UI / API calls where the user types the value.
-    // The MK comes from the user's envelope.
-    let mk = get_master_key(&state, &auth_with_context).await?;
+    let existed = db::get_secret(&state.db, project.id, env.id, &req.key).await.is_ok();
 
+    let mk = get_master_key(&state, ctx.user.id).await?;
     let value_enc = EncryptedSecret::encrypt(&req.value, &mk)?;
 
     db::upsert_secret(
@@ -215,22 +205,18 @@ pub async fn set_secret(
         env.id,
         &req.key,
         &value_enc,
-        auth_with_context.user.id,
+        ctx.user.id,
     )
     .await?;
 
     let secret = db::get_secret(&state.db, project.id, env.id, &req.key).await?;
 
-    let action = if secret.meta.version == 1 {
-        AuditAction::SecretCreate
-    } else {
-        AuditAction::SecretUpdate
-    };
-    let audit = AuditContext::new(&auth_with_context, action)
+    let action = if existed { AuditAction::SecretUpdate } else { AuditAction::SecretCreate };
+    let mut audit = AuditContext::new(&ctx, action)
         .with_project(project.id)
         .with_env(env.id)
         .with_secret_key(req.key.clone());
-    state.audit.log_success(&audit).await.ok();
+    state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(SecretValueResponse {
         key: req.key,
@@ -248,15 +234,11 @@ pub async fn batch_set_secrets(
 ) -> Result<Json<Vec<SecretValueResponse>>, ApiError> {
     let project = db::get_project_by_slug(&state.db, &slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
+    let ctx = scope_auth(&state, &auth, &project, &env).await;
 
-    let mut auth_with_context = auth.0.clone();
-    auth_with_context.project_id = Some(project.id);
-    auth_with_context.env_id = Some(env.id);
-    auth_with_context.project_role = db::get_member_role(&state.db, project.id, auth.0.user.id).await?;
+    Rbac::check_secret_access(&ctx, project.id, env.id, false)?;
 
-    Rbac::check_secret_access(&auth_with_context, project.id, env.id, false)?;
-
-    let mk = get_master_key(&state, &auth_with_context).await?;
+    let mk = get_master_key(&state, ctx.user.id).await?;
     let mut results = Vec::new();
 
     for (key, value) in req.secrets {
@@ -264,15 +246,7 @@ pub async fn batch_set_secrets(
             continue;
         }
         let value_enc = EncryptedSecret::encrypt(&value, &mk)?;
-        db::upsert_secret(
-            &state.db,
-            project.id,
-            env.id,
-            &key,
-            &value_enc,
-            auth_with_context.user.id,
-        )
-        .await?;
+        db::upsert_secret(&state.db, project.id, env.id, &key, &value_enc, ctx.user.id).await?;
         let secret = db::get_secret(&state.db, project.id, env.id, &key).await?;
         results.push(SecretValueResponse {
             key,
@@ -282,11 +256,11 @@ pub async fn batch_set_secrets(
         });
     }
 
-    let audit = AuditContext::new(&auth_with_context, AuditAction::SecretCreate)
-        .with_project(project.id)
-        .with_env(env.id)
-        .with_meta(serde_json::json!({ "count": results.len() }));
-    state.audit.log_success(&audit).await.ok();
+    let mut audit = AuditContext::new(&ctx, AuditAction::SecretCreate);
+    audit = audit.with_project(project.id);
+    audit = audit.with_env(env.id);
+    audit = audit.with_meta(serde_json::json!({ "count": results.len() }));
+    state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(results))
 }
@@ -298,21 +272,17 @@ pub async fn delete_secret(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let project = db::get_project_by_slug(&state.db, &slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
+    let ctx = scope_auth(&state, &auth, &project, &env).await;
 
-    let mut auth_with_context = auth.0.clone();
-    auth_with_context.project_id = Some(project.id);
-    auth_with_context.env_id = Some(env.id);
-    auth_with_context.project_role = db::get_member_role(&state.db, project.id, auth.0.user.id).await?;
-
-    Rbac::check_secret_access(&auth_with_context, project.id, env.id, false)?;
+    Rbac::check_secret_access(&ctx, project.id, env.id, false)?;
 
     db::soft_delete_secret(&state.db, project.id, env.id, &key).await?;
 
-    let audit = AuditContext::new(&auth_with_context, AuditAction::SecretDelete)
-        .with_project(project.id)
-        .with_env(env.id)
-        .with_secret_key(key);
-    state.audit.log_success(&audit).await.ok();
+    let mut audit = AuditContext::new(&ctx, AuditAction::SecretDelete);
+    audit = audit.with_project(project.id);
+    audit = audit.with_env(env.id);
+    audit = audit.with_secret_key(key);
+    state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -324,48 +294,17 @@ pub async fn list_secret_versions(
 ) -> Result<Json<Vec<SecretVersion>>, ApiError> {
     let project = db::get_project_by_slug(&state.db, &slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
+    let ctx = scope_auth(&state, &auth, &project, &env).await;
 
-    let mut auth_with_context = auth.0.clone();
-    auth_with_context.project_id = Some(project.id);
-    auth_with_context.env_id = Some(env.id);
-    auth_with_context.project_role = db::get_member_role(&state.db, project.id, auth.0.user.id).await?;
-
-    Rbac::check_secret_access(&auth_with_context, project.id, env.id, true)?;
+    Rbac::check_secret_access(&ctx, project.id, env.id, true)?;
 
     let versions = db::list_secret_versions(&state.db, project.id, env.id, &key).await?;
 
-    let audit = AuditContext::new(&auth_with_context, AuditAction::SecretVersionList)
-        .with_project(project.id)
-        .with_env(env.id)
-        .with_secret_key(key);
-    state.audit.log_success(&audit).await.ok();
+    let mut audit = AuditContext::new(&ctx, AuditAction::SecretVersionList);
+    audit = audit.with_project(project.id);
+    audit = audit.with_env(env.id);
+    audit = audit.with_secret_key(key);
+    state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(versions))
-}
-
-/// Get the master key for a user by decrypting their envelope.
-///
-/// For cookie-authenticated sessions, we expect the client to have already
-/// decrypted the envelope and sent the MK in a secure header. Service tokens
-/// cannot decrypt secrets directly — they must use the MCP internal endpoints.
-async fn get_master_key(
-    state: &AppState,
-    auth: &AuthContext,
-) -> Result<MasterKey, ApiError> {
-    // If the user has a session, they should provide their age-decrypted MK
-    // via the `X-Pandapass-Master-Key` header.
-    // The server doesn't store age private keys.
-    if auth.session.is_some() {
-        // In a real implementation, the handler would extract this from headers.
-        // For the web UI flow, we'd have a JS-based decrypt in the browser.
-        // Here we just fail with a clear message.
-        return Err(ApiError::BadRequest(
-            "Master key required in X-Pandapass-Master-Key header (age-decrypted)."
-                .into(),
-        ));
-    }
-
-    Err(ApiError::Forbidden(
-        "Service tokens cannot decrypt secrets. Use /internal/secret.".into(),
-    ))
 }

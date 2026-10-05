@@ -1,1 +1,0 @@
-cargo:rustc-env=MIME_TYPES_GENERATED_PATH=/home/zac/git/pandapass/target/debug/build/mime_guess-4d29c1aafb4856ab/out/mime_types_generated.rs

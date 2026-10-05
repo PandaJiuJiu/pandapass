@@ -1,12 +1,10 @@
-use axum::extract::{FromRequestParts, State};
+use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::response::IntoResponse;
-use pandapass_core::audit::extract_client_ip;
 use pandapass_core::models::*;
 use pandapass_db as db;
-use pandapass_core::crypto::{generate_token, hash_token, verify_password};
+use pandapass_core::crypto::{generate_token, hash_token};
 use pandapass_core::CoreError;
-use std::sync::Arc;
 
 use crate::state::AppState;
 
@@ -17,56 +15,55 @@ pub const CSRF_COOKIE: &str = "pandapass_csrf";
 #[derive(Clone, Debug)]
 pub struct Auth(pub AuthContext);
 
-impl<S> FromRequestParts<S> for Auth
-where
-    S: Send + Sync,
-    AppState: FromRef<S>,
-{
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let app_state = AppState::from_ref(state);
-        let headers = &parts.headers;
-
+impl Auth {
+    /// Resolve the caller from request headers.
+    ///
+    /// Accepts a service token via `Authorization: Bearer`, or a session cookie.
+    /// The resulting context carries no project scope — handlers that need one
+    /// resolve it from the URL path.
+    pub async fn from_headers(
+        headers: &axum::http::HeaderMap,
+        state: &AppState,
+    ) -> Result<AuthContext, ApiError> {
         // 1. Try service token (Authorization: Bearer <token>)
         if let Some(authz) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
             if let Some(token) = authz.strip_prefix("Bearer ") {
                 let token = token.trim();
                 let hash = hash_token(token).map_err(ApiError::from)?;
-                if let Some(svc) = db::get_token_by_hash(&app_state.db, &hash)
+                let svc = db::get_token_by_hash(&state.db, &hash)
                     .await
                     .map_err(ApiError::from)?
-                {
-                    if let Some(exp) = svc.expires_at {
-                        if exp < chrono::Utc::now() {
-                            return Err(ApiError::Unauthorized("Token expired".into()));
-                        }
-                    }
-                    let user = db::get_user_by_id(&app_state.db, svc.created_by)
-                        .await
-                        .map_err(ApiError::from)?;
-                    if user.disabled_at.is_some() {
-                        return Err(ApiError::Unauthorized("User disabled".into()));
-                    }
-                    let _ = db::touch_token(&app_state.db, svc.id).await;
+                    .ok_or_else(|| ApiError::Unauthorized("Invalid token".into()))?;
 
-                    let role = match (svc.project_id, svc.env_id) {
-                        (Some(pid), _) => db::get_member_role(&app_state.db, pid, user.id)
-                            .await
-                            .unwrap_or(None),
-                        _ => None,
-                    };
-
-                    return Ok(Auth(AuthContext {
-                        user: user.into(),
-                        session: None,
-                        service_token: Some(svc),
-                        project_role: role,
-                        project_id: None,
-                        env_id: None,
-                    }));
+                if let Some(exp) = svc.expires_at {
+                    if exp < chrono::Utc::now() {
+                        return Err(ApiError::Unauthorized("Token expired".into()));
+                    }
                 }
-                return Err(ApiError::Unauthorized("Invalid token".into()));
+
+                let user = db::get_user_by_id(&state.db, svc.created_by)
+                    .await
+                    .map_err(ApiError::from)?;
+                if user.disabled_at.is_some() {
+                    return Err(ApiError::Unauthorized("User disabled".into()));
+                }
+                let _ = db::touch_token(&state.db, svc.id).await;
+
+                let role = match (svc.project_id, svc.env_id) {
+                    (Some(pid), _) => db::get_member_role(&state.db, pid, user.id)
+                        .await
+                        .unwrap_or(None),
+                    _ => None,
+                };
+
+                return Ok(AuthContext {
+                    user: user.into(),
+                    session: None,
+                    service_token: Some(svc),
+                    project_role: role,
+                    project_id: None,
+                    env_id: None,
+                });
             }
         }
 
@@ -80,40 +77,44 @@ where
                     .get("x-pandapass-session")
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string())
-            });
-
-        let session_token = match session_token {
-            Some(t) => t,
-            None => return Err(ApiError::Unauthorized("Not authenticated".into())),
-        };
+            })
+            .ok_or_else(|| ApiError::Unauthorized("Not authenticated".into()))?;
 
         let hash = hash_token(&session_token).map_err(ApiError::from)?;
-        let session = db::get_session_by_hash(&app_state.db, &hash)
+        let session = db::get_session_by_hash(&state.db, &hash)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::Unauthorized("Invalid or expired session".into()))?;
 
-        let user = db::get_user_by_id(&app_state.db, session.user_id)
+        let user = db::get_user_by_id(&state.db, session.user_id)
             .await
             .map_err(ApiError::from)?;
         if user.disabled_at.is_some() {
             return Err(ApiError::Unauthorized("User disabled".into()));
         }
 
-        let ip = extract_client_ip(headers, None);
-        let ua = headers
-            .get("user-agent")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-
-        Ok(Auth(AuthContext {
+        Ok(AuthContext {
             user: user.into(),
             session: Some(session),
             service_token: None,
             project_role: None,
             project_id: None,
             env_id: None,
-        }))
+        })
+    }
+}
+
+impl<S> FromRequestParts<S> for Auth
+where
+    S: Send + Sync,
+    AppState: FromRef<S>,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app_state = AppState::from_ref(state);
+        let ctx = Auth::from_headers(&parts.headers, &app_state).await?;
+        Ok(Auth(ctx))
     }
 }
 
@@ -129,22 +130,16 @@ impl FromRef<AppState> for AppState {
 }
 
 /// CSRF validation for cookie-authenticated mutating requests
-pub async fn require_csrf<S>(
-    state: &S,
-    parts: &Parts,
+pub async fn require_csrf(
+    headers: &axum::http::HeaderMap,
     method: &http::Method,
-) -> Result<(), ApiError>
-where
-    AppState: FromRef<S>,
-{
+) -> Result<(), ApiError> {
     if method == http::Method::GET || method == http::Method::HEAD || method == http::Method::OPTIONS {
         return Ok(());
     }
-    let _app_state = AppState::from_ref(state);
 
     // Bearer-token requests are immune to CSRF
-    if parts
-        .headers
+    if headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.starts_with("Bearer "))
@@ -153,10 +148,9 @@ where
         return Ok(());
     }
 
-    let cookies = axum_extra::extract::cookie::CookieJar::from_headers(&parts.headers);
+    let cookies = axum_extra::extract::cookie::CookieJar::from_headers(headers);
     let cookie_token = cookies.get(CSRF_COOKIE).map(|c| c.value().to_string());
-    let header_token = parts
-        .headers
+    let header_token = headers
         .get("x-csrf-token")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
@@ -219,6 +213,19 @@ impl From<CoreError> for ApiError {
             CoreError::Conflict(m) => ApiError::Conflict(m),
             CoreError::RateLimited => ApiError::TooManyRequests("Rate limited".into()),
             other => ApiError::Internal(other.to_string()),
+        }
+    }
+}
+
+impl From<pandapass_core::rbac::RbacError> for ApiError {
+    fn from(e: pandapass_core::rbac::RbacError) -> Self {
+        match e {
+            pandapass_core::rbac::RbacError::NotMember | pandapass_core::rbac::RbacError::InsufficientRole => {
+                ApiError::Forbidden(e.to_string())
+            }
+            pandapass_core::rbac::RbacError::ProjectNotFound | pandapass_core::rbac::RbacError::EnvironmentNotFound => {
+                ApiError::NotFound(e.to_string())
+            }
         }
     }
 }

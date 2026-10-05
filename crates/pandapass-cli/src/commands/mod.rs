@@ -1,43 +1,152 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::client::ApiClient;
 
+#[derive(Args, Debug)]
 pub struct LoginArgs;
+
+#[derive(Args, Debug)]
 pub struct RegisterArgs;
-pub struct ProjectCmd;
-pub struct EnvCmd;
-pub struct SecretCmd;
-pub struct MemberCmd;
-pub struct TokenCmd;
-pub struct AuditCmd;
-pub struct ConfigCmd;
-pub struct McpArgs;
-pub struct RunArgs;
-pub struct InjectArgs;
+
+#[derive(Subcommand, Debug)]
+pub enum ProjectCmd {
+    List,
+    Create { name: String, slug: String, description: Option<String> },
+    Get { slug: String },
+    Update { slug: String, name: Option<String>, description: Option<String> },
+    Delete { slug: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EnvCmd {
+    List { project: String },
+    Create { project: String, name: String, slug: String, description: Option<String> },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SecretCmd {
+    List { project: String, env: String },
+    Get { project: String, env: String, key: String },
+    Set { project: String, env: String, key: String, value: String },
+    Delete { project: String, env: String, key: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemberCmd {
+    List { project: String },
+    Add { project: String, email: String, role: String },
+    Update { project: String, user_id: Uuid, role: String },
+    Remove { project: String, user_id: Uuid },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TokenCmd {
+    List,
+    Create { name: String, project: Option<String>, env: Option<String>, scopes: Vec<String>, expires_days: Option<u64> },
+    Revoke { id: Uuid },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AuditCmd {
+    List { project: Option<String>, page: Option<i64>, per_page: Option<i64> },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigCmd {
+    Show,
+    SetServer { url: String },
+    SetAgeIdentity { path: PathBuf },
+    SetDefaultProject { project: Option<String> },
+    SetDefaultEnv { env: Option<String> },
+}
+
+#[derive(Args, Debug)]
+pub struct McpArgs {
+    /// Run as MCP server (stdio)
+    #[arg(long)]
+    pub stdio: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct RunArgs {
+    /// Project slug
+    #[arg(long)]
+    project: String,
+    /// Environment slug
+    #[arg(long)]
+    env: String,
+    /// Only inject specific keys (comma-separated)
+    #[arg(long)]
+    only: Option<String>,
+    /// Command to run
+    #[arg(trailing_var_arg = true)]
+    command: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct InjectArgs {
+    /// Input template file
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Output file
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Project slug
+    #[arg(long)]
+    project: String,
+    /// Environment slug
+    #[arg(long)]
+    env: String,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    Login(LoginArgs),
+    Register(RegisterArgs),
+    Logout,
+    Me,
+    #[command(subcommand)]
+    Project(ProjectCmd),
+    #[command(subcommand)]
+    Env(EnvCmd),
+    #[command(subcommand)]
+    Secret(SecretCmd),
+    #[command(subcommand)]
+    Member(MemberCmd),
+    #[command(subcommand)]
+    Token(TokenCmd),
+    #[command(subcommand)]
+    Audit(AuditCmd),
+    #[command(subcommand)]
+    Config(ConfigCmd),
+    Mcp(McpArgs),
+    Run(RunArgs),
+    Inject(InjectArgs),
+}
 
 pub async fn run_command(
     api: &ApiClient,
     config: &mut crate::client::CliConfig,
-    cmd: crate::Commands,
+    cmd: Command,
 ) -> Result<()> {
     match cmd {
-        crate::Commands::Login(args) => run_login(api, config, args).await,
-        crate::Commands::Register(args) => run_register(api, config, args).await,
-        crate::Commands::Logout => run_logout(api, config).await,
-        crate::Commands::Me => run_me(api).await,
-        crate::Commands::Project(cmd) => run_project(api, cmd).await,
-        crate::Commands::Env(cmd) => run_env(api, cmd).await,
-        crate::Commands::Secret(cmd) => run_secret(api, cmd).await,
-        crate::Commands::Member(cmd) => run_member(api, cmd).await,
-        crate::Commands::Token(cmd) => run_token(api, cmd).await,
-        crate::Commands::Audit(cmd) => run_audit(api, cmd).await,
-        crate::Commands::Config(cmd) => run_config(config, cmd).await,
-        crate::Commands::Mcp(args) => run_mcp(api, args).await,
-        crate::Commands::Run(args) => run_run(api, config, args).await,
-        crate::Commands::Inject(args) => run_inject(api, config, args).await,
+        Command::Login(args) => run_login(api, config, args).await,
+        Command::Register(args) => run_register(api, config, args).await,
+        Command::Logout => run_logout(api, config).await,
+        Command::Me => run_me(api).await,
+        Command::Project(cmd) => run_project(api, cmd).await,
+        Command::Env(cmd) => run_env(api, cmd).await,
+        Command::Secret(cmd) => run_secret(api, cmd).await,
+        Command::Member(cmd) => run_member(api, cmd).await,
+        Command::Token(cmd) => run_token(api, cmd).await,
+        Command::Audit(cmd) => run_audit(api, cmd).await,
+        Command::Config(cmd) => run_config(config, cmd).await,
+        Command::Mcp(args) => run_mcp(api, args).await,
+        Command::Run(args) => run_run(api, config, args).await,
+        Command::Inject(args) => run_inject(api, config, args).await,
     }
 }
 
@@ -57,18 +166,19 @@ async fn run_login(api: &ApiClient, config: &mut crate::client::CliConfig, _args
     stdout().flush()?;
     let password = read_password()?;
 
-    let totp_code = if true {
+    let totp_code = {
         print!("TOTP code (optional): ");
         stdout().flush()?;
         let mut code = String::new();
         std::io::stdin().read_line(&mut code)?;
         let code = code.trim();
         if code.is_empty() { None } else { Some(code.to_string()) }
-    } else { None };
+    };
 
     let resp = api.login(&email, &password, totp_code.as_deref()).await?;
-    config.auth_token = Some(resp.session_token.clone());
-    api.set_auth_token(Some(resp.session_token)).await;
+    let session_token = resp.session_token.ok_or_else(|| anyhow::anyhow!("No session token returned"))?;
+    config.auth_token = Some(session_token.clone());
+    api.set_auth_token(Some(session_token)).await;
 
     println!("Logged in as {}", resp.user.email);
     Ok(())
@@ -99,8 +209,9 @@ async fn run_register(api: &ApiClient, config: &mut crate::client::CliConfig, _a
     }
 
     let resp = api.register(&email, &password).await?;
-    config.auth_token = Some(resp.session_token.clone());
-    api.set_auth_token(Some(resp.session_token)).await;
+    let session_token = resp.session_token.ok_or_else(|| anyhow::anyhow!("No session token returned"))?;
+    config.auth_token = Some(session_token.clone());
+    api.set_auth_token(Some(session_token)).await;
 
     println!("Registered and logged in as {}", resp.user.email);
     Ok(())
@@ -124,40 +235,31 @@ async fn run_me(api: &ApiClient) -> Result<()> {
 
 // ─────────────────────────── Project ───────────────────────────
 
-#[derive(Subcommand, Debug)]
-enum ProjectSubcmd {
-    List,
-    Create { name: String, slug: String, description: Option<String> },
-    Get { slug: String },
-    Update { slug: String, name: Option<String>, description: Option<String> },
-    Delete { slug: String },
-}
-
-async fn run_project(api: &ApiClient, cmd: ProjectSubcmd) -> Result<()> {
+async fn run_project(api: &ApiClient, cmd: ProjectCmd) -> Result<()> {
     match cmd {
-        ProjectSubcmd::List => {
+        ProjectCmd::List => {
             let projects = api.list_projects().await?;
             for p in projects {
                 println!("{} ({}) - {:?}", p.project.name, p.project.slug, p.user_role);
             }
         }
-        ProjectSubcmd::Create { name, slug, description } => {
-            let req = crate::client::CreateProjectRequest { name, slug, description };
+        ProjectCmd::Create { name, slug, description } => {
+            let req = pandapass_core::models::CreateProjectRequest { name, slug, description };
             let proj = api.create_project(&req).await?;
             println!("Created project: {} ({})", proj.project.name, proj.project.slug);
         }
-        ProjectSubcmd::Get { slug } => {
+        ProjectCmd::Get { slug } => {
             let proj = api.get_project(&slug).await?;
             println!("Name: {}", proj.project.name);
             println!("Slug: {}", proj.project.slug);
             println!("Description: {:?}", proj.project.description);
             println!("Your role: {:?}", proj.user_role);
         }
-        ProjectSubcmd::Update { slug, name, description } => {
+        ProjectCmd::Update { slug, name, description } => {
             // TODO: implement
             println!("Update not yet implemented");
         }
-        ProjectSubcmd::Delete { slug } => {
+        ProjectCmd::Delete { slug } => {
             // TODO: implement
             println!("Delete not yet implemented");
         }
@@ -167,22 +269,16 @@ async fn run_project(api: &ApiClient, cmd: ProjectSubcmd) -> Result<()> {
 
 // ─────────────────────────── Env ───────────────────────────
 
-#[derive(Subcommand, Debug)]
-enum EnvSubcmd {
-    List { project: String },
-    Create { project: String, name: String, slug: String, description: Option<String> },
-}
-
-async fn run_env(api: &ApiClient, cmd: EnvSubcmd) -> Result<()> {
+async fn run_env(api: &ApiClient, cmd: EnvCmd) -> Result<()> {
     match cmd {
-        EnvSubcmd::List { project } => {
+        EnvCmd::List { project } => {
             let envs = api.list_envs(&project).await?;
             for e in envs {
                 println!("{} ({})", e.name, e.slug);
             }
         }
-        EnvSubcmd::Create { project, name, slug, description } => {
-            let req = crate::client::CreateEnvRequest { name, slug, description };
+        EnvCmd::Create { project, name, slug, description } => {
+            let req = pandapass_core::models::CreateEnvRequest { name, slug, description };
             let env = api.create_env(&project, &req).await?;
             println!("Created environment: {} ({})", env.name, env.slug);
         }
@@ -192,33 +288,24 @@ async fn run_env(api: &ApiClient, cmd: EnvSubcmd) -> Result<()> {
 
 // ─────────────────────────── Secret ───────────────────────────
 
-#[derive(Subcommand, Debug)]
-enum SecretSubcmd {
-    List { project: String, env: String },
-    Get { project: String, env: String, key: String },
-    Set { project: String, env: String, key: String, value: String },
-    Delete { project: String, env: String, key: String },
-}
-
-async fn run_secret(api: &ApiClient, cmd: SecretSubcmd) -> Result<()> {
+async fn run_secret(api: &ApiClient, cmd: SecretCmd) -> Result<()> {
     match cmd {
-        SecretSubcmd::List { project, env } => {
+        SecretCmd::List { project, env } => {
             let resp = api.list_secrets(&project, &env).await?;
             for s in resp.items {
                 println!("{} (v{}, updated {})", s.key, s.version, s.updated_at);
             }
             println!("Total: {}", resp.total);
         }
-        SecretSubcmd::Get { project, env, key } => {
+        SecretCmd::Get { project, env, key } => {
             let secret = api.get_secret(&project, &env, &key).await?;
             println!("{}", secret.value);
         }
-        SecretSubcmd::Set { project, env, key, value } => {
-            let req = crate::client::SetSecretRequest { key, value };
-            let secret = api.set_secret(&project, &env, &req).await?;
+        SecretCmd::Set { project, env, key, value } => {
+            let secret = api.set_secret(&project, &env, &key, &value).await?;
             println!("Set {} (v{})", secret.key, secret.version);
         }
-        SecretSubcmd::Delete { project, env, key } => {
+        SecretCmd::Delete { project, env, key } => {
             api.delete_secret(&project, &env, &key).await?;
             println!("Deleted {}", key);
         }
@@ -228,30 +315,37 @@ async fn run_secret(api: &ApiClient, cmd: SecretSubcmd) -> Result<()> {
 
 // ─────────────────────────── Member ───────────────────────────
 
-#[derive(Subcommand, Debug)]
-enum MemberSubcmd {
-    List { project: String },
-    Add { project: String, email: String, role: String },
-}
-
-async fn run_member(api: &ApiClient, cmd: MemberSubcmd) -> Result<()> {
+async fn run_member(api: &ApiClient, cmd: MemberCmd) -> Result<()> {
     match cmd {
-        MemberSubcmd::List { project } => {
+        MemberCmd::List { project } => {
             let members = api.list_members(&project).await?;
             for m in members {
                 println!("{} - {:?}", m.user.email, m.member.role);
             }
         }
-        MemberSubcmd::Add { project, email, role } => {
+        MemberCmd::Add { project, email, role } => {
             let role = match role.as_str() {
-                "owner" => crate::client::ProjectRole::Owner,
-                "editor" => crate::client::ProjectRole::Editor,
-                "viewer" => crate::client::ProjectRole::Viewer,
+                "owner" => pandapass_core::models::ProjectRole::Owner,
+                "editor" => pandapass_core::models::ProjectRole::Editor,
+                "viewer" => pandapass_core::models::ProjectRole::Viewer,
                 _ => anyhow::bail!("Invalid role: {}", role),
             };
-            let req = crate::client::AddMemberRequest { email, role };
-            let member = api.add_member(&project, &req).await?;
+            let member = api.add_member(&project, &email, role).await?;
             println!("Added {} as {:?}", member.user.email, member.member.role);
+        }
+        MemberCmd::Update { project, user_id, role } => {
+            let role = match role.as_str() {
+                "owner" => pandapass_core::models::ProjectRole::Owner,
+                "editor" => pandapass_core::models::ProjectRole::Editor,
+                "viewer" => pandapass_core::models::ProjectRole::Viewer,
+                _ => anyhow::bail!("Invalid role: {}", role),
+            };
+            api.update_member(&project, user_id, role).await?;
+            println!("Updated member role to {:?}", role);
+        }
+        MemberCmd::Remove { project, user_id } => {
+            api.remove_member(&project, user_id).await?;
+            println!("Removed member");
         }
     }
     Ok(())
@@ -259,27 +353,20 @@ async fn run_member(api: &ApiClient, cmd: MemberSubcmd) -> Result<()> {
 
 // ─────────────────────────── Token ───────────────────────────
 
-#[derive(Subcommand, Debug)]
-enum TokenSubcmd {
-    List,
-    Create { name: String, project: Option<String>, env: Option<String>, scopes: Vec<String>, expires_days: Option<u64> },
-    Revoke { id: Uuid },
-}
-
-async fn run_token(api: &ApiClient, cmd: TokenSubcmd) -> Result<()> {
+async fn run_token(api: &ApiClient, cmd: TokenCmd) -> Result<()> {
     match cmd {
-        TokenSubcmd::List => {
+        TokenCmd::List => {
             let tokens = api.list_tokens().await?;
             for t in tokens {
                 println!("{} - {} - scopes: {:?}", t.id, t.name, t.scopes);
             }
         }
-        TokenSubcmd::Create { name, project, env, scopes, expires_days } => {
+        TokenCmd::Create { name, project, env, scopes, expires_days } => {
             let project_id = project.map(|s| Uuid::parse_str(&s)).transpose()?;
             let env_id = env.map(|s| Uuid::parse_str(&s)).transpose()?;
             let expires_at = expires_days.map(|d| chrono::Utc::now() + chrono::Duration::days(d as i64));
 
-            let req = crate::client::CreateTokenRequest {
+            let req = crate::model::CreateTokenRequest {
                 name,
                 project_id,
                 env_id,
@@ -290,7 +377,7 @@ async fn run_token(api: &ApiClient, cmd: TokenSubcmd) -> Result<()> {
             println!("Token created: {}", resp.plain_token);
             println!("SAVE THIS TOKEN - it will not be shown again!");
         }
-        TokenSubcmd::Revoke { id } => {
+        TokenCmd::Revoke { id } => {
             api.revoke_token(id).await?;
             println!("Token revoked");
         }
@@ -298,16 +385,11 @@ async fn run_token(api: &ApiClient, cmd: TokenSubcmd) -> Result<()> {
     Ok(())
 }
 
-// ─────────────────────────── Audit ───────────────────────────
+// ─────────────────────────── Audit ─────���─────────────────────
 
-#[derive(Subcommand, Debug)]
-enum AuditSubcmd {
-    List { project: Option<String>, page: Option<i64>, per_page: Option<i64> },
-}
-
-async fn run_audit(api: &ApiClient, cmd: AuditSubcmd) -> Result<()> {
+async fn run_audit(api: &ApiClient, cmd: AuditCmd) -> Result<()> {
     match cmd {
-        AuditSubcmd::List { project, page, per_page } => {
+        AuditCmd::List { project, page, per_page } => {
             let project_id = project.map(|s| Uuid::parse_str(&s)).transpose()?;
             let resp = api.list_audit(project_id, page.unwrap_or(1), per_page.unwrap_or(20)).await?;
             for a in resp.items {
@@ -321,37 +403,28 @@ async fn run_audit(api: &ApiClient, cmd: AuditSubcmd) -> Result<()> {
 
 // ─────────────────────────── Config ───────────────────────────
 
-#[derive(Subcommand, Debug)]
-enum ConfigSubcmd {
-    Show,
-    SetServer { url: String },
-    SetAgeIdentity { path: PathBuf },
-    SetDefaultProject { project: Option<String> },
-    SetDefaultEnv { env: Option<String> },
-}
-
-async fn run_config(config: &mut crate::client::CliConfig, cmd: ConfigSubcmd) -> Result<()> {
+async fn run_config(config: &mut crate::client::CliConfig, cmd: ConfigCmd) -> Result<()> {
     match cmd {
-        ConfigSubcmd::Show => {
+        ConfigCmd::Show => {
             println!("Server: {}", config.server_url);
             println!("Auth token: {}", if config.auth_token.is_some() { "set" } else { "none" });
             println!("Default project: {:?}", config.default_project);
             println!("Default env: {:?}", config.default_env);
             println!("Age identity: {:?}", config.age_identity_file);
         }
-        ConfigSubcmd::SetServer { url } => {
+        ConfigCmd::SetServer { url } => {
             config.server_url = url;
             println!("Server URL updated");
         }
-        ConfigSubcmd::SetAgeIdentity { path } => {
+        ConfigCmd::SetAgeIdentity { path } => {
             config.age_identity_file = Some(path);
             println!("Age identity file set");
         }
-        ConfigSubcmd::SetDefaultProject { project } => {
+        ConfigCmd::SetDefaultProject { project } => {
             config.default_project = project;
             println!("Default project updated");
         }
-        ConfigSubcmd::SetDefaultEnv { env } => {
+        ConfigCmd::SetDefaultEnv { env } => {
             config.default_env = env;
             println!("Default env updated");
         }
@@ -359,14 +432,7 @@ async fn run_config(config: &mut crate::client::CliConfig, cmd: ConfigSubcmd) ->
     Ok(())
 }
 
-// ─────────────────────────── MCP / Run / Inject ───────────��────────��──────
-
-#[derive(Args, Debug)]
-pub struct McpArgs {
-    /// Run as MCP server (stdio)
-    #[arg(long)]
-    pub stdio: bool,
-}
+// ─────────────────────────── MCP / Run / Inject ───────────────────────────
 
 async fn run_mcp(api: &ApiClient, args: McpArgs) -> Result<()> {
     if args.stdio {
@@ -377,22 +443,6 @@ async fn run_mcp(api: &ApiClient, args: McpArgs) -> Result<()> {
         println!("Use --stdio to run MCP server");
     }
     Ok(())
-}
-
-#[derive(Args, Debug)]
-pub struct RunArgs {
-    /// Project slug
-    #[arg(long)]
-    project: String,
-    /// Environment slug
-    #[arg(long)]
-    env: String,
-    /// Only inject specific keys (comma-separated)
-    #[arg(long)]
-    only: Option<String>,
-    /// Command to run
-    #[arg(trailing_var_arg = true)]
-    command: Vec<String>,
 }
 
 async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunArgs) -> Result<()> {
@@ -416,22 +466,6 @@ async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunAr
     println!("Command: {:?}", args.command);
 
     Ok(())
-}
-
-#[derive(Args, Debug)]
-pub struct InjectArgs {
-    /// Input template file
-    #[arg(short, long)]
-    input: PathBuf,
-    /// Output file
-    #[arg(short, long)]
-    output: PathBuf,
-    /// Project slug
-    #[arg(long)]
-    project: String,
-    /// Environment slug
-    #[arg(long)]
-    env: String,
 }
 
 async fn run_inject(api: &ApiClient, _config: &crate::client::CliConfig, args: InjectArgs) -> Result<()> {

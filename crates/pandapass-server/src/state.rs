@@ -1,7 +1,6 @@
 use pandapass_core::audit::AuditService;
 use pandapass_db::Db;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Semaphore;
 
 /// Application state shared across handlers
@@ -42,8 +41,10 @@ pub struct Config {
     pub command_timeout_secs: u64,
     pub command_allowlist: Vec<String>,
     pub cookie_secure: bool,
-    /// Header name for client-provided master key (age-decrypted)
-    pub master_key_header_name: Option<String>,
+    /// The server's own age identity (`AGE-SECRET-KEY-1...`), used to unwrap
+    /// user envelopes. Configure via `PANDAPASS_SERVER_AGE_IDENTITY` or
+    /// `PANDAPASS_SERVER_AGE_IDENTITY_FILE`.
+    pub server_age_identity: Option<String>,
 }
 
 impl Config {
@@ -85,9 +86,12 @@ impl Config {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(public_url.starts_with("https://"));
 
-        let master_key_header_name = std::env::var("PANDAPASS_MASTER_KEY_HEADER")
-            .ok()
-            .filter(|s| !s.is_empty());
+        // The server's age identity: inline value, or read from a file so the
+        // private key never appears in the process environment.
+        let server_age_identity = match std::env::var("PANDAPASS_SERVER_AGE_IDENTITY_FILE") {
+            Ok(path) if !path.is_empty() => std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string()),
+            _ => std::env::var("PANDAPASS_SERVER_AGE_IDENTITY").ok().filter(|s| !s.is_empty()),
+        };
 
         Self {
             listen_addr,
@@ -101,7 +105,7 @@ impl Config {
             command_timeout_secs,
             command_allowlist,
             cookie_secure,
-            master_key_header_name,
+            server_age_identity,
         }
     }
 }
