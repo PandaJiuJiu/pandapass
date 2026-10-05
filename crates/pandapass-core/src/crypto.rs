@@ -9,6 +9,7 @@ use std::fmt;
 use zeroize::ZeroizeOnDrop;
 use totp_rs::{Algorithm, Secret, Builder as TotpBuilder};
 use base64::{Engine, engine::general_purpose};
+use sha2::{Digest, Sha256};
 
 /// Master Key - 32 bytes, encrypted with age per user
 #[derive(ZeroizeOnDrop)]
@@ -112,11 +113,36 @@ pub struct Envelope {
     pub rotated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Who an envelope is addressed to besides the member who owns the master key.
+#[derive(Debug, Clone, Default)]
+pub struct SealOptions {
+    /// Also wrap the master key to the server's own age recipient, so the
+    /// server can serve `get_secret` / `run_with_secret` on the member's
+    /// behalf.
+    ///
+    /// This is the deliberate trade-off documented in `docs/SECURITY.md`: an
+    /// attacker who steals only the database at rest still cannot decrypt,
+    /// but an attacker who also compromises the running server can. Callers
+    /// that hold the age identity and unwrap the envelope themselves leave
+    /// this `None`, which locks the server out entirely.
+    pub server: Option<AgePublicKey>,
+}
+
 impl Envelope {
-    /// Create a new envelope for a user
-    pub fn create(user_id: uuid::Uuid, master_key: &MasterKey, recipient: &AgePublicKey) -> Result<Self> {
-        let recipient_obj = recipient.to_recipient()?;
-        let encryptor = Encryptor::with_recipients(std::iter::once(recipient_obj.as_ref()))
+    /// Create a new envelope for a user, addressed to `recipient` and — when
+    /// `opts.server` is set — to the server as well.
+    pub fn create(
+        user_id: uuid::Uuid,
+        master_key: &MasterKey,
+        recipient: &AgePublicKey,
+        opts: &SealOptions,
+    ) -> Result<Self> {
+        let mut recipients: Vec<Box<dyn age::Recipient>> = vec![recipient.to_recipient()?];
+        if let Some(server) = &opts.server {
+            recipients.push(server.to_recipient()?);
+        }
+
+        let encryptor = Encryptor::with_recipients(recipients.iter().map(|r| r.as_ref()))
             .map_err(|e| CoreError::Internal(format!("Encryptor error: {}", e)))?;
         let mut encrypted = vec![];
         {
@@ -265,10 +291,30 @@ pub fn generate_token(bytes: usize) -> String {
     general_purpose::URL_SAFE_NO_PAD.encode(buf)
 }
 
-/// Hash a token for storage (argon2)
+/// Hash a bearer/session token for storage and lookup.
+///
+/// Deliberately SHA-256, not argon2: tokens are looked up by an exact
+/// `WHERE token_hash = ?` match on every request, so the hash must be
+/// deterministic. That is safe here because the input is 256 bits of CSPRNG
+/// output from [`generate_token`] — there is no low-entropy secret to brute
+/// force, and a fast hash is fine. Passwords go through [`hash_password`]
+/// (argon2) instead, because those *are* low-entropy.
 pub fn hash_token(token: &str) -> Result<String> {
-    hash_password(token)
+    Ok(hex::encode(Sha256::digest(token.as_bytes())))
 }
+
+/// Constant-time comparison, for anywhere two secrets are compared directly.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,7 +344,7 @@ mod tests {
         let mk = MasterKey::generate();
         let uid = uuid::Uuid::now_v7();
 
-        let env = Envelope::create(uid, &mk, &public).unwrap();
+        let env = Envelope::create(uid, &mk, &public, &SealOptions::default()).unwrap();
         let recovered = env.decrypt(identity.as_str()).unwrap();
 
         assert_eq!(recovered.as_bytes(), mk.as_bytes());
@@ -310,8 +356,50 @@ mod tests {
         let stranger = AgeIdentity::generate();
         let mk = MasterKey::generate();
 
-        let env = Envelope::create(uuid::Uuid::now_v7(), &mk, &owner.public_key().unwrap()).unwrap();
+        let env = Envelope::create(
+            uuid::Uuid::now_v7(),
+            &mk,
+            &owner.public_key().unwrap(),
+            &SealOptions::default(),
+        )
+        .unwrap();
         assert!(env.decrypt(stranger.as_str()).is_err());
+    }
+
+    /// The server is addressed alongside the member, so the same envelope
+    /// must open with either identity — that is what makes the server-side
+    /// `get_secret` path possible without ever holding a plaintext key on disk.
+    #[test]
+    fn envelope_opens_for_both_member_and_server() {
+        let server = AgeIdentity::generate();
+        let member = AgeIdentity::generate();
+        let mk = MasterKey::generate();
+        let env = Envelope::create(
+            uuid::Uuid::now_v7(),
+            &mk,
+            &member.public_key().unwrap(),
+            &SealOptions { server: Some(server.public_key().unwrap()) },
+        )
+        .unwrap();
+
+        assert_eq!(env.decrypt(member.as_str()).unwrap().as_bytes(), mk.as_bytes());
+        assert_eq!(env.decrypt(server.as_str()).unwrap().as_bytes(), mk.as_bytes());
+    }
+
+    #[test]
+    fn envelope_omits_server_when_not_requested() {
+        let server = AgeIdentity::generate();
+        let member = AgeIdentity::generate();
+        let mk = MasterKey::generate();
+        let env = Envelope::create(
+            uuid::Uuid::now_v7(),
+            &mk,
+            &member.public_key().unwrap(),
+            &SealOptions::default(),
+        )
+        .unwrap();
+
+        assert!(env.decrypt(server.as_str()).is_err());
     }
 
     #[test]
@@ -341,13 +429,21 @@ mod tests {
     }
 
     #[test]
-    fn token_hashing_is_deterministic_and_salted() {
+    fn token_hashing_is_deterministic_so_lookup_by_hash_works() {
         let a = hash_token("tok").unwrap();
         let b = hash_token("tok").unwrap();
-        // argon2 hashes are salted, so they differ — which is why the server
-        // can only look tokens up by recomputing the hash per candidate.
-        assert_ne!(a, b);
-        assert!(verify_password("tok", &a).unwrap());
+        // Must match exactly: the server resolves a bearer token with
+        // `WHERE token_hash = ?`, which a salted hash could never satisfy.
+        assert_eq!(a, b);
+        assert_ne!(a, hash_token("other").unwrap());
+        assert_eq!(a.len(), 64); // hex-encoded SHA-256
+    }
+
+    #[test]
+    fn constant_time_eq_behaves_like_eq() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
     }
 
     #[test]
