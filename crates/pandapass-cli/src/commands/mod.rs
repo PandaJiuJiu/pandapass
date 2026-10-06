@@ -151,6 +151,86 @@ pub enum SecretCmd {
     Delete { project: String, env: String, key: String },
 }
 
+/// Dynamic credentials (M2)
+#[derive(Subcommand, Debug)]
+pub enum CredCmd {
+    List { project: String, env: String },
+    Create {
+        project: String,
+        env: String,
+        kind: String,
+        username: String,
+        #[arg(long, default_value = "3600")]
+        ttl_seconds: i64,
+    },
+    Revoke { project: String, env: String, id: Uuid },
+}
+
+/// Policies (M3)
+#[derive(Subcommand, Debug)]
+pub enum PolicyCmd {
+    List { #[arg(long)] enabled_only: bool },
+    Create { name: String, rego: String },
+    Get { id: Uuid },
+    Update { id: Uuid, name: Option<String>, rego: Option<String>, enabled: Option<bool> },
+    Delete { id: Uuid },
+    Bind { policy_id: Uuid, project: Option<String>, env: Option<String> },
+    Unbind { id: Uuid },
+    ListBindings { project: Option<String>, env: Option<String> },
+}
+
+/// PKI/CA and SSH certificates (M4)
+#[derive(Subcommand, Debug)]
+pub enum PkiCmd {
+    /// CA keys
+    Ca {
+        #[command(subcommand)]
+        cmd: CaCmd,
+    },
+    /// SSH certificates
+    Ssh {
+        #[command(subcommand)]
+        cmd: SshCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CaCmd {
+    List { #[arg(long)] include_revoked: bool },
+    Create {
+        kind: String,
+        key_pem: String,
+        cert_pem: String,
+        not_before: String,
+        not_after: String,
+    },
+    Get { id: Uuid },
+    Revoke { id: Uuid },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SshCmd {
+    List {
+        #[arg(long)]
+        user: Option<Uuid>,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        include_revoked: bool,
+    },
+    Create {
+        user: Uuid,
+        #[arg(long)]
+        project: Option<String>,
+        principal: String,
+        cert_pem: String,
+        key_type: String,
+        not_before: String,
+        not_after: String,
+    },
+    Revoke { id: Uuid },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum MemberCmd {
     List { project: String },
@@ -245,6 +325,8 @@ pub enum Command {
     #[command(subcommand)]
     Secret(SecretCmd),
     #[command(subcommand)]
+    Cred(CredCmd),
+    #[command(subcommand)]
     Member(MemberCmd),
     #[command(subcommand)]
     Token(TokenCmd),
@@ -252,6 +334,10 @@ pub enum Command {
     Audit(AuditCmd),
     #[command(subcommand)]
     Config(ConfigCmd),
+    #[command(subcommand)]
+    Policy(PolicyCmd),
+    #[command(subcommand)]
+    Pki(PkiCmd),
     Run(RunArgs),
     Inject(InjectArgs),
 }
@@ -264,17 +350,19 @@ pub async fn run_command(
     match cmd {
         Command::Login(args) => run_login(api, config, args).await,
         Command::Register(args) => run_register(api, config, args).await,
-        // Handled before the client is built; unreachable via this path.
         Command::Keygen(args) => keygen(&args),
         Command::Logout => run_logout(api, config).await,
         Command::Me => run_me(api).await,
         Command::Project(cmd) => run_project(api, cmd).await,
         Command::Env(cmd) => run_env(api, cmd).await,
         Command::Secret(cmd) => run_secret(api, cmd).await,
+        Command::Cred(cmd) => run_cred(api, cmd).await,
         Command::Member(cmd) => run_member(api, cmd).await,
         Command::Token(cmd) => run_token(api, cmd).await,
         Command::Audit(cmd) => run_audit(api, cmd).await,
         Command::Config(cmd) => run_config(config, cmd).await,
+        Command::Policy(cmd) => run_policy(api, cmd).await,
+        Command::Pki(cmd) => run_pki(api, cmd).await,
         Command::Run(args) => run_run(api, config, args).await,
         Command::Inject(args) => run_inject(api, config, args).await,
     }
@@ -846,5 +934,213 @@ async fn run_inject(api: &ApiClient, _config: &crate::client::CliConfig, args: I
 
     tokio::fs::write(&args.output, output).await?;
     println!("Injected secrets into {}", args.output.display());
+    Ok(())
+}
+
+// ─────────────────────────── Dynamic Credentials (M2) ───────────────────────────
+
+async fn run_cred(api: &ApiClient, cmd: CredCmd) -> Result<()> {
+    match cmd {
+        CredCmd::List { project, env } => {
+            let creds = api.list_dynamic_creds(&project, &env).await?;
+            for c in creds {
+                println!(
+                    "{}  {}  {}  expires {}  revoked: {}",
+                    c.id,
+                    c.kind.as_str(),
+                    c.username,
+                    c.expires_at.format("%Y-%m-%d %H:%M:%S"),
+                    c.revoked_at.map_or("no", |_| "yes")
+                );
+            }
+        }
+        CredCmd::Create { project, env, kind, username, ttl_seconds } => {
+            let kind = match kind.as_str() {
+                "postgresql" => pandapass_core::models::DynamicCredKind::PostgreSQL,
+                "mysql" => pandapass_core::models::DynamicCredKind::MySQL,
+                "redis" => pandapass_core::models::DynamicCredKind::Redis,
+                _ => anyhow::bail!("Invalid kind: {}. Must be postgresql, mysql, or redis", kind),
+            };
+            let resp = api.create_dynamic_cred(&project, &env, kind, &username, ttl_seconds).await?;
+            let plain = resp["plain_password"].as_str().unwrap_or("");
+            let cred: pandapass_core::models::DynamicCred = serde_json::from_value(resp["cred"].clone())?;
+            println!("{}", plain);
+            eprintln!(
+                "\nCredential created. Shown once; only encrypted value is stored.\n\
+                 ID:       {}\n\
+                 Kind:     {}\n\
+                 Username: {}\n\
+                 Expires:  {}",
+                cred.id,
+                cred.kind.as_str(),
+                cred.username,
+                cred.expires_at.format("%Y-%m-%d %H:%M:%S")
+            );
+        }
+        CredCmd::Revoke { project, env, id } => {
+            api.revoke_dynamic_cred(&project, &env, id).await?;
+            println!("Credential revoked");
+        }
+    }
+    Ok(())
+}
+
+// ─────────────────────────── Policies (M3) ───────────────────────────
+
+async fn run_policy(api: &ApiClient, cmd: PolicyCmd) -> Result<()> {
+    match cmd {
+        PolicyCmd::List { enabled_only } => {
+            let policies = api.list_policies(enabled_only).await?;
+            for p in policies {
+                println!("{}  {}  enabled: {}", p.id, p.name, p.enabled);
+            }
+        }
+        PolicyCmd::Create { name, rego } => {
+            let policy = api.create_policy(&name, &rego).await?;
+            println!("Created policy: {} ({})", policy.name, policy.id);
+        }
+        PolicyCmd::Get { id } => {
+            let policy = api.get_policy(id).await?;
+            println!("Name: {}", policy.name);
+            println!("Enabled: {}", policy.enabled);
+            println!("Created: {}", policy.created_at);
+            println!("Rego:\n{}", policy.rego_source);
+        }
+        PolicyCmd::Update { id, name, rego, enabled } => {
+            api.update_policy(id, name.as_deref(), rego.as_deref(), enabled).await?;
+            println!("Policy updated");
+        }
+        PolicyCmd::Delete { id } => {
+            api.delete_policy(id).await?;
+            println!("Policy deleted");
+        }
+        PolicyCmd::Bind { policy_id, project, env } => {
+            let project_id = match project.as_deref() {
+                Some(slug) => Some(api.resolve_project_id(slug).await?),
+                None => None,
+            };
+            let env_id = match (project.as_deref(), env.as_deref()) {
+                (Some(project_slug), Some(env_slug)) => {
+                    let envs = api.list_envs(project_slug).await?;
+                    let found = envs.into_iter().find(|e| e.slug == *env_slug)
+                        .ok_or_else(|| anyhow::anyhow!("No environment '{env_slug}' in project '{project_slug}'"))?;
+                    Some(found.id)
+                }
+                (None, Some(_)) => anyhow::bail!("--env requires --project"),
+                _ => None,
+            };
+            let binding = api.bind_policy(policy_id, project_id, env_id).await?;
+            println!("Bound policy to project: {:?}, env: {:?}", binding.project_id, binding.env_id);
+        }
+        PolicyCmd::Unbind { id } => {
+            api.unbind_policy(id).await?;
+            println!("Policy binding removed");
+        }
+        PolicyCmd::ListBindings { project, env } => {
+            let project_id = match project.as_deref() {
+                Some(slug) => Some(api.resolve_project_id(slug).await?),
+                None => None,
+            };
+            let env_id = match (project.as_deref(), env.as_deref()) {
+                (Some(project_slug), Some(env_slug)) => {
+                    let envs = api.list_envs(project_slug).await?;
+                    let found = envs.into_iter().find(|e| e.slug == *env_slug)
+                        .ok_or_else(|| anyhow::anyhow!("No environment '{env_slug}' in project '{project_slug}'"))?;
+                    Some(found.id)
+                }
+                (None, Some(_)) => anyhow::bail!("--env requires --project"),
+                _ => None,
+            };
+            let bindings = api.list_policy_bindings(project_id, env_id).await?;
+            for b in bindings {
+                println!("{}  policy: {}  project: {:?}  env: {:?}", b.id, b.policy_id, b.project_id, b.env_id);
+            }
+        }
+    }
+    Ok(())
+}
+
+// ─────────────────────────── PKI/CA and SSH (M4) ───────────────────────────
+
+async fn run_pki(api: &ApiClient, cmd: PkiCmd) -> Result<()> {
+    match cmd {
+        PkiCmd::Ca { cmd } => run_ca(api, cmd).await,
+        PkiCmd::Ssh { cmd } => run_ssh(api, cmd).await,
+    }
+}
+
+async fn run_ca(api: &ApiClient, cmd: CaCmd) -> Result<()> {
+    match cmd {
+        CaCmd::List { include_revoked } => {
+            let keys = api.list_ca_keys(include_revoked).await?;
+            for k in keys {
+                println!("{}  {}  {}  revoked: {}", k.id, k.kind.as_str(), k.not_after.format("%Y-%m-%d"), k.revoked_at.map_or("no", |_| "yes"));
+            }
+        }
+        CaCmd::Create { kind, key_pem, cert_pem, not_before, not_after } => {
+            let kind = match kind.as_str() {
+                "root" => pandapass_core::models::CaKeyType::Root,
+                "intermediate" => pandapass_core::models::CaKeyType::Intermediate,
+                _ => anyhow::bail!("Invalid kind: {}. Must be root or intermediate", kind),
+            };
+            let not_before = chrono::DateTime::parse_from_rfc3339(&not_before)?.with_timezone(&chrono::Utc);
+            let not_after = chrono::DateTime::parse_from_rfc3339(&not_after)?.with_timezone(&chrono::Utc);
+            let ca = api.create_ca_key(kind, &key_pem, &cert_pem, not_before, not_after).await?;
+            println!("Created CA key: {} ({})", ca.kind.as_str(), ca.id);
+        }
+        CaCmd::Get { id } => {
+            let ca = api.get_ca_key(id).await?;
+            println!("Kind: {}", ca.kind.as_str());
+            println!("Cert:\n{}", ca.cert_pem);
+            println!("Valid: {} to {}", ca.not_before, ca.not_after);
+            println!("Revoked: {}", ca.revoked_at.map(|d| d.to_string()).unwrap_or("no".into()));
+        }
+        CaCmd::Revoke { id } => {
+            api.revoke_ca_key(id).await?;
+            println!("CA key revoked");
+        }
+    }
+    Ok(())
+}
+
+async fn run_ssh(api: &ApiClient, cmd: SshCmd) -> Result<()> {
+    match cmd {
+        SshCmd::List { user, project, include_revoked } => {
+            let project_id = match project.as_deref() {
+                Some(slug) => Some(api.resolve_project_id(slug).await?),
+                None => None,
+            };
+            let certs = api.list_ssh_certs(user, project_id, include_revoked).await?;
+            for c in certs {
+                println!(
+                    "{}  {}  {}  {}  revoked: {}",
+                    c.id,
+                    c.key_type.as_str(),
+                    c.principal,
+                    c.valid_after.format("%Y-%m-%d"),
+                    c.revoked_at.map_or("no", |_| "yes")
+                );
+            }
+        }
+        SshCmd::Create { user, project, principal, cert_pem, key_type, not_before, not_after } => {
+            let project_id = match project.as_deref() {
+                Some(slug) => Some(api.resolve_project_id(slug).await?),
+                None => None,
+            };
+            let key_type = match key_type.as_str() {
+                "rsa" => pandapass_core::models::SshKeyType::Rsa,
+                "ed25519" => pandapass_core::models::SshKeyType::Ed25519,
+                _ => anyhow::bail!("Invalid key_type: {}. Must be rsa or ed25519", key_type),
+            };
+            let not_before = chrono::DateTime::parse_from_rfc3339(&not_before)?.with_timezone(&chrono::Utc);
+            let not_after = chrono::DateTime::parse_from_rfc3339(&not_after)?.with_timezone(&chrono::Utc);
+            let cert = api.create_ssh_cert(user, project_id, &principal, &cert_pem, key_type, not_before, not_after).await?;
+            println!("Created SSH cert: {} ({})", cert.principal, cert.id);
+        }
+        SshCmd::Revoke { id } => {
+            api.revoke_ssh_cert(id).await?;
+            println!("SSH cert revoked");
+        }
+    }
     Ok(())
 }

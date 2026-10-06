@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use pandapass_core::models::{
-    AuditLog, CreateEnvRequest, CreateProjectRequest, PaginatedResponse, ProjectRole,
-    ProjectWithRole, ServiceToken, UpdateMemberRequest,
+    AuditLog, CaKey, CaKeyType, CreateEnvRequest, CreateProjectRequest, DynamicCred, DynamicCredKind, PaginatedResponse, Policy, PolicyBinding,
+    ProjectRole, ProjectWithRole, SshCert, SshKeyType, ServiceToken, UpdateMemberRequest,
 };
 
 use crate::model::{
@@ -359,5 +359,200 @@ impl ApiClient {
             path.push_str(&format!("&project_id={id}"));
         }
         self.get(&path).await
+    }
+
+    // ─────────────────────────── dynamic credentials (M2) ───────────────────────────
+
+    pub async fn list_dynamic_creds(
+        &self,
+        project_slug: &str,
+        env_slug: &str,
+    ) -> Result<Vec<DynamicCred>> {
+        self.get(&format!("/projects/{project_slug}/envs/{env_slug}/creds")).await
+    }
+
+    pub async fn create_dynamic_cred(
+        &self,
+        project_slug: &str,
+        env_slug: &str,
+        kind: DynamicCredKind,
+        username: &str,
+        ttl_seconds: i64,
+    ) -> Result<serde_json::Value> {
+        let req = serde_json::json!({
+            "kind": kind.as_str(),
+            "username": username,
+            "ttl_seconds": ttl_seconds,
+        });
+        self.post(&format!("/projects/{project_slug}/envs/{env_slug}/creds"), &req).await
+    }
+
+    pub async fn revoke_dynamic_cred(
+        &self,
+        project_slug: &str,
+        env_slug: &str,
+        id: uuid::Uuid,
+    ) -> Result<()> {
+        let _: serde_json::Value = self.delete(&format!("/projects/{project_slug}/envs/{env_slug}/creds/{id}")).await?;
+        Ok(())
+    }
+
+    // ─────────────────────────── policies (M3) ───────────────────────────
+
+    pub async fn list_policies(&self, enabled_only: bool) -> Result<Vec<Policy>> {
+        let path = format!("/policies?enabled_only={enabled_only}");
+        self.get(&path).await
+    }
+
+    pub async fn create_policy(&self, name: &str, rego_source: &str) -> Result<Policy> {
+        let req = serde_json::json!({ "name": name, "rego_source": rego_source });
+        self.post("/policies", &req).await
+    }
+
+    pub async fn get_policy(&self, id: uuid::Uuid) -> Result<Policy> {
+        self.get(&format!("/policies/{id}")).await
+    }
+
+    pub async fn update_policy(
+        &self,
+        id: uuid::Uuid,
+        name: Option<&str>,
+        rego_source: Option<&str>,
+        enabled: Option<bool>,
+    ) -> Result<()> {
+        let req = serde_json::json!({
+            "name": name,
+            "rego_source": rego_source,
+            "enabled": enabled,
+        });
+        let _: serde_json::Value = self.patch(&format!("/policies/{id}"), &req).await?;
+        Ok(())
+    }
+
+    pub async fn delete_policy(&self, id: uuid::Uuid) -> Result<()> {
+        let _: serde_json::Value = self.delete(&format!("/policies/{id}")).await?;
+        Ok(())
+    }
+
+    pub async fn list_policy_bindings(
+        &self,
+        project_id: Option<uuid::Uuid>,
+        env_id: Option<uuid::Uuid>,
+    ) -> Result<Vec<PolicyBinding>> {
+        let mut path = "/policies/bindings".to_string();
+        let mut params = Vec::new();
+        if let Some(id) = project_id {
+            params.push(format!("project_id={id}"));
+        }
+        if let Some(id) = env_id {
+            params.push(format!("env_id={id}"));
+        }
+        if !params.is_empty() {
+            path.push('?');
+            path.push_str(&params.join("&"));
+        }
+        self.get(&path).await
+    }
+
+    pub async fn bind_policy(
+        &self,
+        policy_id: uuid::Uuid,
+        project_id: Option<uuid::Uuid>,
+        env_id: Option<uuid::Uuid>,
+    ) -> Result<PolicyBinding> {
+        let req = serde_json::json!({
+            "policy_id": policy_id,
+            "project_id": project_id,
+            "env_id": env_id,
+        });
+        self.post("/policies/bindings", &req).await
+    }
+
+    pub async fn unbind_policy(&self, id: uuid::Uuid) -> Result<()> {
+        let _: serde_json::Value = self.delete(&format!("/policies/bindings/{id}")).await?;
+        Ok(())
+    }
+
+    // ─────────────────────────── PKI/CA (M4) ───────────────────────────
+
+    pub async fn list_ca_keys(&self, include_revoked: bool) -> Result<Vec<CaKey>> {
+        let path = format!("/ca?include_revoked={include_revoked}");
+        self.get(&path).await
+    }
+
+    pub async fn create_ca_key(
+        &self,
+        kind: CaKeyType,
+        key_pem: &str,
+        cert_pem: &str,
+        not_before: chrono::DateTime<chrono::Utc>,
+        not_after: chrono::DateTime<chrono::Utc>,
+    ) -> Result<CaKey> {
+        let req = serde_json::json!({
+            "kind": kind.as_str(),
+            "key_pem": key_pem,
+            "cert_pem": cert_pem,
+            "not_before": not_before.to_rfc3339(),
+            "not_after": not_after.to_rfc3339(),
+        });
+        self.post("/ca", &req).await
+    }
+
+    pub async fn get_ca_key(&self, id: uuid::Uuid) -> Result<CaKey> {
+        self.get(&format!("/ca/{id}")).await
+    }
+
+    pub async fn revoke_ca_key(&self, id: uuid::Uuid) -> Result<()> {
+        let _: serde_json::Value = self.delete(&format!("/ca/{id}")).await?;
+        Ok(())
+    }
+
+    // ─────────────────────────── SSH certificates (M4) ───────────────────────────
+
+    pub async fn list_ssh_certs(
+        &self,
+        user_id: Option<uuid::Uuid>,
+        project_id: Option<uuid::Uuid>,
+        include_revoked: bool,
+    ) -> Result<Vec<SshCert>> {
+        let mut path = "/ssh-certs".to_string();
+        let mut params = Vec::new();
+        if let Some(id) = user_id {
+            params.push(format!("user_id={id}"));
+        }
+        if let Some(id) = project_id {
+            params.push(format!("project_id={id}"));
+        }
+        params.push(format!("include_revoked={include_revoked}"));
+        path.push('?');
+        path.push_str(&params.join("&"));
+        self.get(&path).await
+    }
+
+    pub async fn create_ssh_cert(
+        &self,
+        user_id: uuid::Uuid,
+        project_id: Option<uuid::Uuid>,
+        principal: &str,
+        cert_pem: &str,
+        key_type: SshKeyType,
+        not_before: chrono::DateTime<chrono::Utc>,
+        not_after: chrono::DateTime<chrono::Utc>,
+    ) -> Result<SshCert> {
+        let req = serde_json::json!({
+            "user_id": user_id,
+            "project_id": project_id,
+            "principal": principal,
+            "cert_pem": cert_pem,
+            "key_type": key_type.as_str(),
+            "valid_before": not_before.to_rfc3339(),
+            "valid_after": not_after.to_rfc3339(),
+        });
+        self.post("/ssh-certs", &req).await
+    }
+
+    pub async fn revoke_ssh_cert(&self, id: uuid::Uuid) -> Result<()> {
+        let _: serde_json::Value = self.delete(&format!("/ssh-certs/{id}")).await?;
+        Ok(())
     }
 }
