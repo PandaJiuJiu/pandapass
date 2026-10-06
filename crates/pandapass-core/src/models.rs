@@ -302,6 +302,7 @@ pub enum AuditAction {
     PolicyEvaluate,
     // M4+
     CaCreate,
+    CaSign,
     SshCertIssue,
     SshCertRevoke,
     SecretScan,
@@ -351,6 +352,7 @@ impl AuditAction {
             PolicyBind => "policy_bind",
             PolicyEvaluate => "policy_evaluate",
             CaCreate => "ca_create",
+            CaSign => "ca_sign",
             SshCertIssue => "ssh_cert_issue",
             SshCertRevoke => "ssh_cert_revoke",
             SecretScan => "secret_scan",
@@ -398,6 +400,7 @@ impl AuditAction {
             "policy_bind" => PolicyBind,
             "policy_evaluate" => PolicyEvaluate,
             "ca_create" => CaCreate,
+            "ca_sign" => CaSign,
             "ssh_cert_issue" => SshCertIssue,
             "ssh_cert_revoke" => SshCertRevoke,
             "secret_scan" => SecretScan,

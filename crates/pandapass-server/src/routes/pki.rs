@@ -1,8 +1,9 @@
 use axum::{extract::{Path, Query, State}, Json};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::models::*;
+use pandapass_core::pki::{sign_x509_from_csr, PkiError};
 use pandapass_db as db;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
 use crate::middleware::auth::{Auth, ApiError};
@@ -90,6 +91,65 @@ pub async fn revoke_ca_key(
     state.audit.log_success(&mut audit).await.ok();
 
     Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct SignCsrRequest {
+    pub csr_pem: String,
+    pub not_before: chrono::DateTime<chrono::Utc>,
+    pub not_after: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Serialize)]
+pub struct SignCsrResponse {
+    pub cert_pem: String,
+}
+
+/// Sign a certificate from a CSR using a stored CA.
+/// Admin only — the CA private key is decryptable by the server.
+pub async fn sign_csr(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path(ca_id): Path<uuid::Uuid>,
+    Json(req): Json<SignCsrRequest>,
+) -> Result<Json<SignCsrResponse>, ApiError> {
+    if !auth.can(Permission::ManageUsers) {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
+
+    // Load CA key
+    let ca_key = db::get_ca_key(&state.db, ca_id).await?;
+    if ca_key.revoked_at.is_some() {
+        return Err(ApiError::BadRequest("CA has been revoked".into()));
+    }
+
+    // Get master key to decrypt CA private key
+    let mk = crate::routes::secrets::get_master_key(&state, auth.user.id).await?;
+
+    // Sign. A malformed CSR is the caller's bug (400); anything after that —
+    // an unusable CA key, an rcgen failure — is ours (500).
+    let cert_pem = sign_x509_from_csr(
+        &ca_key.key_enc,
+        &ca_key.cert_pem,
+        &mk,
+        &req.csr_pem,
+        req.not_before,
+        req.not_after,
+    ).map_err(|e| match e {
+        PkiError::CsrParse(m) => ApiError::BadRequest(format!("Invalid CSR: {m}")),
+        other => ApiError::Internal(format!("PKI signing failed: {other}")),
+    })?;
+
+    let mut audit = AuditContext::new(&auth, AuditAction::CaSign);
+    audit = audit.with_meta(serde_json::json!({
+        "ca_id": ca_id,
+        "action": "sign_csr",
+        "not_before": req.not_before,
+        "not_after": req.not_after,
+    }));
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(SignCsrResponse { cert_pem }))
 }
 
 #[derive(Deserialize)]

@@ -4,6 +4,7 @@ pub mod audit;
 pub mod crypto;
 pub mod error;
 pub mod models;
+pub mod pki;
 pub mod policy;
 pub mod rbac;
 
@@ -11,6 +12,7 @@ pub use audit::{AuditLogger, AuditService, MemoryAuditLogger, extract_client_ip,
 pub use crypto::{AgePublicKey, EncryptedSecret, Envelope, MasterKey, hash_password, verify_password, generate_totp_secret, verify_totp, totp_uri, generate_token, hash_token};
 pub use error::{CoreError, Result};
 pub use models::*;
+pub use pki::{PkiError, sign_x509_from_csr, generate_root_ca, sign_ssh_cert};
 pub use policy::{PolicyDecision, PolicyEngine, PolicyError, PolicyInput};
 pub use rbac::{Rbac, RbacError, ResourceAccess, AuditContext};
 pub use models::Permission;
