@@ -1066,3 +1066,456 @@ impl pandapass_core::AuditLogger for DbAuditLogger {
         Ok(())
     }
 }
+
+// ─────────────────────────── dynamic credentials (M2) ───────────────────────────
+
+pub async fn create_dynamic_cred(
+    db: &Db,
+    project_id: uuid::Uuid,
+    env_id: uuid::Uuid,
+    kind: DynamicCredKind,
+    username: &str,
+    password_enc: &EncryptedSecret,
+    ttl_seconds: i64,
+    created_by: uuid::Uuid,
+) -> Result<DynamicCred> {
+    let id = uuid::Uuid::now_v7();
+    let now = chrono::Utc::now();
+    let expires = now + chrono::Duration::seconds(ttl_seconds);
+    sqlx::query(
+        "INSERT INTO dynamic_creds (id, project_id, env_id, kind, username, password_enc, ttl_seconds, issued_at, expires_at, created_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )
+    .bind(id.to_string())
+    .bind(project_id.to_string())
+    .bind(env_id.to_string())
+    .bind(kind_str(kind))
+    .bind(username)
+    .bind(enc_json(password_enc))
+    .bind(ttl_seconds)
+    .bind(ts(now))
+    .bind(ts(expires))
+    .bind(created_by.to_string())
+    .execute(db)
+    .await?;
+    get_dynamic_cred(db, id).await
+}
+
+fn kind_str(k: DynamicCredKind) -> &'static str {
+    match k {
+        DynamicCredKind::PostgreSQL => "postgresql",
+        DynamicCredKind::MySQL => "mysql",
+        DynamicCredKind::Redis => "redis",
+    }
+}
+
+fn parse_kind(s: &str) -> DynamicCredKind {
+    match s {
+        "postgresql" => DynamicCredKind::PostgreSQL,
+        "mysql" => DynamicCredKind::MySQL,
+        _ => DynamicCredKind::Redis,
+    }
+}
+
+pub async fn get_dynamic_cred(db: &Db, id: uuid::Uuid) -> Result<DynamicCred> {
+    let row = sqlx::query("SELECT * FROM dynamic_creds WHERE id = ?1")
+        .bind(id.to_string())
+        .fetch_one(db)
+        .await
+        .map_err(|_| pandapass_core::CoreError::NotFound("dynamic credential not found".into()))?;
+    Ok(row_to_dynamic_cred(&row))
+}
+
+pub async fn list_dynamic_creds(
+    db: &Db,
+    project_id: uuid::Uuid,
+    env_id: uuid::Uuid,
+    include_revoked: bool,
+) -> Result<Vec<DynamicCred>> {
+    let rows = if include_revoked {
+        sqlx::query("SELECT * FROM dynamic_creds WHERE project_id = ?1 AND env_id = ?2 ORDER BY issued_at DESC")
+            .bind(project_id.to_string())
+            .bind(env_id.to_string())
+            .fetch_all(db)
+            .await?
+    } else {
+        sqlx::query("SELECT * FROM dynamic_creds WHERE project_id = ?1 AND env_id = ?2 AND revoked_at IS NULL ORDER BY issued_at DESC")
+            .bind(project_id.to_string())
+            .bind(env_id.to_string())
+            .fetch_all(db)
+            .await?
+    };
+    Ok(rows.iter().map(row_to_dynamic_cred).collect())
+}
+
+pub async fn revoke_dynamic_cred(db: &Db, id: uuid::Uuid) -> Result<()> {
+    sqlx::query("UPDATE dynamic_creds SET revoked_at = ?2 WHERE id = ?1")
+        .bind(id.to_string())
+        .bind(utc_now())
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn cleanup_expired_dynamic_creds(db: &Db) -> Result<u64> {
+    let r = sqlx::query("DELETE FROM dynamic_creds WHERE expires_at < ?1 AND revoked_at IS NULL")
+        .bind(utc_now())
+        .execute(db)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+fn row_to_dynamic_cred(row: &SqliteRow) -> DynamicCred {
+    let enc_s: String = row.get("password_enc");
+    DynamicCred {
+        id: uuid::Uuid::parse_str(row.get::<String, _>("id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        project_id: uuid::Uuid::parse_str(row.get::<String, _>("project_id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        env_id: uuid::Uuid::parse_str(row.get::<String, _>("env_id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        kind: parse_kind(&row.get::<String, _>("kind")),
+        username: row.get("username"),
+        password_enc: dec_json(&enc_s),
+        ttl_seconds: row.get::<i64, _>("ttl_seconds"),
+        issued_at: parse_ts(&row.get::<String, _>("issued_at")),
+        expires_at: parse_ts(&row.get::<String, _>("expires_at")),
+        revoked_at: parse_opt_ts(row.get("revoked_at")),
+        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str()).unwrap_or(uuid::Uuid::nil()),
+    }
+}
+
+// ─────────────────────────── policies (M3) ───────────────────────────
+
+pub async fn create_policy(
+    db: &Db,
+    name: &str,
+    rego_source: &str,
+    created_by: uuid::Uuid,
+) -> Result<Policy> {
+    let id = uuid::Uuid::now_v7();
+    let now = utc_now();
+    sqlx::query(
+        "INSERT INTO policies (id, name, rego_source, enabled, created_by, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 1, ?4, ?5, ?5)",
+    )
+    .bind(id.to_string())
+    .bind(name)
+    .bind(rego_source)
+    .bind(created_by.to_string())
+    .bind(&now)
+    .execute(db)
+    .await?;
+    get_policy(db, id).await
+}
+
+pub async fn get_policy(db: &Db, id: uuid::Uuid) -> Result<Policy> {
+    let row = sqlx::query("SELECT * FROM policies WHERE id = ?1")
+        .bind(id.to_string())
+        .fetch_one(db)
+        .await
+        .map_err(|_| pandapass_core::CoreError::NotFound("policy not found".into()))?;
+    Ok(row_to_policy(&row))
+}
+
+pub async fn list_policies(db: &Db, enabled_only: bool) -> Result<Vec<Policy>> {
+    let rows = if enabled_only {
+        sqlx::query("SELECT * FROM policies WHERE enabled = 1 ORDER BY created_at DESC")
+            .fetch_all(db)
+            .await?
+    } else {
+        sqlx::query("SELECT * FROM policies ORDER BY created_at DESC")
+            .fetch_all(db)
+            .await?
+    };
+    Ok(rows.iter().map(row_to_policy).collect())
+}
+
+pub async fn update_policy(
+    db: &Db,
+    id: uuid::Uuid,
+    name: Option<&str>,
+    rego_source: Option<&str>,
+    enabled: Option<bool>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE policies SET name = COALESCE(?2, name), rego_source = COALESCE(?3, rego_source), enabled = COALESCE(?4, enabled), updated_at = ?5 WHERE id = ?1",
+    )
+    .bind(id.to_string())
+    .bind(name)
+    .bind(rego_source)
+    .bind(enabled.map(|v| if v { 1 } else { 0 }))
+    .bind(utc_now())
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+pub async fn delete_policy(db: &Db, id: uuid::Uuid) -> Result<()> {
+    sqlx::query("DELETE FROM policies WHERE id = ?1")
+        .bind(id.to_string())
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+fn row_to_policy(row: &SqliteRow) -> Policy {
+    Policy {
+        id: uuid::Uuid::parse_str(row.get::<String, _>("id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        name: row.get("name"),
+        rego_source: row.get("rego_source"),
+        enabled: row.get::<i64, _>("enabled") != 0,
+        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str()).unwrap_or(uuid::Uuid::nil()),
+        created_at: parse_ts(&row.get::<String, _>("created_at")),
+        updated_at: parse_ts(&row.get::<String, _>("updated_at")),
+    }
+}
+
+pub async fn bind_policy(
+    db: &Db,
+    policy_id: uuid::Uuid,
+    project_id: Option<uuid::Uuid>,
+    env_id: Option<uuid::Uuid>,
+) -> Result<PolicyBinding> {
+    let id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO policy_bindings (id, policy_id, project_id, env_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind(id.to_string())
+    .bind(policy_id.to_string())
+    .bind(project_id.map(|v| v.to_string()))
+    .bind(env_id.map(|v| v.to_string()))
+    .bind(utc_now())
+    .execute(db)
+    .await?;
+    get_policy_binding(db, id).await
+}
+
+pub async fn get_policy_binding(db: &Db, id: uuid::Uuid) -> Result<PolicyBinding> {
+    let row = sqlx::query("SELECT * FROM policy_bindings WHERE id = ?1")
+        .bind(id.to_string())
+        .fetch_one(db)
+        .await
+        .map_err(|_| pandapass_core::CoreError::NotFound("policy binding not found".into()))?;
+    Ok(row_to_policy_binding(&row))
+}
+
+pub async fn list_policy_bindings(
+    db: &Db,
+    project_id: Option<uuid::Uuid>,
+    env_id: Option<uuid::Uuid>,
+) -> Result<Vec<PolicyBinding>> {
+    let rows = sqlx::query(
+        "SELECT * FROM policy_bindings WHERE (?1 IS NULL OR project_id = ?1) AND (?2 IS NULL OR env_id = ?2) ORDER BY created_at",
+    )
+    .bind(project_id.map(|v| v.to_string()))
+    .bind(env_id.map(|v| v.to_string()))
+    .fetch_all(db)
+    .await?;
+    Ok(rows.iter().map(row_to_policy_binding).collect())
+}
+
+pub async fn delete_policy_binding(db: &Db, id: uuid::Uuid) -> Result<()> {
+    sqlx::query("DELETE FROM policy_bindings WHERE id = ?1")
+        .bind(id.to_string())
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+fn row_to_policy_binding(row: &SqliteRow) -> PolicyBinding {
+    PolicyBinding {
+        id: uuid::Uuid::parse_str(row.get::<String, _>("id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        policy_id: uuid::Uuid::parse_str(row.get::<String, _>("policy_id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        project_id: row.get::<Option<String>, _>("project_id").and_then(|s| uuid::Uuid::parse_str(&s).ok()),
+        env_id: row.get::<Option<String>, _>("env_id").and_then(|s| uuid::Uuid::parse_str(&s).ok()),
+        created_at: parse_ts(&row.get::<String, _>("created_at")),
+    }
+}
+
+// ──���────────���─────────────── PKI/CA (M4) ───────────────────────────
+
+pub async fn create_ca_key(
+    db: &Db,
+    kind: CaKeyType,
+    key_enc: &EncryptedSecret,
+    cert_pem: &str,
+    not_before: chrono::DateTime<chrono::Utc>,
+    not_after: chrono::DateTime<chrono::Utc>,
+    created_by: uuid::Uuid,
+) -> Result<CaKey> {
+    let id = uuid::Uuid::now_v7();
+    let now = utc_now();
+    sqlx::query(
+        "INSERT INTO ca_keys (id, type, key_enc, cert_pem, not_before, not_after, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )
+    .bind(id.to_string())
+    .bind(ca_key_type_str(kind))
+    .bind(enc_json(key_enc))
+    .bind(cert_pem)
+    .bind(ts(not_before))
+    .bind(ts(not_after))
+    .bind(created_by.to_string())
+    .bind(&now)
+    .execute(db)
+    .await?;
+    get_ca_key(db, id).await
+}
+
+fn ca_key_type_str(k: CaKeyType) -> &'static str {
+    match k {
+        CaKeyType::Root => "root",
+        CaKeyType::Intermediate => "intermediate",
+    }
+}
+
+fn parse_ca_key_type(s: &str) -> CaKeyType {
+    match s {
+        "root" => CaKeyType::Root,
+        _ => CaKeyType::Intermediate,
+    }
+}
+
+pub async fn get_ca_key(db: &Db, id: uuid::Uuid) -> Result<CaKey> {
+    let row = sqlx::query("SELECT * FROM ca_keys WHERE id = ?1")
+        .bind(id.to_string())
+        .fetch_one(db)
+        .await
+        .map_err(|_| pandapass_core::CoreError::NotFound("CA key not found".into()))?;
+    Ok(row_to_ca_key(&row))
+}
+
+pub async fn list_ca_keys(db: &Db, include_revoked: bool) -> Result<Vec<CaKey>> {
+    let rows = if include_revoked {
+        sqlx::query("SELECT * FROM ca_keys ORDER BY created_at DESC")
+            .fetch_all(db)
+            .await?
+    } else {
+        sqlx::query("SELECT * FROM ca_keys WHERE revoked_at IS NULL ORDER BY created_at DESC")
+            .fetch_all(db)
+            .await?
+    };
+    Ok(rows.iter().map(row_to_ca_key).collect())
+}
+
+pub async fn revoke_ca_key(db: &Db, id: uuid::Uuid) -> Result<()> {
+    sqlx::query("UPDATE ca_keys SET revoked_at = ?2 WHERE id = ?1")
+        .bind(id.to_string())
+        .bind(utc_now())
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+fn row_to_ca_key(row: &SqliteRow) -> CaKey {
+    let enc_s: String = row.get("key_enc");
+    CaKey {
+        id: uuid::Uuid::parse_str(row.get::<String, _>("id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        kind: parse_ca_key_type(&row.get::<String, _>("type")),
+        key_enc: dec_json(&enc_s),
+        cert_pem: row.get("cert_pem"),
+        not_before: parse_ts(&row.get::<String, _>("not_before")),
+        not_after: parse_ts(&row.get::<String, _>("not_after")),
+        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str()).unwrap_or(uuid::Uuid::nil()),
+        created_at: parse_ts(&row.get::<String, _>("created_at")),
+        revoked_at: parse_opt_ts(row.get("revoked_at")),
+    }
+}
+
+// ─────────────────────────── SSH certificates (M4) ───────────────────────────
+
+pub async fn create_ssh_cert(
+    db: &Db,
+    user_id: uuid::Uuid,
+    project_id: Option<uuid::Uuid>,
+    principal: &str,
+    cert_pem: &str,
+    key_type: SshKeyType,
+    valid_before: chrono::DateTime<chrono::Utc>,
+    valid_after: chrono::DateTime<chrono::Utc>,
+    created_by: uuid::Uuid,
+) -> Result<SshCert> {
+    let id = uuid::Uuid::now_v7();
+    let now = utc_now();
+    sqlx::query(
+        "INSERT INTO ssh_certs (id, user_id, project_id, principal, cert_pem, key_type, valid_before, valid_after, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )
+    .bind(id.to_string())
+    .bind(user_id.to_string())
+    .bind(project_id.map(|v| v.to_string()))
+    .bind(principal)
+    .bind(cert_pem)
+    .bind(ssh_key_type_str(key_type))
+    .bind(ts(valid_before))
+    .bind(ts(valid_after))
+    .bind(created_by.to_string())
+    .bind(&now)
+    .execute(db)
+    .await?;
+    get_ssh_cert(db, id).await
+}
+
+fn ssh_key_type_str(k: SshKeyType) -> &'static str {
+    match k {
+        SshKeyType::Rsa => "rsa",
+        SshKeyType::Ed25519 => "ed25519",
+    }
+}
+
+fn parse_ssh_key_type(s: &str) -> SshKeyType {
+    match s {
+        "rsa" => SshKeyType::Rsa,
+        _ => SshKeyType::Ed25519,
+    }
+}
+
+pub async fn get_ssh_cert(db: &Db, id: uuid::Uuid) -> Result<SshCert> {
+    let row = sqlx::query("SELECT * FROM ssh_certs WHERE id = ?1")
+        .bind(id.to_string())
+        .fetch_one(db)
+        .await
+        .map_err(|_| pandapass_core::CoreError::NotFound("SSH certificate not found".into()))?;
+    Ok(row_to_ssh_cert(&row))
+}
+
+pub async fn list_ssh_certs(
+    db: &Db,
+    user_id: Option<uuid::Uuid>,
+    project_id: Option<uuid::Uuid>,
+    include_revoked: bool,
+) -> Result<Vec<SshCert>> {
+    let rows = sqlx::query(
+        "SELECT * FROM ssh_certs WHERE (?1 IS NULL OR user_id = ?1) AND (?2 IS NULL OR project_id = ?2) AND (?3 = 1 OR revoked_at IS NULL) ORDER BY created_at DESC",
+    )
+    .bind(user_id.map(|v| v.to_string()))
+    .bind(project_id.map(|v| v.to_string()))
+    .bind(if include_revoked { 1 } else { 0 })
+    .fetch_all(db)
+    .await?;
+    Ok(rows.iter().map(row_to_ssh_cert).collect())
+}
+
+pub async fn revoke_ssh_cert(db: &Db, id: uuid::Uuid) -> Result<()> {
+    sqlx::query("UPDATE ssh_certs SET revoked_at = ?2 WHERE id = ?1")
+        .bind(id.to_string())
+        .bind(utc_now())
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+fn row_to_ssh_cert(row: &SqliteRow) -> SshCert {
+    SshCert {
+        id: uuid::Uuid::parse_str(row.get::<String, _>("id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        user_id: uuid::Uuid::parse_str(row.get::<String, _>("user_id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        project_id: row.get::<Option<String>, _>("project_id").and_then(|s| uuid::Uuid::parse_str(&s).ok()),
+        principal: row.get("principal"),
+        cert_pem: row.get("cert_pem"),
+        key_type: parse_ssh_key_type(&row.get::<String, _>("key_type")),
+        valid_before: parse_ts(&row.get::<String, _>("valid_before")),
+        valid_after: parse_ts(&row.get::<String, _>("valid_after")),
+        revoked_at: parse_opt_ts(row.get("revoked_at")),
+        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str()).unwrap_or(uuid::Uuid::nil()),
+        created_at: parse_ts(&row.get::<String, _>("created_at")),
+    }
+}
