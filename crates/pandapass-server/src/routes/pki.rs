@@ -115,16 +115,16 @@ pub async fn list_ssh_certs(
     State(state): State<AppState>,
     Query(query): Query<ListSshCertsQuery>,
 ) -> Result<Json<Vec<SshCert>>, ApiError> {
-    // Admins can see all, users can only see their own
-    let user_id = if auth.can(Permission::ManageUsers) {
-        query.user_id
-    } else {
-        Some(auth.user.id)
-    };
+    // Only admins (session or service token with manage:users scope) can list.
+    // Service tokens never have ManageUsers (required_scope returns None),
+    // so they are rejected here.
+    if !auth.can(Permission::ManageUsers) {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
 
     let certs = db::list_ssh_certs(
         &state.db,
-        user_id,
+        query.user_id,
         query.project_id,
         query.include_revoked.unwrap_or(false),
     ).await?;

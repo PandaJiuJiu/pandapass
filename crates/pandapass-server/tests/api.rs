@@ -145,6 +145,19 @@ impl Harness {
         .await
     }
 
+    async fn patch(&self, path: &str, token: &str, body: Value) -> Res {
+        self.send(
+            Request::builder()
+                .method("PATCH")
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+    }
+
     /// Register the first account and return its session token.
     ///
     /// That user becomes admin, which is what makes the scope tests meaningful:
@@ -679,4 +692,332 @@ async fn deleting_a_secret_does_not_destroy_it_immediately() {
         .filter(|s| s["deleted_at"].is_null())
         .collect();
     assert!(live.is_empty(), "a deleted secret must not appear as live");
+}
+
+// ── dynamic credentials (M2) ──────────────────────────────────────────────────
+
+/// A read-only token can list dynamic credentials but cannot create or revoke.
+#[tokio::test]
+async fn dynamic_creds_scope_boundary() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+
+    // Admin creates one
+    let create = h
+        .post(
+            "/api/v1/projects/demo/envs/prod/creds",
+            &admin,
+            json!({ "kind": "postgresql", "username": "reader", "ttl_seconds": 3600 }),
+        )
+        .await;
+    assert!(create.ok(), "admin create failed: {:?}", create.body);
+    let cred_id = create.body["cred"]["id"].as_str().unwrap().to_string();
+
+    // list:secret can list (read:secret alone cannot)
+    let lister = h.token(&admin, &["list:secret"]).await;
+    let list = h.get("/api/v1/projects/demo/envs/prod/creds", &lister).await;
+    assert!(list.ok(), "list:secret must list: {:?}", list.body);
+    assert_eq!(list.body.as_array().unwrap().len(), 1);
+
+    // read:secret alone cannot list
+    let reader = h.token(&admin, &["read:secret"]).await;
+    let list_denied = h.get("/api/v1/projects/demo/envs/prod/creds", &reader).await;
+    assert_eq!(list_denied.status, StatusCode::FORBIDDEN);
+
+    // list:secret cannot create
+    let create_denied = h
+        .post(
+            "/api/v1/projects/demo/envs/prod/creds",
+            &lister,
+            json!({ "kind": "postgresql", "username": "attacker", "ttl_seconds": 3600 }),
+        )
+        .await;
+    assert_eq!(create_denied.status, StatusCode::FORBIDDEN);
+
+    // list:secret cannot revoke
+    let revoke_denied = h
+        .del(&format!("/api/v1/projects/demo/envs/prod/creds/{cred_id}"), &lister)
+        .await;
+    assert_eq!(revoke_denied.status, StatusCode::FORBIDDEN);
+
+    // write:secret can create and revoke
+    let writer = h.token(&admin, &["write:secret"]).await;
+    let create2 = h
+        .post(
+            "/api/v1/projects/demo/envs/prod/creds",
+            &writer,
+            json!({ "kind": "mysql", "username": "writer", "ttl_seconds": 7200 }),
+        )
+        .await;
+    assert!(create2.ok(), "write:secret must create: {:?}", create2.body);
+    let cred_id2 = create2.body["cred"]["id"].as_str().unwrap().to_string();
+
+    let revoke = h
+        .del(&format!("/api/v1/projects/demo/envs/prod/creds/{cred_id2}"), &writer)
+        .await;
+    assert!(revoke.ok(), "write:secret must revoke: {:?}", revoke.body);
+}
+
+/// Dynamic credentials are never returned in plaintext after creation.
+#[tokio::test]
+async fn dynamic_cred_never_returns_plaintext() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+
+    // Create — the plaintext is in the response ONCE
+    let create = h
+        .post(
+            "/api/v1/projects/demo/envs/prod/creds",
+            &admin,
+            json!({ "kind": "redis", "username": "cache-user", "ttl_seconds": 3600 }),
+        )
+        .await;
+    assert!(create.ok(), "create failed: {:?}", create.body);
+    let plain = create.body["plain_password"].as_str().unwrap().to_string();
+    assert!(!plain.is_empty());
+
+    // List does NOT include the plaintext
+    let list = h.get("/api/v1/projects/demo/envs/prod/creds", &admin).await;
+    assert!(list.ok());
+    let rendered = list.body.to_string();
+    assert!(
+        !rendered.contains(&plain),
+        "list must never contain the plaintext password"
+    );
+    // The username is metadata and IS returned - that's expected
+    assert!(
+        rendered.contains("cache-user"),
+        "username is metadata and should be in the list"
+    );
+}
+
+// ── policies (M3) ─────────────────────────────────────────────────────────────
+
+/// Only admins can manage policies.
+#[tokio::test]
+async fn policies_admin_only() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+
+    // Admin can CRUD
+    let create = h
+        .post(
+            "/api/v1/policies",
+            &admin,
+            json!({ "name": "test-policy", "rego_source": "package test\ndeny[msg] { true }" }),
+        )
+        .await;
+    assert!(create.ok(), "admin create failed: {:?}", create.body);
+    let policy_id = create.body["id"].as_str().unwrap().to_string();
+
+    let list = h.get("/api/v1/policies?enabled_only=true", &admin).await;
+    assert!(list.ok());
+    assert_eq!(list.body.as_array().unwrap().len(), 1);
+
+    let get = h.get(&format!("/api/v1/policies/{policy_id}"), &admin).await;
+    assert!(get.ok());
+    assert_eq!(get.body["name"], "test-policy");
+
+    let update = h
+        .patch(&format!("/api/v1/policies/{policy_id}"), &admin, json!({ "enabled": false }))
+        .await;
+    assert!(update.ok());
+
+    let del = h.del(&format!("/api/v1/policies/{policy_id}"), &admin).await;
+    assert!(del.ok());
+
+    // Non-admin token cannot do any of the above
+    let writer = h.token(&admin, &["write:secret", "read:secret"]).await;
+
+    let denied = h
+        .post(
+            "/api/v1/policies",
+            &writer,
+            json!({ "name": "x", "rego_source": "x" }),
+        )
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let denied = h.get("/api/v1/policies?enabled_only=true", &writer).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let denied = h.get(&format!("/api/v1/policies/{policy_id}"), &writer).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let denied = h
+        .patch(&format!("/api/v1/policies/{policy_id}"), &writer, json!({ "enabled": false }))
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let denied = h.del(&format!("/api/v1/policies/{policy_id}"), &writer).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+}
+
+/// Policy bindings are admin-only and scoped to project/env.
+#[tokio::test]
+async fn policy_bindings_admin_only() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+
+    // Create a policy first
+    let policy = h
+        .post(
+            "/api/v1/policies",
+            &admin,
+            json!({ "name": "bind-test", "rego_source": "package test\ndeny[msg] { true }" }),
+        )
+        .await;
+    assert!(policy.ok());
+    let policy_id = policy.body["id"].as_str().unwrap();
+
+    // Admin can bind
+    let bind = h
+        .post(
+            "/api/v1/policies/bindings",
+            &admin,
+            json!({ "policy_id": policy_id }),
+        )
+        .await;
+    assert!(bind.ok(), "admin bind failed: {:?}", bind.body);
+    let binding_id = bind.body["id"].as_str().unwrap().to_string();
+
+    let list = h.get("/api/v1/policies/bindings", &admin).await;
+    assert!(list.ok());
+    assert_eq!(list.body.as_array().unwrap().len(), 1);
+
+    // Non-admin cannot
+    let writer = h.token(&admin, &["write:secret"]).await;
+    let denied = h
+        .post("/api/v1/policies/bindings", &writer, json!({ "policy_id": policy_id }))
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let denied = h.get("/api/v1/policies/bindings", &writer).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let denied = h.del(&format!("/api/v1/policies/bindings/{binding_id}"), &writer).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    // Admin can unbind
+    let unbind = h.del(&format!("/api/v1/policies/bindings/{binding_id}"), &admin).await;
+    assert!(unbind.ok());
+}
+
+// ── PKI/CA and SSH (M4) ───────────────────────────────────────────────────────
+
+/// Only admins can manage CA keys.
+#[tokio::test]
+async fn ca_keys_admin_only() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    // Admin can list
+    let list = h.get("/api/v1/ca?include_revoked=true", &admin).await;
+    assert!(list.ok());
+
+    // Admin can create
+    let key_pem = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg...\n-----END PRIVATE KEY-----";
+    let cert_pem = "-----BEGIN CERTIFICATE-----\nMIIBUTCCAQigAwIBAgIJ...\n-----END CERTIFICATE-----";
+    let not_before = "2024-01-01T00:00:00Z";
+    let not_after = "2025-01-01T00:00:00Z";
+
+    let create = h
+        .post(
+            "/api/v1/ca",
+            &admin,
+            json!({
+                "kind": "intermediate",
+                "key_pem": key_pem,
+                "cert_pem": cert_pem,
+                "not_before": not_before,
+                "not_after": not_after,
+            }),
+        )
+        .await;
+    assert!(create.ok(), "admin create CA failed: {:?}", create.body);
+    let ca_id = create.body["id"].as_str().unwrap().to_string();
+
+    let get = h.get(&format!("/api/v1/ca/{ca_id}"), &admin).await;
+    assert!(get.ok());
+    assert_eq!(get.body["kind"], "intermediate");
+
+    let revoke = h.del(&format!("/api/v1/ca/{ca_id}"), &admin).await;
+    assert!(revoke.ok());
+
+    // Non-admin token cannot
+    let writer = h.token(&admin, &["write:secret"]).await;
+
+    let denied = h.get("/api/v1/ca?include_revoked=true", &writer).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let denied = h
+        .post(
+            "/api/v1/ca",
+            &writer,
+            json!({
+                "kind": "intermediate",
+                "key_pem": key_pem,
+                "cert_pem": cert_pem,
+                "not_before": not_before,
+                "not_after": not_after,
+            }),
+        )
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let denied = h.get(&format!("/api/v1/ca/{ca_id}"), &writer).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let denied = h.del(&format!("/api/v1/ca/{ca_id}"), &writer).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+}
+
+/// SSH certs: only admins can list/manage them.
+#[tokio::test]
+async fn ssh_certs_admin_only() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+
+    // Admin can list all
+    let list = h.get("/api/v1/ssh-certs?include_revoked=true", &admin).await;
+    assert!(list.ok());
+
+    // Admin can create for themselves
+    let cert_pem = "ssh-ed25519-cert-v01@openssh.com AAAA...";
+    let not_before = "2024-01-01T00:00:00Z";
+    let not_after = "2025-01-01T00:00:00Z";
+
+    let me = h.get("/api/v1/auth/me", &admin).await;
+    let user_id = me.body["id"].as_str().unwrap();
+
+    let create = h
+        .post(
+            "/api/v1/ssh-certs",
+            &admin,
+            json!({
+                "user_id": user_id,
+                "principal": "admin@build-*",
+                "cert_pem": cert_pem,
+                "key_type": "ed25519",
+                "valid_before": not_before,
+                "valid_after": not_after,
+            }),
+        )
+        .await;
+    assert!(create.ok(), "admin create ssh cert failed: {:?}", create.body);
+    let cert_id = create.body["id"].as_str().unwrap().to_string();
+
+    // Non-admin token cannot list (no scope grants ManageUsers)
+    let writer = h.token(&admin, &["read:secret", "write:secret"]).await;
+    let denied = h.get("/api/v1/ssh-certs?include_revoked=true", &writer).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    // Revoke
+    let revoke = h.del(&format!("/api/v1/ssh-certs/{cert_id}"), &admin).await;
+    assert!(revoke.ok());
 }
