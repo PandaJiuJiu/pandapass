@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{AppState, StartupInfo};
 use crate::middleware::auth::{ApiError, require_csrf};
-use crate::routes::{auth, dynamic, policies, projects, secrets, tokens};
+use crate::routes::{auth, dynamic, policies, pki, projects, secrets, tokens};
 use pandapass_core::{AuditAction, AuditContext, CommandResult};
 
 pub mod state;
@@ -23,6 +23,7 @@ mod routes {
     pub mod tokens;
     pub mod dynamic;
     pub mod policies;
+    pub mod pki;
 }
 
 pub mod middleware {
@@ -72,6 +73,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/policies/{id}", get(policies::get_policy).patch(policies::update_policy).delete(policies::delete_policy))
         .route("/api/v1/policies/bindings", get(policies::list_policy_bindings).post(policies::bind_policy))
         .route("/api/v1/policies/bindings/{id}", delete(policies::unbind_policy))
+        .route("/api/v1/ca", get(pki::list_ca_keys).post(pki::create_ca_key))
+        .route("/api/v1/ca/{id}", get(pki::get_ca_key).delete(pki::revoke_ca_key))
+        .route("/api/v1/ssh-certs", get(pki::list_ssh_certs).post(pki::create_ssh_cert))
+        .route("/api/v1/ssh-certs/{id}", delete(pki::revoke_ssh_cert))
         .route("/api/v1/tokens", get(tokens::list_tokens).post(tokens::create_token))
         .route("/api/v1/tokens/{id}", delete(tokens::revoke_token))
         .route("/api/v1/audit", get(tokens::list_audit));
