@@ -16,7 +16,7 @@ const form = ref<CreateDynamicCredRequest>({
 })
 const formError = ref('')
 
-const kindOptions = ['postgres', 'mysql', 'redis'] as const
+const kindOptions = ['postgresql', 'mysql', 'redis'] as const
 
 async function loadCreds() {
   if (!route.params.slug) return
