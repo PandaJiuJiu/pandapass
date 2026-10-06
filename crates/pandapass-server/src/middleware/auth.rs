@@ -272,6 +272,16 @@ impl From<sqlx::Error> for ApiError {
     }
 }
 
+impl From<pandapass_core::policy::PolicyError> for ApiError {
+    fn from(e: pandapass_core::policy::PolicyError) -> Self {
+        match e {
+            pandapass_core::policy::PolicyError::Compile(m) => ApiError::Internal(format!("Policy compile error: {}", m)),
+            pandapass_core::policy::PolicyError::Engine(m) => ApiError::Internal(format!("Policy engine error: {}", m)),
+            pandapass_core::policy::PolicyError::NotInitialized => ApiError::Internal("Policy engine not initialized".into()),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let (status, code) = match &self {

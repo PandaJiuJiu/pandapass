@@ -1,4 +1,5 @@
 use pandapass_core::audit::AuditService;
+use pandapass_core::policy::PolicyEngine;
 use pandapass_db::Db;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -12,6 +13,8 @@ pub struct AppState {
     /// Limits concurrent secret-decrypt + subprocess operations
     pub exec_semaphore: Arc<Semaphore>,
     pub master_key_cache: Arc<tokio::sync::RwLock<Option<pandapass_core::crypto::MasterKey>>>,
+    /// Policy evaluation engine (M3)
+    pub policy_engine: Arc<PolicyEngine>,
 }
 
 impl AppState {
@@ -23,6 +26,7 @@ impl AppState {
             config: Arc::new(config),
             exec_semaphore: Arc::new(Semaphore::new(max_concurrent)),
             master_key_cache: Arc::new(tokio::sync::RwLock::new(None)),
+            policy_engine: Arc::new(PolicyEngine::new()),
         }
     }
 }

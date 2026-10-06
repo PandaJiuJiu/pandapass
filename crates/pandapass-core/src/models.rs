@@ -46,6 +46,14 @@ impl ProjectRole {
     pub fn can_view_audit(&self) -> bool {
         matches!(self, Self::Owner | Self::Editor)
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Editor => "editor",
+            Self::Viewer => "viewer",
+        }
+    }
 }
 
 /// User model

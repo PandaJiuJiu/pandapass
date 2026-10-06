@@ -2,6 +2,7 @@ use axum::{extract::{Path, Query, State}, Json};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::crypto::{EncryptedSecret, MasterKey};
 use pandapass_core::models::*;
+use pandapass_core::policy::{PolicyDecision, PolicyInput};
 use pandapass_core::rbac::Rbac;
 use pandapass_db as db;
 use secrecy::ExposeSecret;
@@ -118,6 +119,22 @@ pub async fn list_secrets(
 
     Rbac::check_secret_access(&ctx, project.id, env.id, true)?;
 
+    // Policy evaluation
+    let input = PolicyInput::for_context(
+        &ctx,
+        &slug,
+        &env_slug,
+        Permission::ListSecrets,
+        None,
+    );
+    if let PolicyDecision::Deny { policy_id, message } = state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await? {
+        let mut denied = AuditContext::new(&ctx, AuditAction::SecretList)
+            .with_project(project.id)
+            .with_env(env.id);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+    }
+
     let metas = db::list_secret_metas(&state.db, project.id, env.id).await?;
 
     let mut audit = AuditContext::new(&ctx, AuditAction::SecretList);
@@ -151,6 +168,23 @@ pub async fn get_secret(
 
     Rbac::check_secret_access(&ctx, project.id, env.id, true)?;
 
+    // Policy evaluation
+    let input = PolicyInput::for_context(
+        &ctx,
+        &slug,
+        &env_slug,
+        Permission::ReadSecret,
+        Some(&key),
+    );
+    if let PolicyDecision::Deny { policy_id, message } = state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await? {
+        let mut denied = AuditContext::new(&ctx, AuditAction::SecretRead)
+            .with_project(project.id)
+            .with_env(env.id)
+            .with_secret_key(key.clone());
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+    }
+
     let secret = db::get_secret(&state.db, project.id, env.id, &key).await?;
     let mk = get_master_key(&state, ctx.user.id).await?;
     let value = secret.value_enc.decrypt(&mk)?.expose_secret().to_string();
@@ -183,6 +217,23 @@ pub async fn get_secret_encrypted(
     let ctx = scope_auth(&state, &auth, &project, &env).await;
 
     Rbac::check_secret_access(&ctx, project.id, env.id, true)?;
+
+    // Policy evaluation
+    let input = PolicyInput::for_context(
+        &ctx,
+        &slug,
+        &env_slug,
+        Permission::ReadSecret,
+        Some(&key),
+    );
+    if let PolicyDecision::Deny { policy_id, message } = state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await? {
+        let mut denied = AuditContext::new(&ctx, AuditAction::SecretRead)
+            .with_project(project.id)
+            .with_env(env.id)
+            .with_secret_key(key.clone());
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+    }
 
     let secret = db::get_secret(&state.db, project.id, env.id, &key).await?;
 
@@ -233,6 +284,23 @@ async fn write_secret(
     let project = db::get_project_by_slug(&state.db, slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, env_slug).await?;
     let ctx = scope_auth(state, auth, &project, &env).await;
+
+    // Policy evaluation for write
+    let input = PolicyInput::for_context(
+        &ctx,
+        slug,
+        env_slug,
+        Permission::WriteSecret,
+        Some(&key),
+    );
+    if let PolicyDecision::Deny { policy_id, message } = state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await? {
+        let mut denied = AuditContext::new(&ctx, AuditAction::SecretUpdate)
+            .with_project(project.id)
+            .with_env(env.id)
+            .with_secret_key(key.clone());
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+    }
 
     // A refused write is the single most interesting event in a vault's audit
     // log: it is what a credential-rolling attacker looks like. Record it
@@ -322,6 +390,23 @@ pub async fn delete_secret(
     let project = db::get_project_by_slug(&state.db, &slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
     let ctx = scope_auth(&state, &auth, &project, &env).await;
+
+    // Policy evaluation for delete
+    let input = PolicyInput::for_context(
+        &ctx,
+        &slug,
+        &env_slug,
+        Permission::DeleteSecret,
+        Some(&key),
+    );
+    if let PolicyDecision::Deny { policy_id, message } = state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await? {
+        let mut denied = AuditContext::new(&ctx, AuditAction::SecretDelete)
+            .with_project(project.id)
+            .with_env(env.id)
+            .with_secret_key(key.clone());
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+    }
 
     Rbac::check_secret_access(&ctx, project.id, env.id, false)?;
 

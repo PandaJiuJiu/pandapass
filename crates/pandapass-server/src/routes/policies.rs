@@ -51,6 +51,9 @@ pub async fn create_policy(
     audit = audit.with_meta(serde_json::json!({ "policy_id": policy.id, "name": policy.name }));
     state.audit.log_success(&mut audit).await.ok();
 
+    // Reload policy engine
+    reload_policy_engine(&state).await;
+
     Ok(Json(policy))
 }
 
@@ -81,6 +84,9 @@ pub async fn update_policy(
     audit = audit.with_meta(serde_json::json!({ "policy_id": id }));
     state.audit.log_success(&mut audit).await.ok();
 
+    // Reload policy engine
+    reload_policy_engine(&state).await;
+
     Ok(())
 }
 
@@ -97,6 +103,9 @@ pub async fn delete_policy(
     let mut audit = AuditContext::new(&auth, AuditAction::PolicyDelete);
     audit = audit.with_meta(serde_json::json!({ "policy_id": id }));
     state.audit.log_success(&mut audit).await.ok();
+
+    // Reload policy engine
+    reload_policy_engine(&state).await;
 
     Ok(())
 }
@@ -142,6 +151,9 @@ pub async fn bind_policy(
     audit = audit.with_meta(serde_json::json!({ "binding_id": binding.id, "policy_id": req.policy_id }));
     state.audit.log_success(&mut audit).await.ok();
 
+    // Reload policy engine
+    reload_policy_engine(&state).await;
+
     Ok(Json(binding))
 }
 
@@ -159,5 +171,27 @@ pub async fn unbind_policy(
     audit = audit.with_meta(serde_json::json!({ "binding_id": id }));
     state.audit.log_success(&mut audit).await.ok();
 
+    // Reload policy engine
+    reload_policy_engine(&state).await;
+
     Ok(())
+}
+
+/// Reload the policy engine with all enabled policies and current bindings.
+async fn reload_policy_engine(state: &AppState) {
+    // Load all enabled policies
+    let policies = db::list_policies(&state.db, true).await;
+    if let Ok(policies) = policies {
+        for policy in policies {
+            if let Err(e) = state.policy_engine.upsert_policy(&policy).await {
+                tracing::warn!("Failed to load policy {}: {}", policy.id, e);
+            }
+        }
+    }
+
+    // Rebuild bindings
+    let bindings = db::list_policy_bindings(&state.db, None, None).await;
+    if let Ok(bindings) = bindings {
+        state.policy_engine.rebuild_bindings(&bindings).await;
+    }
 }

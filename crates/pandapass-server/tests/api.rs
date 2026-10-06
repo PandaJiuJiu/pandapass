@@ -1021,3 +1021,154 @@ async fn ssh_certs_admin_only() {
     let revoke = h.del(&format!("/api/v1/ssh-certs/{cert_id}"), &admin).await;
     assert!(revoke.ok());
 }
+
+// ── policy evaluation (M3) ──────────────────────────────────────────────────────
+
+/// Policy evaluation actually denies requests and returns the policy ID in the error.
+#[tokio::test]
+async fn policy_evaluation_denies_and_returns_policy_id() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    h.set_secret(&admin, "API_KEY", "secret-value").await;
+
+    // Create a policy: deny read_secret in prod env for non-admins
+    let rego = r#"
+package pandapass.authz
+
+deny[msg] {
+    input.action == "read_secret"
+    input.env == "prod"
+    input.role != "admin"
+    msg := sprintf("%s with role %s denied in %s", [input.action, input.role, input.env])
+}
+"#;
+
+    let create = h
+        .post(
+            "/api/v1/policies",
+            &admin,
+            json!({ "name": "deny-prod-read", "rego_source": rego }),
+        )
+        .await;
+    assert!(create.ok(), "admin create policy failed: {:?}", create.body);
+    let policy_id = create.body["id"].as_str().unwrap().to_string();
+
+    // Bind it globally (None, None)
+    let bind = h
+        .post(
+            "/api/v1/policies/bindings",
+            &admin,
+            json!({ "policy_id": policy_id }),
+        )
+        .await;
+    assert!(bind.ok(), "admin bind failed: {:?}", bind.body);
+
+    // Admin (global role) should still be allowed
+    let read = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &admin).await;
+    assert!(read.ok(), "admin should be allowed: {:?}", read.body);
+
+    // Create a non-admin token with read:secret
+    let reader = h.token(&admin, &["read:secret"]).await;
+
+    // Reader should be denied by policy
+    let denied = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &reader).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "policy should deny: {:?}", denied.body);
+
+    // Error message should contain the policy ID
+    let error_msg = denied.body["error"]["message"].as_str().unwrap();
+    assert!(error_msg.contains(&policy_id), "error should contain policy ID: {}", error_msg);
+    assert!(error_msg.contains("denied"), "error should contain denial message: {}", error_msg);
+}
+
+/// A binding scoped to one environment must not reach the others. Policies
+/// are the escape hatch out of RBAC's blunt role model, so their own scoping
+/// has to be exact: a `prod` rule that also fires in `dev` is a self-inflicted
+/// outage waiting to happen.
+#[tokio::test]
+async fn policy_binding_applies_only_to_bound_env() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    // `create_project` seeds dev/staging/prod, so both envs exist already.
+    h.set_secret(&admin, "PROD_ONLY", "prod-value").await;
+    h.post(
+        "/api/v1/projects/demo/envs/dev/secrets",
+        &admin,
+        json!({ "key": "DEV_ONLY", "value": "dev-value" }),
+    )
+    .await;
+
+    let envs = h.get("/api/v1/projects/demo/envs", &admin).await;
+    let prod_id = envs
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["slug"] == "prod")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let rego = r#"
+package pandapass.authz
+
+deny[msg] {
+    input.action == "read_secret"
+    msg := sprintf("%s denied for role %s", [input.action, input.role])
+}
+"#;
+
+    let create = h
+        .post(
+            "/api/v1/policies",
+            &admin,
+            json!({ "name": "prod-deny-all", "rego_source": rego }),
+        )
+        .await;
+    assert!(create.ok());
+    let policy_id = create.body["id"].as_str().unwrap().to_string();
+
+    // Bound to prod only (*.demo.prod). It deliberately says nothing about
+    // the env, so anything it denies must be reached through the prod binding.
+    let bind = h
+        .post(
+            "/api/v1/policies/bindings",
+            &admin,
+            json!({ "policy_id": policy_id, "env_id": prod_id }),
+        )
+        .await;
+    assert!(bind.ok(), "bind failed: {:?}", bind.body);
+
+    // Admins are not exempt unless the policy says so — but this policy only
+    // fires on read_secret, and admins are exempt below via role=admin.
+    let reader = h.token(&admin, &["read:secret"]).await;
+
+    let denied_prod = h
+        .get("/api/v1/projects/demo/envs/prod/secrets/PROD_ONLY", &reader)
+        .await;
+    assert_eq!(
+        denied_prod.status,
+        StatusCode::FORBIDDEN,
+        "the bound env must be denied: {:?}",
+        denied_prod.body
+    );
+    assert!(
+        denied_prod.body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&policy_id),
+        "the error must name the policy: {:?}",
+        denied_prod.body
+    );
+
+    let allowed_dev = h
+        .get("/api/v1/projects/demo/envs/dev/secrets/DEV_ONLY", &reader)
+        .await;
+    assert!(
+        allowed_dev.ok(),
+        "an unbound env must be untouched: {:?}",
+        allowed_dev.body
+    );
+}

@@ -74,6 +74,21 @@ async fn run() -> anyhow::Result<()> {
     }
     info!("Total users: {}", startup.user_count);
 
+    // Load policy engine with enabled policies and bindings
+    {
+        use pandapass_db::list_policies;
+        use pandapass_db::list_policy_bindings;
+        let policies = list_policies(&state.db, true).await?;
+        for policy in &policies {
+            if let Err(e) = state.policy_engine.upsert_policy(policy).await {
+                warn!("Failed to load policy {}: {}", policy.id, e);
+            }
+        }
+        let bindings = list_policy_bindings(&state.db, None, None).await?;
+        state.policy_engine.rebuild_bindings(&bindings).await;
+        info!("Policy engine loaded: {} policies, {} bindings", policies.len(), bindings.len());
+    }
+
     // Build router
     let app = build_router(state);
 
