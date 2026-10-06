@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{AppState, StartupInfo};
 use crate::middleware::auth::{ApiError, require_csrf};
-use crate::routes::{auth, dynamic, projects, secrets, tokens};
+use crate::routes::{auth, dynamic, policies, projects, secrets, tokens};
 use pandapass_core::{AuditAction, AuditContext, CommandResult};
 
 pub mod state;
@@ -22,6 +22,7 @@ mod routes {
     pub mod secrets;
     pub mod tokens;
     pub mod dynamic;
+    pub mod policies;
 }
 
 pub mod middleware {
@@ -67,6 +68,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}/versions", get(secrets::list_secret_versions))
         .route("/api/v1/projects/{slug}/envs/{env_slug}/creds", get(dynamic::list_dynamic_creds).post(dynamic::create_dynamic_cred))
         .route("/api/v1/projects/{slug}/envs/{env_slug}/creds/{id}", delete(dynamic::revoke_dynamic_cred))
+        .route("/api/v1/policies", get(policies::list_policies).post(policies::create_policy))
+        .route("/api/v1/policies/{id}", get(policies::get_policy).patch(policies::update_policy).delete(policies::delete_policy))
+        .route("/api/v1/policies/bindings", get(policies::list_policy_bindings).post(policies::bind_policy))
+        .route("/api/v1/policies/bindings/{id}", delete(policies::unbind_policy))
         .route("/api/v1/tokens", get(tokens::list_tokens).post(tokens::create_token))
         .route("/api/v1/tokens/{id}", delete(tokens::revoke_token))
         .route("/api/v1/audit", get(tokens::list_audit));
