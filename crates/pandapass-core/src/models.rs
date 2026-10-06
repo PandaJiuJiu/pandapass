@@ -579,6 +579,15 @@ pub enum SshKeyType {
     Ed25519,
 }
 
+impl SshKeyType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Rsa => "rsa",
+            Self::Ed25519 => "ed25519",
+        }
+    }
+}
+
 /// Dynamic credentials (M2)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DynamicCred {
@@ -601,6 +610,16 @@ pub enum DynamicCredKind {
     PostgreSQL,
     MySQL,
     Redis,
+}
+
+impl DynamicCredKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PostgreSQL => "postgresql",
+            Self::MySQL => "mysql",
+            Self::Redis => "redis",
+        }
+    }
 }
 
 /// Policy engine (M3)
@@ -643,6 +662,15 @@ pub struct CaKey {
 pub enum CaKeyType {
     Root,
     Intermediate,
+}
+
+impl CaKeyType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Intermediate => "intermediate",
+        }
+    }
 }
 
 

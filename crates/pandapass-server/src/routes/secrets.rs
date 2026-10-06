@@ -75,7 +75,7 @@ async fn scope_auth(
 /// ciphertext, but a root-level compromise of the running server can still
 /// decrypt. The MCP `run_with_secret` path is what keeps secrets out of the
 /// agent's context.
-async fn get_master_key(state: &AppState, user_id: uuid::Uuid) -> Result<MasterKey, ApiError> {
+pub async fn get_master_key(state: &AppState, user_id: uuid::Uuid) -> Result<MasterKey, ApiError> {
     let Some(identity) = state.config.server_age_identity.as_deref().filter(|s| !s.is_empty())
     else {
         // Not a server fault: this deployment simply cannot decrypt on a

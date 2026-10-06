@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{AppState, StartupInfo};
 use crate::middleware::auth::{ApiError, require_csrf};
-use crate::routes::{auth, projects, secrets, tokens};
+use crate::routes::{auth, dynamic, projects, secrets, tokens};
 use pandapass_core::{AuditAction, AuditContext, CommandResult};
 
 pub mod state;
@@ -21,6 +21,7 @@ mod routes {
     pub mod projects;
     pub mod secrets;
     pub mod tokens;
+    pub mod dynamic;
 }
 
 pub mod middleware {
@@ -64,6 +65,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}", put(secrets::set_secret_at_path).get(secrets::get_secret).delete(secrets::delete_secret))
         .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}/ciphertext", get(secrets::get_secret_encrypted))
         .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}/versions", get(secrets::list_secret_versions))
+        .route("/api/v1/projects/{slug}/envs/{env_slug}/creds", get(dynamic::list_dynamic_creds).post(dynamic::create_dynamic_cred))
+        .route("/api/v1/projects/{slug}/envs/{env_slug}/creds/{id}", delete(dynamic::revoke_dynamic_cred))
         .route("/api/v1/tokens", get(tokens::list_tokens).post(tokens::create_token))
         .route("/api/v1/tokens/{id}", delete(tokens::revoke_token))
         .route("/api/v1/audit", get(tokens::list_audit));
