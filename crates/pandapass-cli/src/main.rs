@@ -74,6 +74,18 @@ enum Commands {
     #[command(subcommand)]
     Config(commands::ConfigCmd),
 
+    /// Dynamic credentials (M2)
+    #[command(subcommand)]
+    Cred(commands::CredCmd),
+
+    /// Policies (M3)
+    #[command(subcommand)]
+    Policy(commands::PolicyCmd),
+
+    /// PKI/CA and SSH certificates (M4)
+    #[command(subcommand)]
+    Pki(commands::PkiCmd),
+
 
     /// Inject secrets into environment and run command
     Run(commands::RunArgs),
@@ -94,10 +106,13 @@ impl From<Commands> for commands::Command {
             Commands::Project(x) => C::Project(x),
             Commands::Env(x) => C::Env(x),
             Commands::Secret(x) => C::Secret(x),
+            Commands::Cred(x) => C::Cred(x),
             Commands::Member(x) => C::Member(x),
             Commands::Token(x) => C::Token(x),
             Commands::Audit(x) => C::Audit(x),
             Commands::Config(x) => C::Config(x),
+            Commands::Policy(x) => C::Policy(x),
+            Commands::Pki(x) => C::Pki(x),
             Commands::Run(x) => C::Run(x),
             Commands::Inject(x) => C::Inject(x),
         }

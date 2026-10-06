@@ -58,10 +58,13 @@ async fn run() -> anyhow::Result<()> {
     let db = connect(&config.db_url).await?;
     migrate(&db).await?;
 
+    // Clone for background cleanup task (must clone before moving into AppState)
+    let cleanup_db = db.clone();
+
     // Audit entries go to SQLite, not memory — a restart must not lose the trail.
     let audit = pandapass_core::AuditService::new(Arc::new(DbAuditLogger::new(db.clone())));
 
-    // Create app state
+    // Create app state (consumes db)
     let state = AppState::new(db, audit, config.clone());
 
     // Bootstrap admin user
@@ -77,6 +80,27 @@ async fn run() -> anyhow::Result<()> {
     // Start server
     let listener = tokio::net::TcpListener::bind(&config.listen_addr).await?;
     info!("Server listening on {}", config.listen_addr);
+
+    // Background cleanup: expired sessions and dynamic credentials. A short
+    // interval is safe because both queries are single indexed DELETEs; the
+    // dynamic-cred sweep is what makes an expired credential actually stop
+    // working rather than merely looking expired in the UI.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            match pandapass_db::cleanup_expired_sessions(&cleanup_db).await {
+                Ok(n) if n > 0 => info!("Cleaned up {} expired sessions", n),
+                Err(e) => warn!("Session cleanup failed: {}", e),
+                _ => {}
+            }
+            match pandapass_db::cleanup_expired_dynamic_creds(&cleanup_db).await {
+                Ok(n) if n > 0 => info!("Cleaned up {} expired dynamic credentials", n),
+                Err(e) => warn!("Dynamic credential cleanup failed: {}", e),
+                _ => {}
+            }
+        }
+    });
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
