@@ -24,6 +24,8 @@ onMounted(() => {
         <router-link to="/projects">Projects</router-link>
         <router-link to="/tokens">Tokens</router-link>
         <router-link to="/audit">Audit</router-link>
+        <router-link to="/policies">Policies</router-link>
+        <router-link to="/pki">PKI</router-link>
       </nav>
       <div class="row">
         <span v-if="auth.user" class="dim mono" style="font-size: 12px">

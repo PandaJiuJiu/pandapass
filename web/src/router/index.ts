@@ -6,6 +6,9 @@ import DashboardView from '@/views/DashboardView.vue'
 import ProjectView from '@/views/ProjectView.vue'
 import TokensView from '@/views/TokensView.vue'
 import AuditView from '@/views/AuditView.vue'
+import DynamicCredsView from '@/views/DynamicCredsView.vue'
+import PoliciesView from '@/views/PoliciesView.vue'
+import PkiView from '@/views/PkiView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -16,6 +19,9 @@ export const router = createRouter({
     { path: '/projects/:slug', component: ProjectView, props: true },
     { path: '/tokens', component: TokensView },
     { path: '/audit', component: AuditView },
+    { path: '/projects/:slug/dynamic-creds', component: DynamicCredsView, props: true },
+    { path: '/policies', component: PoliciesView },
+    { path: '/pki', component: PkiView },
   ],
 })
 

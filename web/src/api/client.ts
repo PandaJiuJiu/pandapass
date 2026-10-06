@@ -171,6 +171,88 @@ export interface ServiceToken {
   revoked_at: string | null
 }
 
+// ── dynamic credentials (M2) ──
+
+export type DynamicCredKind = 'postgres' | 'mysql' | 'redis'
+
+export interface DynamicCred {
+  id: string
+  project_id: string
+  env_id: string
+  kind: DynamicCredKind
+  username: string
+  password_enc: EncryptedSecret
+  ttl_seconds: number
+  issued_at: string
+  expires_at: string
+  revoked_at: string | null
+  created_by: string
+}
+
+export interface CreateDynamicCredRequest {
+  kind: DynamicCredKind
+  username: string
+  ttl_seconds: number
+}
+
+// ── policies (M3) ──
+
+export interface Policy {
+  id: string
+  name: string
+  rego_source: string
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface PolicyBinding {
+  id: string
+  policy_id: string
+  project_id: string | null
+  env_id: string | null
+  created_at: string
+}
+
+// ── PKI/CA (M4) ──
+
+export type CaKeyType = 'root' | 'intermediate'
+
+export interface CaKey {
+  id: string
+  kind: CaKeyType
+  key_enc: EncryptedSecret
+  cert_pem: string
+  not_before: string
+  not_after: string
+  revoked_at: string | null
+  created_by: string
+  created_at: string
+}
+
+export type SshKeyType = 'rsa' | 'ed25519' | 'ecdsa'
+
+export interface SshCert {
+  id: string
+  user_id: string
+  project_id: string | null
+  principal: string
+  cert_pem: string
+  key_type: SshKeyType
+  valid_before: string
+  valid_after: string
+  revoked_at: string | null
+  created_by: string
+  created_at: string
+}
+
+// ── encrypted secret type (shared with core) ──
+
+export interface EncryptedSecret {
+  nonce: string
+  ciphertext: string
+}
+
 // ── auth ───────────────────────────────────────────────────────────────────
 
 export interface LoginResponse {
@@ -271,4 +353,67 @@ export const api = {
     if (projectId) params.set('project_id', projectId)
     return get<Paginated<AuditEntry>>(`/audit?${params}`)
   },
+
+  // ── dynamic credentials (M2) ──
+
+  listDynamicCreds: (project: string, env: string) =>
+    get<DynamicCred[]>(`/projects/${encodeURIComponent(project)}/envs/${encodeURIComponent(env)}/creds`),
+
+  createDynamicCred: (project: string, env: string, body: CreateDynamicCredRequest) =>
+    post<DynamicCred>(`/projects/${encodeURIComponent(project)}/envs/${encodeURIComponent(env)}/creds`, body),
+
+  revokeDynamicCred: (project: string, env: string, id: string) =>
+    del<void>(`/projects/${encodeURIComponent(project)}/envs/${encodeURIComponent(env)}/creds/${encodeURIComponent(id)}`),
+
+  // ── policies (M3) ──
+
+  listPolicies: (enabledOnly = true) =>
+    get<Policy[]>(`/policies?enabled_only=${enabledOnly}`),
+
+  createPolicy: (name: string, regoSource: string) =>
+    post<Policy>('/policies', { name, rego_source: regoSource }),
+
+  getPolicy: (id: string) => get<Policy>(`/policies/${id}`),
+
+  updatePolicy: (id: string, name?: string, regoSource?: string, enabled?: boolean) =>
+    patch<void>(`/policies/${id}`, { name, rego_source: regoSource, enabled }),
+
+  deletePolicy: (id: string) => del<void>(`/policies/${id}`),
+
+  listPolicyBindings: (projectId?: string, envId?: string) => {
+    const params = new URLSearchParams()
+    if (projectId) params.set('project_id', projectId)
+    if (envId) params.set('env_id', envId)
+    return get<PolicyBinding[]>(`/policies/bindings?${params}`)
+  },
+
+  bindPolicy: (policyId: string, projectId?: string, envId?: string) =>
+    post<PolicyBinding>('/policies/bindings', { policy_id: policyId, project_id: projectId, env_id: envId }),
+
+  unbindPolicy: (id: string) => del<void>(`/policies/bindings/${id}`),
+
+  // ── PKI/CA (M4) ──
+
+  listCaKeys: (includeRevoked = false) =>
+    get<CaKey[]>(`/ca?include_revoked=${includeRevoked}`),
+
+  createCaKey: (kind: CaKeyType, keyPem: string, certPem: string, notBefore: string, notAfter: string) =>
+    post<CaKey>('/ca', { kind, key_pem: keyPem, cert_pem: certPem, not_before: notBefore, not_after: notAfter }),
+
+  getCaKey: (id: string) => get<CaKey>(`/ca/${id}`),
+
+  revokeCaKey: (id: string) => del<void>(`/ca/${id}`),
+
+  listSshCerts: (userId?: string, projectId?: string, includeRevoked = false) => {
+    const params = new URLSearchParams()
+    if (userId) params.set('user_id', userId)
+    if (projectId) params.set('project_id', projectId)
+    params.set('include_revoked', String(includeRevoked))
+    return get<SshCert[]>(`/ssh-certs?${params}`)
+  },
+
+  createSshCert: (userId: string, principal: string, certPem: string, keyType: SshKeyType, validBefore: string, validAfter: string, projectId?: string) =>
+    post<SshCert>('/ssh-certs', { user_id: userId, project_id: projectId, principal, cert_pem: certPem, key_type: keyType, valid_before: validBefore, valid_after: validAfter }),
+
+  revokeSshCert: (id: string) => del<void>(`/ssh-certs/${id}`),
 }
