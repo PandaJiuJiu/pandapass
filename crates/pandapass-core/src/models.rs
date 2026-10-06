@@ -556,6 +556,96 @@ impl Permission {
     }
 }
 
+/// SSH certificates table
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshCert {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub project_id: Option<Uuid>,
+    pub principal: String,
+    pub cert_pem: String,
+    pub key_type: SshKeyType,
+    pub valid_before: DateTime<Utc>,
+    pub valid_after: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SshKeyType {
+    Rsa,
+    Ed25519,
+}
+
+/// Dynamic credentials (M2)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicCred {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub env_id: Uuid,
+    pub kind: DynamicCredKind,
+    pub username: String,
+    pub password_enc: EncryptedSecret,
+    pub ttl_seconds: i64,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_by: Uuid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DynamicCredKind {
+    PostgreSQL,
+    MySQL,
+    Redis,
+}
+
+/// Policy engine (M3)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Policy {
+    pub id: Uuid,
+    pub name: String,
+    pub rego_source: String,
+    pub enabled: bool,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyBinding {
+    pub id: Uuid,
+    pub policy_id: Uuid,
+    pub project_id: Option<Uuid>,
+    pub env_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// PKI/CA (M4)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaKey {
+    pub id: Uuid,
+    pub kind: CaKeyType,
+    pub key_enc: EncryptedSecret,
+    pub cert_pem: String,
+    pub not_before: DateTime<Utc>,
+    pub not_after: DateTime<Utc>,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaKeyType {
+    Root,
+    Intermediate,
+}
+
+
 /// API request/response types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginRequest {
