@@ -197,11 +197,18 @@ pub struct ServiceToken {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenScope {
+    /// Read plaintext secret values. Means the holder can see the secret —
+    /// never grant this to a token that is supposed to never see one.
     ReadSecret,
     WriteSecret,
     ListSecret,
     ReadAudit,
     ManageProject,
+    /// Server-side secret injection: the holder names keys and a command; the
+    /// server decrypts and injects into the child process. The values never
+    /// reach the agent. Mutually independent of `read:secret` — a token with
+    /// only this scope cannot read plaintext, and vice versa.
+    RunSecret,
 }
 
 impl TokenScope {
@@ -212,6 +219,7 @@ impl TokenScope {
             "list:secret" => Some(Self::ListSecret),
             "read:audit" => Some(Self::ReadAudit),
             "manage:project" => Some(Self::ManageProject),
+            "run:secret" => Some(Self::RunSecret),
             _ => None,
         }
     }
@@ -223,6 +231,7 @@ impl TokenScope {
             Self::ListSecret => "list:secret",
             Self::ReadAudit => "read:audit",
             Self::ManageProject => "manage:project",
+            Self::RunSecret => "run:secret",
         }
     }
 }
@@ -469,10 +478,17 @@ impl AuthContext {
     /// Session-authenticated humans are unaffected — they go through `can`.
     fn required_scope(action: Permission) -> Option<TokenScope> {
         Some(match action {
+            // Plaintext read path. Holds the value briefly but in the clear.
+            // Tokens intended to never see a value must use `RunSecret`
+            // instead; that path never returns plaintext.
             Permission::ReadSecret => TokenScope::ReadSecret,
             Permission::WriteSecret | Permission::DeleteSecret => TokenScope::WriteSecret,
             Permission::ListSecrets => TokenScope::ListSecret,
             Permission::ReadAudit => TokenScope::ReadAudit,
+            // Server-side exec / ciphertext fetch. Independent of `ReadSecret`:
+            // a token can hold one without the other, and the test in
+            // `rbac::run_scoped_token_cannot_read_plaintext` is the lock.
+            Permission::RunSecret => TokenScope::RunSecret,
             Permission::CreateProject
             | Permission::UpdateProject
             | Permission::DeleteProject
@@ -534,6 +550,10 @@ pub enum Permission {
     WriteSecret,
     DeleteSecret,
     ListSecrets,
+    /// Server-side secret injection. Granted by `run:secret` and only by
+    /// `run:secret` — independent of `ReadSecret` so a token can hold one
+    /// without ever being able to read plaintext.
+    RunSecret,
     // Audit
     ReadAudit,
     // Admin
@@ -555,11 +575,18 @@ impl Permission {
                 | Self::WriteSecret
                 | Self::ListSecrets
                 | Self::ReadAudit
+                | Self::RunSecret
         )
     }
 
     fn is_viewer_allowed(&self) -> bool {
-        matches!(self, Self::ReadProject | Self::ReadSecret | Self::ListSecrets)
+        matches!(
+            self,
+            Self::ReadProject
+                | Self::ReadSecret
+                | Self::ListSecrets
+                | Self::RunSecret
+        )
     }
 
     fn is_global_allowed(&self) -> bool {

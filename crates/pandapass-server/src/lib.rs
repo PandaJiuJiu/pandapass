@@ -151,12 +151,15 @@ async fn internal_auth_middleware(
         }
     }
 
-    // Verify required scopes
+    // The internal API has two distinct paths now: ciphertext delivery (run:secret)
+    // and plain inventory (read/list). Either is enough to enter the API; the
+    // route handlers reject what the token doesn't have scope for.
     let has_read = svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::ReadSecret));
     let has_list = svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::ListSecret));
     let has_exec = svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::WriteSecret));
+    let has_run = svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::RunSecret));
 
-    if !has_read && !has_list && !has_exec {
+    if !has_read && !has_list && !has_exec && !has_run {
         return Err(ApiError::Forbidden("Token lacks required scopes".into()));
     }
 
@@ -202,9 +205,14 @@ async fn internal_get_secret(
 ) -> Result<Json<InternalGetSecretResponse>, ApiError> {
     let svc = auth.service_token.as_ref().unwrap();
 
-    // Verify scopes
-    if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::ReadSecret)) {
-        return Err(ApiError::Forbidden("Token lacks read:secret scope".into()));
+    // Ciphertext delivery requires `run:secret` (or `read:secret`, for
+    // backwards compatibility — but the read path won't normally go through
+    // this endpoint). The point is: the plaintext path requires read:secret,
+    // and a token that wants to never see plaintext uses run:secret here.
+    if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::RunSecret))
+        && !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::ReadSecret))
+    {
+        return Err(ApiError::Forbidden("Token lacks run:secret or read:secret scope".into()));
     }
 
     let project_id = req.project_id.or(svc.project_id)
@@ -213,11 +221,6 @@ async fn internal_get_secret(
         .ok_or_else(|| ApiError::BadRequest("Environment ID required".into()))?;
 
     let secret = db::get_secret(&state.db, project_id, env_id, &req.key).await?;
-
-    // For MCP, we need to decrypt - but server doesn't have age private key
-    // This endpoint deliberately returns ciphertext only; the caller holds
-    // the master key. A plaintext variant exists on the session-authed routes.
-    // Return encrypted value + metadata
 
     let mut audit = AuditContext::new(&auth, AuditAction::McpGetSecret);
     audit = audit.with_project(project_id);
@@ -266,8 +269,11 @@ async fn internal_exec(
 ) -> Result<Json<CommandResult>, ApiError> {
     let svc = auth.service_token.as_ref().unwrap();
 
-    if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::WriteSecret)) {
-        return Err(ApiError::Forbidden("Token lacks write:secret scope".into()));
+    // Server-side secret injection requires `run:secret` — it's the whole
+    // point of that scope. The internal API historically used WriteSecret
+    // as a stand-in, but now they are separate.
+    if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::RunSecret)) {
+        return Err(ApiError::Forbidden("Token lacks run:secret scope".into()));
     }
 
     let project_id = req.project_id.or(svc.project_id)

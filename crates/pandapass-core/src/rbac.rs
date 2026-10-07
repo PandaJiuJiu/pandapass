@@ -38,10 +38,22 @@ impl Rbac {
         env_id: uuid::Uuid,
         read: bool,
     ) -> Result<(), RbacError> {
+        Self::check_secret_access_with(ctx, project_id, env_id, Self::secret_perm(read))
+    }
+
+    /// Same as [`check_secret_access`], but takes an explicit permission. Use
+    /// this when the route handles a permission other than the read/write
+    /// pair — e.g. `RunSecret` for the ciphertext-delivery path that an
+    /// agent-only `run:secret` token must reach without holding `read:secret`.
+    pub fn check_secret_access_with(
+        ctx: &AuthContext,
+        project_id: uuid::Uuid,
+        env_id: uuid::Uuid,
+        perm: Permission,
+    ) -> Result<(), RbacError> {
         if !Self::can_access_env(ctx, project_id, env_id) {
             return Err(RbacError::NotMember);
         }
-        let perm = Self::secret_perm(read);
         if !ctx.can(perm) {
             return Err(RbacError::InsufficientRole);
         }
@@ -305,6 +317,43 @@ mod tests {
         assert!(!ctx.can(Permission::WriteSecret));
         assert!(!ctx.can(Permission::ListSecrets));
         assert!(!ctx.can(Permission::ReadAudit));
+        assert!(!ctx.can(Permission::RunSecret));
+    }
+
+    /// The split this whole feature exists for: a token with only
+    /// `run:secret` must be able to inject, and must not be able to read
+    /// plaintext. The two scopes are deliberately not the same — `read:secret`
+    /// means the holder sees values, `run:secret` means the holder never does.
+    /// Conflating them would make the agent-safety story decorative.
+    #[test]
+    fn run_scoped_token_cannot_read_plaintext() {
+        let ctx = ctx_with_token(vec![TokenScope::RunSecret], None);
+        assert!(ctx.can(Permission::RunSecret));
+        assert!(!ctx.can(Permission::ReadSecret));
+        assert!(!ctx.can(Permission::WriteSecret));
+        assert!(!ctx.can(Permission::ListSecrets));
+        assert!(!ctx.can(Permission::ReadAudit));
+    }
+
+    /// The other half of the same split. A read token can take a value back
+    /// over the wire; it must not be able to ask the server to run a command
+    /// with that value — that requires explicit `run:secret`.
+    #[test]
+    fn read_scoped_token_cannot_run_server_side_injection() {
+        let ctx = ctx_with_token(vec![TokenScope::ReadSecret], None);
+        assert!(ctx.can(Permission::ReadSecret));
+        assert!(!ctx.can(Permission::RunSecret));
+    }
+
+    /// Both scopes are independent and stack when both are granted.
+    #[test]
+    fn read_and_run_scopes_compose() {
+        let ctx = ctx_with_token(
+            vec![TokenScope::ReadSecret, TokenScope::RunSecret],
+            None,
+        );
+        assert!(ctx.can(Permission::ReadSecret));
+        assert!(ctx.can(Permission::RunSecret));
     }
 
     /// Human sessions are untouched by the token path. An admin in a browser

@@ -255,6 +255,8 @@ pub enum TokenCmd {
         #[arg(long)]
         env: Option<String>,
         /// Scopes to grant, e.g. --scopes read:secret --scopes list:secret.
+        /// Available: read:secret, write:secret, list:secret, read:audit,
+        /// manage:project, run:secret.
         #[arg(long, required = true, num_args = 1..)]
         scopes: Vec<String>,
         /// Expire after this many days. Omit for a non-expiring token.

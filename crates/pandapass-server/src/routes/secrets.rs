@@ -206,7 +206,9 @@ pub async fn get_secret(
 /// Read a secret's ciphertext so the caller can decrypt it with its own MK.
 ///
 /// This is the path CLI and MCP clients use: the value never crosses the wire
-/// in plaintext, so it never enters an agent's context.
+/// in plaintext, so it never enters an agent's context. The permission is
+/// `RunSecret` rather than `ReadSecret`: a token that can only take values
+/// from a session, not inject them, has no reason to fetch ciphertext either.
 pub async fn get_secret_encrypted(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -216,14 +218,14 @@ pub async fn get_secret_encrypted(
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
     let ctx = scope_auth(&state, &auth, &project, &env).await;
 
-    Rbac::check_secret_access(&ctx, project.id, env.id, true)?;
+    Rbac::check_secret_access_with(&ctx, project.id, env.id, Permission::RunSecret)?;
 
     // Policy evaluation
     let input = PolicyInput::for_context(
         &ctx,
         &slug,
         &env_slug,
-        Permission::ReadSecret,
+        Permission::RunSecret,
         Some(&key),
     );
     if let PolicyDecision::Deny { policy_id, message } = state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await? {
