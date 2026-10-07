@@ -73,6 +73,8 @@ impl Harness {
             command_allowlist: vec![],
             cookie_secure: false,
             server_age_identity: Some(identity.as_str().to_string()),
+            auth_rate_limit_max: 100, // high for tests
+            auth_rate_limit_window_secs: 60,
         };
 
         let db = connect(&config.db_url).await.expect("connect");

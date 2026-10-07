@@ -5,11 +5,44 @@ use pandapass_core::models::*;
 use pandapass_db as db;
 use pandapass_core::crypto::{generate_token, hash_token};
 use pandapass_core::CoreError;
+use std::net::IpAddr;
 
 use crate::state::AppState;
 
 pub const SESSION_COOKIE: &str = "pandapass_session";
 pub const CSRF_COOKIE: &str = "pandapass_csrf";
+
+/// Request extension key for client IP
+#[derive(Clone)]
+pub struct ClientIp(pub IpAddr);
+
+/// Extract client IP from headers (handles X-Forwarded-For for proxied setups)
+pub fn extract_client_ip_from_headers(headers: &axum::http::HeaderMap) -> Option<IpAddr> {
+    // Check X-Forwarded-For first (for reverse proxy)
+    if let Some(forwarded) = headers.get("x-forwarded-for") {
+        if let Ok(s) = forwarded.to_str() {
+            if let Some(first) = s.split(',').next() {
+                if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                    return Some(ip);
+                }
+            }
+        }
+    }
+    // Check X-Real-IP
+    if let Some(real_ip) = headers.get("x-real-ip") {
+        if let Ok(s) = real_ip.to_str() {
+            if let Ok(ip) = s.trim().parse::<IpAddr>() {
+                return Some(ip);
+            }
+        }
+    }
+    None
+}
+
+/// Extract client IP from request parts (handles X-Forwarded-For for proxied setups)
+pub fn extract_client_ip_from_parts(parts: &Parts) -> Option<IpAddr> {
+    extract_client_ip_from_headers(&parts.headers)
+}
 
 /// Extracted auth context from a request
 #[derive(Clone, Debug)]

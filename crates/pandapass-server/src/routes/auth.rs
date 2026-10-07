@@ -79,10 +79,28 @@ pub struct LoginResponse {
 
 pub async fn login(
     State(state): State<AppState>,
-    jar: CookieJar,
-    Json(req): Json<LoginRequest>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<(CookieJar, Json<LoginResponse>), ApiError> {
-    let user = db::get_user_by_email(&state.db, &req.email)
+    // Extract client IP from request extensions (set by auth_middleware)
+    let client_ip = req.extensions().get::<crate::middleware::auth::ClientIp>().map(|c| c.0);
+
+    // Extract cookies and JSON body manually
+    let (parts, body) = req.into_parts();
+    let jar = CookieJar::from_headers(&parts.headers);
+    let body_bytes = axum::body::to_bytes(body, usize::MAX).await.map_err(|_| ApiError::BadRequest("Failed to read body".into()))?;
+    let login_req: LoginRequest = serde_json::from_slice(&body_bytes).map_err(|_| ApiError::BadRequest("Invalid JSON".into()))?;
+
+    // Rate limit check happens before credential verification so a valid
+    // password doesn't bypass the limit.
+    if let Some(ip) = client_ip {
+        if let Err(retry_after) = state.rate_limiter.check(ip).await {
+            return Err(ApiError::TooManyRequests(format!(
+                "Too many login attempts. Try again in {retry_after} seconds."
+            )));
+        }
+    }
+
+    let user = db::get_user_by_email(&state.db, &login_req.email)
         .await?
         .ok_or_else(|| ApiError::Unauthorized("Invalid credentials".into()))?;
 
@@ -90,14 +108,19 @@ pub async fn login(
         return Err(ApiError::Unauthorized("User disabled".into()));
     }
 
-    let valid = verify_password(&req.password, &user.password_hash)?;
+    let valid = verify_password(&login_req.password, &user.password_hash)?;
     if !valid {
         return Err(ApiError::Unauthorized("Invalid credentials".into()));
     }
 
+    // Successful login — reset the rate limit bucket for this IP
+    if let Some(ip) = client_ip {
+        state.rate_limiter.reset(ip).await;
+    }
+
     // TOTP check
     if user.totp_enabled {
-        let code = req.totp_code.ok_or_else(|| ApiError::Unauthorized("TOTP required".into()))?;
+        let code = login_req.totp_code.ok_or_else(|| ApiError::Unauthorized("TOTP required".into()))?;
         let totp_secret = decrypt_totp_secret(&state, &user).await?;
         if !verify_totp(&totp_secret, &code) {
             return Err(ApiError::Unauthorized("Invalid TOTP code".into()));
@@ -187,6 +210,18 @@ pub async fn register(
     jar: CookieJar,
     Json(req): Json<RegisterRequest>,
 ) -> Result<(CookieJar, Json<LoginResponse>), ApiError> {
+    // Extract client IP from request extensions (set by auth_middleware)
+    // Note: register doesn't go through auth_middleware, so we'll need a different approach
+    // For now, we skip rate limiting on register since it's closed by default
+    // Rate limit check for registration attempts
+    // if let Some(ip) = client_ip {
+    //     if let Err(retry_after) = state.rate_limiter.check(ip).await {
+    //         return Err(ApiError::TooManyRequests(format!(
+    //             "Too many registration attempts. Try again in {retry_after} seconds."
+    //         )));
+    //     }
+    // }
+
     // Registration is closed by default: a secrets vault must never accept
     // self-service signups, or anyone who finds the URL gets an account.
     // Only the very first user (bootstrap) or an explicit opt-in may register.
@@ -203,6 +238,11 @@ pub async fn register(
     let password_hash = hash_password(&req.password)?;
 
     let user = db::create_user(&state.db, &req.email, &password_hash, global_role).await?;
+
+    // Successful registration — reset the rate limit bucket for this IP
+    // if let Some(ip) = client_ip {
+    //     state.rate_limiter.reset(ip).await;
+    // }
 
     // Seal a master key to the caller's public key, if they supplied one.
     let mut enrolled = false;

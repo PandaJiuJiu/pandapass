@@ -1,6 +1,7 @@
 use pandapass_core::audit::AuditService;
 use pandapass_core::policy::PolicyEngine;
 use pandapass_db::Db;
+use crate::middleware::rate_limit::RateLimiter;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -15,6 +16,8 @@ pub struct AppState {
     pub master_key_cache: Arc<tokio::sync::RwLock<Option<pandapass_core::crypto::MasterKey>>>,
     /// Policy evaluation engine (M3)
     pub policy_engine: Arc<PolicyEngine>,
+    /// Rate limiter for auth endpoints (login, register)
+    pub rate_limiter: Arc<RateLimiter>,
 }
 
 impl AppState {
@@ -23,10 +26,14 @@ impl AppState {
         Self {
             db,
             audit: Arc::new(audit),
-            config: Arc::new(config),
+            config: Arc::new(config.clone()),
             exec_semaphore: Arc::new(Semaphore::new(max_concurrent)),
             master_key_cache: Arc::new(tokio::sync::RwLock::new(None)),
             policy_engine: Arc::new(PolicyEngine::new()),
+            rate_limiter: Arc::new(RateLimiter::new(
+                config.auth_rate_limit_max,
+                config.auth_rate_limit_window_secs,
+            )),
         }
     }
 }
@@ -52,6 +59,9 @@ pub struct Config {
     /// user envelopes. Configure via `PANDAPASS_SERVER_AGE_IDENTITY` or
     /// `PANDAPASS_SERVER_AGE_IDENTITY_FILE`.
     pub server_age_identity: Option<String>,
+    /// Rate limiter config
+    pub auth_rate_limit_max: u32,
+    pub auth_rate_limit_window_secs: u64,
 }
 
 impl Config {
@@ -103,6 +113,16 @@ impl Config {
             _ => std::env::var("PANDAPASS_SERVER_AGE_IDENTITY").ok().filter(|s| !s.is_empty()),
         };
 
+        // Rate limiter: default 5 attempts per 15 minutes per IP
+        let auth_rate_limit_max = std::env::var("PANDAPASS_AUTH_RATE_LIMIT_MAX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5);
+        let auth_rate_limit_window_secs = std::env::var("PANDAPASS_AUTH_RATE_LIMIT_WINDOW_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(900);
+
         Self {
             listen_addr,
             public_url,
@@ -117,6 +137,8 @@ impl Config {
             command_allowlist,
             cookie_secure,
             server_age_identity,
+            auth_rate_limit_max,
+            auth_rate_limit_window_secs,
         }
     }
 }

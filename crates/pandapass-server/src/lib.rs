@@ -28,6 +28,7 @@ mod routes {
 
 pub mod middleware {
     pub mod auth;
+    pub mod rate_limit;
 }
 
 /// Build the main application router
@@ -114,6 +115,12 @@ async fn auth_middleware(
     mut req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Result<axum::http::Response<axum::body::Body>, ApiError> {
+    // Extract and store client IP for rate limiting
+    let headers = req.headers().clone();
+    if let Some(ip) = crate::middleware::auth::extract_client_ip_from_headers(&headers) {
+        req.extensions_mut().insert(crate::middleware::auth::ClientIp(ip));
+    }
+
     // Bearer-token requests skip CSRF entirely; cookie sessions must prove they
     // meant it for mutating verbs.
     require_csrf(req.headers(), req.method()).await?;
