@@ -31,6 +31,8 @@ pub mod middleware {
     pub mod rate_limit;
 }
 
+pub mod dynamic_proxy;
+
 /// Build the main application router
 pub fn build_router(state: AppState) -> Router {
     let cors = CorsLayer::new()

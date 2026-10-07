@@ -1165,6 +1165,15 @@ pub async fn cleanup_expired_dynamic_creds(db: &Db) -> Result<u64> {
     Ok(r.rows_affected())
 }
 
+/// List all active dynamic credentials across all projects/envs.
+/// Used by the PostgreSQL proxy to find credentials by username.
+pub async fn list_all_dynamic_creds(db: &Db) -> Result<Vec<DynamicCred>> {
+    let rows = sqlx::query("SELECT * FROM dynamic_creds WHERE revoked_at IS NULL")
+        .fetch_all(db)
+        .await?;
+    Ok(rows.iter().map(row_to_dynamic_cred).collect())
+}
+
 fn row_to_dynamic_cred(row: &SqliteRow) -> DynamicCred {
     let enc_s: String = row.get("password_enc");
     DynamicCred {
