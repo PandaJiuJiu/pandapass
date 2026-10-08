@@ -64,6 +64,8 @@ impl AuditService {
             user_agent: ctx.user_agent.clone(),
             outcome: ctx.outcome,
             meta: ctx.meta.clone(),
+            prev_hash: String::new(),
+            entry_hash: String::new(),
         };
 
         if let Err(e) = self.logger.log(entry).await {

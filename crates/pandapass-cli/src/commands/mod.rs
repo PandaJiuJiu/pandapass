@@ -218,6 +218,28 @@ pub enum SshCmd {
         #[arg(long)]
         include_revoked: bool,
     },
+    /// Sign an SSH user certificate with a stored CA. The user's public key
+    /// is signed; their private key never leaves their machine.
+    Sign {
+        /// CA key id to sign with
+        ca_id: Uuid,
+        /// User id the certificate is issued to
+        user: Uuid,
+        /// Principal (e.g. `alice@prod`) the cert authenticates
+        #[arg(long)]
+        principal: String,
+        /// Path to the user's public key in OpenSSH format
+        #[arg(long)]
+        public_key: PathBuf,
+        #[arg(long)]
+        project: Option<String>,
+        /// RFC3339 validity start (default: now)
+        #[arg(long)]
+        not_before: Option<String>,
+        /// RFC3339 validity end (default: +12h)
+        #[arg(long)]
+        not_after: Option<String>,
+    },
     Create {
         user: Uuid,
         #[arg(long)]
@@ -269,6 +291,9 @@ pub enum TokenCmd {
 #[derive(Subcommand, Debug)]
 pub enum AuditCmd {
     List { project: Option<String>, page: Option<i64>, per_page: Option<i64> },
+    /// Verify the audit log HMAC chain. Admin only: a broken chain means
+    /// the log was edited after it was written.
+    Verify,
 }
 
 #[derive(Subcommand, Debug)]
@@ -783,6 +808,19 @@ async fn run_audit(api: &ApiClient, cmd: AuditCmd) -> Result<()> {
             let pages = (resp.total + per_page - 1) / per_page;
             println!("\nPage {} of {} ({} entries)", resp.page, pages, resp.total);
         }
+        AuditCmd::Verify => {
+            let resp = api.verify_audit().await?;
+            let intact = resp["intact"].as_bool().unwrap_or(false);
+            let checked = resp["entries_checked"].as_u64().unwrap_or(0);
+            if intact {
+                println!("✓ Audit chain intact ({checked} entries verified)");
+            } else {
+                let broken_at = resp["broken_at"].as_str().unwrap_or("unknown");
+                let reason = resp["reason"].as_str().unwrap_or("unknown reason");
+                eprintln!("✗ Audit chain BROKEN at entry {broken_at}: {reason}");
+                std::process::exit(1);
+            }
+        }
     }
     Ok(())
 }
@@ -1123,6 +1161,39 @@ async fn run_ssh(api: &ApiClient, cmd: SshCmd) -> Result<()> {
                     c.revoked_at.map_or("no", |_| "yes")
                 );
             }
+        }
+        SshCmd::Sign { ca_id, user, principal, public_key, project, not_before, not_after } => {
+            let project_id = match project.as_deref() {
+                Some(slug) => Some(api.resolve_project_id(slug).await?),
+                None => None,
+            };
+            let public_key_str = std::fs::read_to_string(&public_key)
+                .map_err(|e| anyhow::anyhow!("cannot read public key {}: {}", public_key.display(), e))?;
+            let not_before = match not_before {
+                Some(s) => chrono::DateTime::parse_from_rfc3339(&s)?.with_timezone(&chrono::Utc),
+                None => chrono::Utc::now(),
+            };
+            let not_after = match not_after {
+                Some(s) => chrono::DateTime::parse_from_rfc3339(&s)?.with_timezone(&chrono::Utc),
+                None => chrono::Utc::now() + chrono::Duration::hours(12),
+            };
+            let resp = api.sign_ssh_cert(
+                ca_id,
+                user,
+                project_id,
+                &principal,
+                public_key_str.trim(),
+                pandapass_core::models::SshKeyType::Ed25519,
+                not_before,
+                not_after,
+            ).await?;
+            let cert_id: Uuid = serde_json::from_value(resp["cert_id"].clone())?;
+            let cert_openssh: String = serde_json::from_value(resp["cert_openssh"].clone())?;
+            println!("{}", cert_openssh);
+            eprintln!(
+                "\nSSH certificate signed. Store the line above in your authorized_keys\n\
+                 or use it with `ssh -i` via an agent. Cert ID: {cert_id}"
+            );
         }
         SshCmd::Create { user, project, principal, cert_pem, key_type, not_before, not_after } => {
             let project_id = match project.as_deref() {

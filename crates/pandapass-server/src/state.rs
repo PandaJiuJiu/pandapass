@@ -18,6 +18,9 @@ pub struct AppState {
     pub policy_engine: Arc<PolicyEngine>,
     /// Rate limiter for auth endpoints (login, register)
     pub rate_limiter: Arc<RateLimiter>,
+    /// HMAC key for the audit tamper-evidence chain. Derived from the
+    /// server's age identity; empty means the chain is disabled (legacy).
+    pub audit_chain_key: Arc<Vec<u8>>,
 }
 
 impl AppState {
@@ -34,7 +37,16 @@ impl AppState {
                 config.auth_rate_limit_max,
                 config.auth_rate_limit_window_secs,
             )),
+            audit_chain_key: Arc::new(Vec::new()),
         }
+    }
+
+    /// Set the audit chain key (called from main after deriving it from the
+    /// server's age identity — the key must never live in the database the
+    /// chain protects, so it is injected rather than read from config).
+    pub fn with_audit_chain_key(mut self, key: Vec<u8>) -> Self {
+        self.audit_chain_key = Arc::new(key);
+        self
     }
 }
 

@@ -34,3 +34,5 @@ regorus = { workspace = true }
 rcgen = { workspace = true }
 time = { workspace = true }
 x509-parser = { workspace = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+ssh-key = { version = "0.6", features = ["ed25519"] }

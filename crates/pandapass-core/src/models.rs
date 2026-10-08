@@ -250,6 +250,13 @@ pub struct AuditLog {
     pub user_agent: Option<String>,
     pub outcome: AuditOutcome,
     pub meta: Option<serde_json::Value>,
+    /// Hash of the previous entry in the chain (empty for legacy rows).
+    #[serde(default)]
+    pub prev_hash: String,
+    /// HMAC-SHA256 over `prev_hash` plus this entry's canonical fields.
+    /// Deleting or editing any row breaks the chain from that point on.
+    #[serde(default)]
+    pub entry_hash: String,
 }
 
 /// Audit actions

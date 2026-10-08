@@ -62,10 +62,28 @@ async fn run() -> anyhow::Result<()> {
     let cleanup_db = db.clone();
 
     // Audit entries go to SQLite, not memory — a restart must not lose the trail.
-    let audit = pandapass_core::AuditService::new(Arc::new(DbAuditLogger::new(db.clone())));
+    // The chain key is derived from the server's age identity so the HMAC key
+    // never lives in the database the log protects.
+    let (audit_logger, chain_key) = match &config.server_age_identity {
+        Some(identity) => {
+            use sha2::{Digest, Sha256};
+            let key = Sha256::digest(format!("pandapass-audit-chain:{identity}").as_bytes());
+            (
+                Arc::new(DbAuditLogger::with_chain_key(db.clone(), key.to_vec()))
+                    as Arc<dyn pandapass_core::AuditLogger>,
+                key.to_vec(),
+            )
+        }
+        None => (
+            Arc::new(DbAuditLogger::new(db.clone())) as Arc<dyn pandapass_core::AuditLogger>,
+            Vec::new(),
+        ),
+    };
+    let audit = pandapass_core::AuditService::new(audit_logger);
 
     // Create app state (consumes db)
-    let state = AppState::new(db, audit, config.clone());
+    let state = AppState::new(db, audit, config.clone())
+        .with_audit_chain_key(chain_key);
 
     // Bootstrap admin user
     let startup = bootstrap(&state).await;

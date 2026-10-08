@@ -1010,6 +1010,8 @@ fn row_to_audit(row: &SqliteRow) -> AuditLog {
         meta: row
             .get::<Option<String>, _>("meta")
             .and_then(|s| serde_json::from_str(&s).ok()),
+        prev_hash: row.try_get::<String, _>("prev_hash").unwrap_or_default(),
+        entry_hash: row.try_get::<String, _>("entry_hash").unwrap_or_default(),
     }
 }
 
@@ -1022,13 +1024,65 @@ pub async fn count_audit(db: &Db, project_id: Option<uuid::Uuid>) -> Result<i64>
 }
 
 /// Database-backed audit logger
+///
+/// Every entry is chained: `entry_hash = HMAC(key, prev_hash || canonical
+/// fields)`. The chain key is derived from the server's age identity, so it
+/// never lives in the database. Editing or deleting a row is detectable by
+/// [`verify_audit_chain`].
 pub struct DbAuditLogger {
     pool: SqlitePool,
+    /// HMAC-SHA256 key for the tamper-evidence chain
+    chain_key: Vec<u8>,
 }
 
 impl DbAuditLogger {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self { pool, chain_key: Vec::new() }
+    }
+
+    /// Construct with a chain key, derived e.g. from the server's age identity.
+    pub fn with_chain_key(pool: SqlitePool, chain_key: Vec<u8>) -> Self {
+        Self { pool, chain_key }
+    }
+
+    /// Compute an entry's HMAC over the previous hash and canonical fields.
+    ///
+    /// The field encodings here MUST match what `verify_audit_chain` reads
+    /// back from the database — same strings, same order — or the chain
+    /// would report tampering on entries that were written correctly.
+    fn compute_entry_hash(&self, prev_hash: &str, entry: &pandapass_core::models::AuditLog) -> String {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        type HmacSha256 = Hmac<Sha256>;
+
+        let outcome_str = match entry.outcome {
+            pandapass_core::models::AuditOutcome::Success => "success",
+            pandapass_core::models::AuditOutcome::Failure => "failure",
+            pandapass_core::models::AuditOutcome::Denied => "denied",
+            pandapass_core::models::AuditOutcome::Error => "error",
+        };
+
+        let mut mac = HmacSha256::new_from_slice(&self.chain_key)
+            .expect("HMAC accepts any key length");
+        mac.update(prev_hash.as_bytes());
+        mac.update(entry.ts.to_rfc3339().as_bytes());
+        mac.update(entry.user_id.map(|v| v.to_string()).unwrap_or_default().as_bytes());
+        mac.update(entry.action.as_str().as_bytes());
+        mac.update(entry.project_id.map(|v| v.to_string()).unwrap_or_default().as_bytes());
+        mac.update(entry.env_id.map(|v| v.to_string()).unwrap_or_default().as_bytes());
+        mac.update(entry.secret_key.as_deref().unwrap_or("").as_bytes());
+        mac.update(entry.ip.as_deref().unwrap_or("").as_bytes());
+        mac.update(entry.user_agent.as_deref().unwrap_or("").as_bytes());
+        mac.update(outcome_str.as_bytes());
+        mac.update(
+            entry
+                .meta
+                .as_ref()
+                .map(|m| m.to_string())
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        hex::encode(mac.finalize().into_bytes())
     }
 }
 
@@ -1043,10 +1097,27 @@ impl pandapass_core::AuditLogger for DbAuditLogger {
             pandapass_core::models::AuditOutcome::Error => "error",
         };
 
+        // Chain to the most recent entry. A concurrent writer could interleave
+        // here; the worst case is a forked chain, which verification reports
+        // rather than silently accepting — that is the right failure mode for
+        // tamper-evidence.
+        let prev_row = sqlx::query(
+            "SELECT entry_hash FROM audit_log ORDER BY ts DESC, rowid DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let prev_hash: String = prev_row
+            .map(|r| r.get::<String, _>("entry_hash"))
+            .unwrap_or_default();
+
+        let mut entry = entry;
+        entry.prev_hash = prev_hash.clone();
+        entry.entry_hash = self.compute_entry_hash(&prev_hash, &entry);
+
         sqlx::query(
             r#"
-            INSERT INTO audit_log (id, ts, user_id, action, project_id, env_id, secret_key, ip, user_agent, outcome, meta)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO audit_log (id, ts, user_id, action, project_id, env_id, secret_key, ip, user_agent, outcome, meta, prev_hash, entry_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(entry.id.to_string())
@@ -1055,16 +1126,103 @@ impl pandapass_core::AuditLogger for DbAuditLogger {
         .bind(action_str)
         .bind(entry.project_id.map(|v| v.to_string()))
         .bind(entry.env_id.map(|v| v.to_string()))
-        .bind(entry.secret_key)
-        .bind(entry.ip)
-        .bind(entry.user_agent)
+        .bind(entry.secret_key.clone())
+        .bind(entry.ip.clone())
+        .bind(entry.user_agent.clone())
         .bind(outcome_str)
         .bind(entry.meta.map(|v| v.to_string()))
+        .bind(&entry.prev_hash)
+        .bind(&entry.entry_hash)
         .execute(&self.pool)
         .await?;
 
         Ok(())
     }
+}
+
+/// Walk the audit chain and report the first tamper point, if any.
+///
+/// Legacy rows (empty `entry_hash`, from before the chain existed) are
+/// skipped: the chain effectively begins at the first entry that has one.
+pub async fn verify_audit_chain(
+    db: &Db,
+    chain_key: &[u8],
+) -> Result<ChainVerification> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+
+    let rows = sqlx::query(
+        "SELECT id, ts, user_id, action, project_id, env_id, secret_key, ip, user_agent, outcome, meta, prev_hash, entry_hash
+         FROM audit_log ORDER BY ts ASC, rowid ASC",
+    )
+    .fetch_all(db)
+    .await?;
+
+    let mut last_hash: Option<String> = None;
+    let mut checked = 0u64;
+
+    for row in &rows {
+        let entry_hash: String = row.get("entry_hash");
+        let prev_hash: String = row.get("prev_hash");
+
+        if entry_hash.is_empty() {
+            // Legacy row predating the chain — skip it.
+            continue;
+        }
+
+        // The link to the previous entry must hold. The very first chained
+        // entry chains to whatever preceded it (possibly a legacy row with an
+        // empty hash), which is what `prev_hash` records.
+        if let Some(expected_prev) = &last_hash {
+            if &prev_hash != expected_prev {
+                let id: String = row.get("id");
+                return Ok(ChainVerification::Broken {
+                    at_id: uuid::Uuid::parse_str(&id).unwrap_or(uuid::Uuid::nil()),
+                    reason: "previous hash does not link".into(),
+                });
+            }
+        }
+
+        // Recompute the entry's own hash.
+        let mut mac = HmacSha256::new_from_slice(chain_key)
+            .expect("HMAC accepts any key length");
+        mac.update(prev_hash.as_bytes());
+        mac.update(row.get::<String, _>("ts").as_bytes());
+        mac.update(row.try_get::<String, _>("user_id").unwrap_or_default().as_bytes());
+        mac.update(row.get::<String, _>("action").as_bytes());
+        mac.update(row.try_get::<String, _>("project_id").unwrap_or_default().as_bytes());
+        mac.update(row.try_get::<String, _>("env_id").unwrap_or_default().as_bytes());
+        mac.update(row.try_get::<String, _>("secret_key").unwrap_or_default().as_bytes());
+        mac.update(row.try_get::<String, _>("ip").unwrap_or_default().as_bytes());
+        mac.update(row.try_get::<String, _>("user_agent").unwrap_or_default().as_bytes());
+        mac.update(row.get::<String, _>("outcome").as_bytes());
+        let meta: Option<String> = row.get("meta");
+        mac.update(meta.as_deref().unwrap_or("").as_bytes());
+
+        let expected = hex::encode(mac.finalize().into_bytes());
+        if expected != entry_hash {
+            let id: String = row.get("id");
+            return Ok(ChainVerification::Broken {
+                at_id: uuid::Uuid::parse_str(&id).unwrap_or(uuid::Uuid::nil()),
+                reason: "entry hash mismatch: row was edited".into(),
+            });
+        }
+
+        last_hash = Some(entry_hash);
+        checked += 1;
+    }
+
+    Ok(ChainVerification::Intact { entries_checked: checked })
+}
+
+/// Result of [`verify_audit_chain`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum ChainVerification {
+    /// Every link in the chain recomputes correctly.
+    Intact { entries_checked: u64 },
+    /// The chain is broken at this entry: rows were deleted or edited.
+    Broken { at_id: uuid::Uuid, reason: String },
 }
 
 // ─────────────────────────── dynamic credentials (M2) ───────────────────────────

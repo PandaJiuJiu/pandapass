@@ -195,3 +195,52 @@ pub async fn list_audit(
 pub async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok", "service": "pandapass-server" }))
 }
+
+// ─────────────────────────── audit chain verification ───────────────────────────
+
+#[derive(Serialize)]
+pub struct AuditChainResponse {
+    pub intact: bool,
+    pub entries_checked: u64,
+    /// Present only when the chain is broken: which entry and why.
+    pub broken_at: Option<uuid::Uuid>,
+    pub reason: Option<String>,
+}
+
+/// Verify the audit log's HMAC chain. Admin-only: a broken chain means
+/// someone edited the log, which is exactly the moment an attacker may want
+/// to quietly re-check whether they were noticed.
+pub async fn verify_audit(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+) -> Result<Json<AuditChainResponse>, ApiError> {
+    if auth.user.global_role != GlobalRole::Admin {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
+
+    if state.audit_chain_key.is_empty() {
+        return Ok(Json(AuditChainResponse {
+            intact: true,
+            entries_checked: 0,
+            broken_at: None,
+            reason: Some("audit chain disabled: no server age identity".into()),
+        }));
+    }
+
+    let result = db::verify_audit_chain(&state.db, &state.audit_chain_key).await?;
+
+    Ok(Json(match result {
+        db::ChainVerification::Intact { entries_checked } => AuditChainResponse {
+            intact: true,
+            entries_checked,
+            broken_at: None,
+            reason: None,
+        },
+        db::ChainVerification::Broken { at_id, reason } => AuditChainResponse {
+            intact: false,
+            entries_checked: 0,
+            broken_at: Some(at_id),
+            reason: Some(reason),
+        },
+    }))
+}

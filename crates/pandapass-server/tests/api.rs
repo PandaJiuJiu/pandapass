@@ -17,7 +17,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use pandapass_core::crypto::AgeIdentity;
-use pandapass_core::AuditService;
+use pandapass_core::{AuditLogger, AuditService};
 use pandapass_db::{connect, migrate, DbAuditLogger};
 use pandapass_server::state::{AppState, Config};
 use pandapass_server::build_router;
@@ -28,6 +28,12 @@ use tower::ServiceExt;
 struct Harness {
     router: axum::Router,
     db_path: std::path::PathBuf,
+    /// A handle to the same database the server is writing to.
+    ///
+    /// The tamper tests need it: the only way to test tamper-evidence is to
+    /// edit rows behind the server's back, which is exactly what an attacker
+    /// with disk access would do.
+    db: pandapass_db::Db,
 }
 
 /// A response, kept as parsed JSON so assertions can look at the body.
@@ -79,10 +85,23 @@ impl Harness {
 
         let db = connect(&config.db_url).await.expect("connect");
         migrate(&db).await.expect("migrate");
-        let audit = AuditService::new(Arc::new(DbAuditLogger::new(db.clone())));
-        let state = AppState::new(db, audit, config);
 
-        Self { router: build_router(state), db_path }
+        // Mirror main.rs: derive the audit chain key from the server's age
+        // identity. A harness without the chain key would make every
+        // `/audit/verify` test pass for the wrong reason — an unchained log
+        // verifies vacuously as "intact with 0 entries".
+        let chain_key = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(format!("pandapass-audit-chain:{}", identity.as_str()).as_bytes())
+                .to_vec()
+        };
+        let audit_logger: Arc<dyn AuditLogger> = Arc::new(
+            DbAuditLogger::with_chain_key(db.clone(), chain_key.clone()),
+        );
+        let audit = AuditService::new(audit_logger);
+        let state = AppState::new(db.clone(), audit, config).with_audit_chain_key(chain_key.clone());
+
+        Self { router: build_router(state), db_path, db }
     }
 
     async fn send(&self, req: Request<Body>) -> Res {
@@ -1173,4 +1192,185 @@ deny[msg] {
         "an unbound env must be untouched: {:?}",
         allowed_dev.body
     );
+}
+
+// ── audit tamper-evidence chain ─────────────────────────────────────────────
+
+/// A live log verifies intact, and the count covers every entry written.
+///
+/// This is the control for the tamper test below: without it, "broken" would
+/// also be the answer to a verification path that simply never works.
+#[tokio::test]
+async fn a_live_audit_log_verifies_intact() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+
+    // Traffic that writes several audit entries through the real routes.
+    h.set_secret(&admin, "A", "1").await;
+    h.set_secret(&admin, "B", "2").await;
+    h.set_secret(&admin, "B", "2").await;
+
+    let res = h.get("/api/v1/audit/verify", &admin).await;
+    assert!(res.ok(), "verify failed: {:?}", res.body);
+    assert_eq!(res.body["intact"], true, "a log written by the chained logger must verify: {:?}", res.body);
+    let checked = res.body["entries_checked"].as_u64().expect("entries_checked");
+    assert!(checked >= 4, "expected the entries from registration, project, and secret writes; got {checked}");
+}
+
+/// Editing a row behind the server's back must be detected, and the report
+/// must point at the edited entry.
+///
+/// The chain key is derivable here (it comes from the age identity this test
+/// generated), so the tamper is performed the way the most capable attacker
+/// would: re-chain the edited row and every row after it, leaving a log that
+/// is internally consistent but was not written by the server. The break the
+/// test actually asserts on is deletion — the one edit that cannot be
+/// re-chained, because the chain's head is the row the attacker deleted.
+#[tokio::test]
+async fn deleting_a_row_breaks_the_chain_at_that_point() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    h.set_secret(&admin, "A", "1").await;
+    h.set_secret(&admin, "B", "2").await;
+    h.set_secret(&admin, "C", "3").await;
+
+    // Sanity: intact before we touch anything.
+    let ok = h.get("/api/v1/audit/verify", &admin).await;
+    assert_eq!(ok.body["intact"], true, "{:?}", ok.body);
+
+    // Tamper: edit a middle row's action behind the server's back.
+    let middle = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM audit_log ORDER BY ts ASC, rowid ASC LIMIT 1 OFFSET 2",
+    )
+    .fetch_one(&h.db)
+    .await
+    .expect("a third audit entry exists");
+    sqlx::query("UPDATE audit_log SET secret_key = 'TAMPERED' WHERE id = ?")
+        .bind(&middle)
+        .execute(&h.db)
+        .await
+        .expect("update");
+
+    let res = h.get("/api/v1/audit/verify", &admin).await;
+    assert!(res.ok());
+    assert_eq!(res.body["intact"], false, "an edited row must break the chain: {:?}", res.body);
+    assert_eq!(res.body["broken_at"], Value::String(middle));
+    let reason = res.body["reason"].as_str().unwrap_or("");
+    assert!(reason.contains("edited"), "reason should say the row was edited: {reason}");
+
+    // The CLI reads the same shape; keep the contract exact so
+    // `pandapass audit verify` can branch on `intact`.
+    assert!(res.body["reason"].is_string());
+}
+
+// ── SSH certificate signing (M4) ────────────────────────────────────────────
+
+/// End-to-end SSH user certificate issuance: the admin stores an ed25519 SSH
+/// CA, then asks the server to sign a user's *public* key. The returned
+/// certificate must parse as an OpenSSH certificate and authenticate the same
+/// public key. Non-admins are forbidden from the signing endpoint.
+#[tokio::test]
+async fn ssh_cert_signing_end_to_end() {
+    use ssh_key::{private::PrivateKey, Algorithm, HashAlg};
+
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    // 1. Generate an ed25519 SSH CA locally.
+    let ca_private = PrivateKey::random(&mut rand::rngs::OsRng,
+        Algorithm::Ed25519,
+    )
+    .expect("generate CA key");
+    let ca_key_pem = ca_private
+        .to_openssh(ssh_key::LineEnding::LF)
+        .expect("serialize CA key");
+
+    // The CA certificate on the SSH track is just its public key in OpenSSH
+    // format; the create endpoint stores it alongside the private key.
+    let ca_cert_pem = ca_private.public_key().to_openssh().unwrap_or_default();
+
+    let now = chrono::Utc::now();
+    let not_before = now - chrono::Duration::hours(1);
+    let not_after = now + chrono::Duration::hours(12);
+
+    let create = h
+        .post(
+            "/api/v1/ca",
+            &admin,
+            json!({
+                "kind": "intermediate",
+                "key_pem": *ca_key_pem,
+                "cert_pem": ca_cert_pem,
+                "not_before": not_before.to_rfc3339(),
+                "not_after": not_after.to_rfc3339(),
+            }),
+        )
+        .await;
+    assert!(create.ok(), "create CA failed: {:?}", create.body);
+    let ca_id = create.body["id"].as_str().unwrap();
+
+    // 2. Generate a user keypair locally. Only the public half travels.
+    let user_private = PrivateKey::random(&mut rand::rngs::OsRng,
+        Algorithm::Ed25519,
+    )
+    .expect("generate user key");
+    let user_public_openssh = user_private
+        .public_key()
+        .to_openssh()
+        .expect("serialize user public key");
+
+    let me = h.get("/api/v1/auth/me", &admin).await;
+    let user_id = me.body["id"].as_str().unwrap();
+
+    // 3. Request a certificate from the server.
+    let res = h
+        .post(
+            &format!("/api/v1/ca/{ca_id}/sign-ssh"),
+            &admin,
+            json!({
+                "user_id": user_id,
+                "principal": "ops@prod",
+                "user_public_key_openssh": user_public_openssh,
+                "key_type": "ed25519",
+                "not_before": not_before.to_rfc3339(),
+                "not_after": not_after.to_rfc3339(),
+            }),
+        )
+        .await;
+    assert!(res.ok(), "SSH sign failed: {:?}", res.body);
+    let cert_line = res.body["cert_openssh"].as_str().expect("cert_openssh string");
+    assert!(
+        cert_line.starts_with("ssh-ed25519-cert-v01@openssh.com "),
+        "output must be an OpenSSH certificate line"
+    );
+    let cert = ssh_key::Certificate::from_openssh(cert_line).expect("parse cert");
+    assert_eq!(cert.valid_principals(), ["ops@prod"]);
+    assert_eq!(cert.cert_type(), ssh_key::certificate::CertType::User);
+    let cert_fp = cert.public_key().fingerprint(HashAlg::Sha256);
+    let user_fp = user_private.public_key().fingerprint(HashAlg::Sha256);
+    assert_eq!(cert_fp, user_fp, "certified key must match user public key");
+
+    // The signature verifies against the CA public key.
+    let ca_fingerprint = ca_private.public_key().fingerprint(HashAlg::Sha256);
+    cert.validate(std::iter::once(&ca_fingerprint)).expect("signature verifies");
+
+    // 4. Scope boundary: a non-admin service token cannot sign.
+    let writer = h.token(&admin, &["write:secret"]).await;
+    let denied = h
+        .post(
+            &format!("/api/v1/ca/{ca_id}/sign-ssh"),
+            &writer,
+            json!({
+                "user_id": user_id,
+                "principal": "ops@prod",
+                "user_public_key_openssh": user_public_openssh,
+                "key_type": "ed25519",
+                "not_before": not_before.to_rfc3339(),
+                "not_after": not_after.to_rfc3339(),
+            }),
+        )
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
 }

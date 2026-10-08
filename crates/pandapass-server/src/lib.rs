@@ -79,11 +79,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/ca", get(pki::list_ca_keys).post(pki::create_ca_key))
         .route("/api/v1/ca/{id}", get(pki::get_ca_key).delete(pki::revoke_ca_key))
         .route("/api/v1/ca/{id}/sign", post(pki::sign_csr))
+        .route("/api/v1/ca/{id}/sign-ssh", post(pki::sign_ssh_cert_route))
         .route("/api/v1/ssh-certs", get(pki::list_ssh_certs).post(pki::create_ssh_cert))
         .route("/api/v1/ssh-certs/{id}", delete(pki::revoke_ssh_cert))
         .route("/api/v1/tokens", get(tokens::list_tokens).post(tokens::create_token))
         .route("/api/v1/tokens/{id}", delete(tokens::revoke_token))
-        .route("/api/v1/audit", get(tokens::list_audit));
+        .route("/api/v1/audit", get(tokens::list_audit))
+        .route("/api/v1/audit/verify", get(tokens::verify_audit));
 
     // Internal routes: service token only. Used by agents and CI where the
     // age private key must not leave the operator's machine.
