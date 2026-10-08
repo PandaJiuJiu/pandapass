@@ -85,6 +85,36 @@ used against production.
 `run` exits with the child's status. A non-zero exit means the command
 failed; read its stderr rather than retrying blindly.
 
+## Audit
+
+List the audit trail for a project. Values are never logged.
+
+```bash
+pandapass audit list demo
+pandapass audit list demo 1 20   # page 1, 20 per page
+```
+
+Admins can verify the tamper-evidence chain:
+
+```bash
+pandapass audit verify
+```
+
+A broken chain means rows were edited or deleted after they were written.
+
+## SSH certificates
+
+Admins can sign a user's public key with a stored CA. The user's private key
+never leaves their machine.
+
+```bash
+pandapass ssh sign <ca-id> <user-id> --principal ops@prod --public-key ~/.ssh/id_ed25519.pub
+```
+
+Store the printed certificate line in `~/.ssh/id_ed25519-cert.pub` and use it
+with `ssh -i ~/.ssh/id_ed25519`. List and revoke certs with `pandapass ssh list`
+and `pandapass ssh revoke <cert-id>`.
+
 ## What not to do
 
 - Do not `cat`, `echo`, or otherwise print a secret to inspect it.

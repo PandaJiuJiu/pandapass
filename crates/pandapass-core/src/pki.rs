@@ -202,18 +202,102 @@ pub fn generate_root_ca(
     ))
 }
 
-/// SSH certificate signing (stub).
+/// SSH certificate signing.
+///
+/// The CA key (`ca_key_enc`) is encrypted with a master key; we decrypt it in
+/// memory only. `user_public_key_openssh` is the *user's* public key in
+/// OpenSSH format (`ssh-ed25519 AAAA... comment`) — generated locally by the
+/// user, whose private half never touches the server. We produce a user
+/// certificate binding that key to `principal` for the validity window, signed
+/// by the CA.
+///
+/// This is the flow `TrustedUserCAKeys` on the destination host consumes:
+/// the CA's public key is preinstalled there, and this certificate proves
+/// the holder may act as `principal` until `not_after`.
 pub fn sign_ssh_cert(
-    _ca_key_enc: &EncryptedSecret,
+    ca_key_enc: &EncryptedSecret,
     _ca_cert_pem: &str,
-    _master_key: &MasterKey,
-    _user_id: uuid::Uuid,
-    _principal: &str,
-    _key_type: SshKeyType,
-    _not_before: chrono::DateTime<chrono::Utc>,
-    _not_after: chrono::DateTime<chrono::Utc>,
+    master_key: &MasterKey,
+    user_id: uuid::Uuid,
+    user_public_key_openssh: &str,
+    principal: &str,
+    key_type: SshKeyType,
+    not_before: chrono::DateTime<chrono::Utc>,
+    not_after: chrono::DateTime<chrono::Utc>,
 ) -> Result<String> {
-    Err(PkiError::Internal("SSH cert signing not yet implemented; needs ssh-key crate".into()))
+    use secrecy::ExposeSecret;
+
+    // Only ed25519 SSH CAs are supported by this implementation. RSA SSH
+    // certificate signing needs an RSA CA key in OpenSSH format; refusing
+    // clearly is better than silently producing something no host accepts.
+    if !matches!(key_type, SshKeyType::Ed25519) {
+        return Err(PkiError::SshKey(
+            "only ed25519 SSH certificate signing is supported".into(),
+        ));
+    }
+
+    // 1. Decrypt the CA private key (same as every other stored secret).
+    let ca_key_pem = ca_key_enc
+        .decrypt(master_key)
+        .map_err(|e| PkiError::KeyDecode(e.to_string()))?
+        .expose_secret()
+        .to_string();
+
+    // 2. Parse the CA key. The stored PEM here is expected to be an OpenSSH
+    //    private key for the SSH CA, not an X.509 PEM — the two PKI tracks
+    //    use different key formats.
+    let ca_private = ssh_key::private::PrivateKey::from_openssh(&ca_key_pem)
+        .map_err(|e| PkiError::SshKey(format!("CA key is not an OpenSSH private key: {e}")))?;
+
+    // 3. Parse the user's public key. This is the only user-side input; the
+    //    private half never leaves their machine.
+    let user_public = ssh_key::PublicKey::from_openssh(user_public_key_openssh)
+        .map_err(|e| PkiError::SshKey(format!("invalid user public key: {e}")))?;
+
+    // 4. Build and sign the certificate (RFC 4253 / PROTOCOL.certkeys).
+    let serial: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(1);
+
+    let valid_after = not_before.timestamp().max(0) as u64;
+    let valid_before = not_after.timestamp().max(0) as u64;
+
+    let mut builder = ssh_key::certificate::Builder::new(
+        vec![serial as u8; 16], // nonce (16 bytes)
+        user_public.clone(),    // the user's public key
+        valid_after,
+        valid_before,
+    )
+    .map_err(|e| PkiError::SshKey(e.to_string()))?;
+    builder
+        .serial(serial)
+        .map_err(|e| PkiError::SshKey(e.to_string()))?;
+    builder
+        .key_id(&format!("pandapass-{user_id}"))
+        .map_err(|e| PkiError::SshKey(e.to_string()))?;
+    builder
+        .valid_principal(principal)
+        .map_err(|e| PkiError::SshKey(e.to_string()))?;
+    for ext in [
+        "permit-X11-forwarding",
+        "permit-agent-forwarding",
+        "permit-port-forwarding",
+        "permit-pty",
+        "permit-user-rc",
+    ] {
+        builder
+            .extension(ext, "")
+            .map_err(|e| PkiError::SshKey(e.to_string()))?;
+    }
+
+    let cert = builder
+        .sign(&ca_private)
+        .map_err(|e| PkiError::SshKey(e.to_string()))?;
+
+    // 5. Serialize in OpenSSH authorized_keys format, ready for id_certificates.
+    cert.to_openssh()
+        .map_err(|e| PkiError::SshKey(e.to_string()))
 }
 
 #[cfg(test)]
@@ -335,6 +419,85 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, PkiError::KeyDecode(_)), "got {err:?}");
+    }
+
+    /// End-to-end SSH certificate signing: generate a CA key and a user key
+    /// locally, have the CA certify the user's public key for a principal,
+    /// and check the result parses back and says what we asked for. The
+    /// user's private key stays "client-side" (generated here) and is never
+    /// passed to the signing function — that is the property the whole
+    /// flow exists to preserve.
+    #[test]
+    fn ssh_cert_signing_produces_a_parsable_user_certificate() {
+        use ssh_key::Algorithm;
+
+        // CA side: an ed25519 OpenSSH private key, stored encrypted.
+        let mut rng = rand::rngs::OsRng;
+        let ca_private = ssh_key::private::PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
+        let ca_pem = ca_private.to_openssh(ssh_key::LineEnding::LF).unwrap();
+        let mk = MasterKey::generate();
+        let ca_key_enc = EncryptedSecret::encrypt(&ca_pem, &mk).unwrap();
+
+        // User side: a fresh ed25519 keypair. Only the public half travels.
+        let user_private = ssh_key::private::PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
+        let user_public_openssh = user_private.public_key().to_openssh().unwrap();
+
+        let not_before = chrono::Utc::now() - chrono::Duration::hours(1);
+        let not_after = chrono::Utc::now() + chrono::Duration::hours(12);
+
+        let cert_line = sign_ssh_cert(
+            &ca_key_enc,
+            "", // X.509 PEM is not used on the SSH track
+            &mk,
+            uuid::Uuid::now_v7(),
+            &user_public_openssh,
+            "alice@prod",
+            SshKeyType::Ed25519,
+            not_before,
+            not_after,
+        ).unwrap();
+
+        // The output must be an OpenSSH *certificate* line, not a plain key.
+        assert!(
+            cert_line.starts_with("ssh-ed25519-cert-v01@openssh.com "),
+            "got: {cert_line}"
+        );
+
+        // It must parse as a certificate and carry the fields we set.
+        let cert = ssh_key::Certificate::from_openssh(&cert_line).unwrap();
+        assert_eq!(cert.valid_principals(), ["alice@prod"]);
+        assert_eq!(cert.cert_type(), ssh_key::certificate::CertType::User);
+        // Compare public keys by their fingerprint (works for any KeyData).
+        let cert_fp = cert.public_key().fingerprint(ssh_key::HashAlg::Sha256);
+        let user_fp = user_private.public_key().fingerprint(ssh_key::HashAlg::Sha256);
+        assert_eq!(
+            cert_fp,
+            user_fp,
+            "certified key must be the user's key"
+        );
+        // And the signature must verify against the CA's public key.
+        let ca_fingerprint = ca_private.public_key().fingerprint(ssh_key::HashAlg::Sha256);
+        cert.validate(std::iter::once(&ca_fingerprint)).unwrap();
+    }
+
+    /// RSA signing is refused with a clear error rather than producing a
+    /// certificate no host would accept.
+    #[test]
+    fn ssh_cert_signing_refuses_rsa() {
+        let mk = MasterKey::generate();
+        let ca_key_enc = EncryptedSecret::encrypt("not a key", &mk).unwrap();
+        let err = sign_ssh_cert(
+            &ca_key_enc,
+            "",
+            &mk,
+            uuid::Uuid::now_v7(),
+            "ssh-ed25519 AAAA test",
+            "alice",
+            SshKeyType::Rsa,
+            chrono::Utc::now(),
+            chrono::Utc::now() + chrono::Duration::hours(1),
+        ).unwrap_err();
+        assert!(matches!(err, PkiError::SshKey(_)), "got {err:?}");
     }
 
     /// PEM → DER without pulling in another pem crate at test time.

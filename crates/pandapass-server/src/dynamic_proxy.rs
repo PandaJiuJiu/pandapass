@@ -37,7 +37,9 @@ pub struct ProxyConfig {
 struct StartupMessage {
     user: String,
     database: Option<String>,
-    /// Raw bytes for forwarding
+    /// Raw bytes for forwarding to upstream once proxying is implemented
+    /// (see the `handle_connection` TODO). Unused until then.
+    #[allow(dead_code)]
     raw: Vec<u8>,
 }
 

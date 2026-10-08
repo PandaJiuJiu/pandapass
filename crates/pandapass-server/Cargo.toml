@@ -27,6 +27,7 @@ sqlx = { workspace = true }
 qrcode = "0.14"
 async-trait = { workspace = true }
 secrecy = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # The integration tests drive the router in-process, so they need a body
@@ -35,3 +36,10 @@ http-body-util = "0.1"
 # `oneshot`, used to dispatch a request through the router without binding a port.
 tower = { workspace = true, features = ["util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# The audit-chain tests derive the chain key the way main.rs does, and the
+# tamper test recomputes entry hashes the way the logger does.
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+ssh-key = { version = "0.6", features = ["ed25519"] }
+rand = "0.8"

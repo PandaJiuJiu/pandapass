@@ -1,7 +1,7 @@
 use axum::{extract::{Path, Query, State}, Json};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::models::*;
-use pandapass_core::pki::{sign_x509_from_csr, PkiError};
+use pandapass_core::pki::{sign_x509_from_csr, sign_ssh_cert, PkiError};
 use pandapass_db as db;
 use serde::{Deserialize, Serialize};
 
@@ -150,6 +150,92 @@ pub async fn sign_csr(
     state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(SignCsrResponse { cert_pem }))
+}
+
+#[derive(Deserialize)]
+pub struct SignSshCertRequest {
+    pub user_id: uuid::Uuid,
+    #[serde(default)]
+    pub project_id: Option<uuid::Uuid>,
+    pub principal: String,
+    /// The user's public key in OpenSSH format (`ssh-ed25519 AAAA... comment`).
+    /// The private half never leaves the user's machine; only this is signed.
+    pub user_public_key_openssh: String,
+    pub key_type: SshKeyType,
+    pub not_before: chrono::DateTime<chrono::Utc>,
+    pub not_after: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Serialize)]
+pub struct SignSshCertResponse {
+    pub cert_openssh: String,
+    pub cert_id: uuid::Uuid,
+}
+
+/// Sign an SSH user certificate using a stored CA.
+///
+/// The user's private key never touches the server — they keep it locally.
+/// We sign their CA's assertion that `principal` may connect until `not_after`.
+/// The signed cert is stored in the `ssh_certs` table for tracking/revocation,
+/// and returned once in OpenSSH format for the user's `.ssh` directory.
+pub async fn sign_ssh_cert_route(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path(ca_id): Path<uuid::Uuid>,
+    Json(req): Json<SignSshCertRequest>,
+) -> Result<Json<SignSshCertResponse>, ApiError> {
+    if !auth.can(Permission::ManageUsers) {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
+
+    // Load CA key
+    let ca_key = db::get_ca_key(&state.db, ca_id).await?;
+    if ca_key.revoked_at.is_some() {
+        return Err(ApiError::BadRequest("CA has been revoked".into()));
+    }
+
+    // Get master key to decrypt CA private key
+    let mk = crate::routes::secrets::get_master_key(&state, auth.user.id).await?;
+
+    let cert_openssh = sign_ssh_cert(
+        &ca_key.key_enc,
+        &ca_key.cert_pem,
+        &mk,
+        req.user_id,
+        &req.user_public_key_openssh,
+        &req.principal,
+        req.key_type,
+        req.not_before,
+        req.not_after,
+    ).map_err(|e| ApiError::Internal(format!("SSH signing failed: {e}")))?;
+
+    // Store the signed certificate for tracking and later revocation
+    let ssh_cert = db::create_ssh_cert(
+        &state.db,
+        req.user_id,
+        req.project_id,
+        &req.principal,
+        &cert_openssh,
+        req.key_type,
+        req.not_after,
+        req.not_before,
+        auth.user.id,
+    ).await?;
+
+    let mut audit = AuditContext::new(&auth, AuditAction::SshCertIssue);
+    audit = audit.with_meta(serde_json::json!({
+        "ssh_cert_id": ssh_cert.id,
+        "ca_id": ca_id,
+        "user_id": req.user_id,
+        "principal": req.principal,
+        "key_type": req.key_type.as_str(),
+    }));
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(SignSshCertResponse {
+        cert_openssh,
+        cert_id: ssh_cert.id,
+    }))
 }
 
 #[derive(Deserialize)]

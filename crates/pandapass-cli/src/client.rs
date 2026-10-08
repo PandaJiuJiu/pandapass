@@ -361,6 +361,11 @@ impl ApiClient {
         self.get(&path).await
     }
 
+    /// Verify the audit log HMAC chain (admin only).
+    pub async fn verify_audit(&self) -> Result<serde_json::Value> {
+        self.get("/audit/verify").await
+    }
+
     // ─────────────────────────── dynamic credentials (M2) ───────────────────────────
 
     pub async fn list_dynamic_creds(
@@ -505,6 +510,31 @@ impl ApiClient {
     pub async fn revoke_ca_key(&self, id: uuid::Uuid) -> Result<()> {
         let _: serde_json::Value = self.delete(&format!("/ca/{id}")).await?;
         Ok(())
+    }
+
+    /// Sign an SSH user certificate with a stored CA. The user's public key
+    /// travels; their private key never does.
+    pub async fn sign_ssh_cert(
+        &self,
+        ca_id: uuid::Uuid,
+        user_id: uuid::Uuid,
+        project_id: Option<uuid::Uuid>,
+        principal: &str,
+        user_public_key_openssh: &str,
+        key_type: SshKeyType,
+        not_before: chrono::DateTime<chrono::Utc>,
+        not_after: chrono::DateTime<chrono::Utc>,
+    ) -> Result<serde_json::Value> {
+        let req = serde_json::json!({
+            "user_id": user_id,
+            "project_id": project_id,
+            "principal": principal,
+            "user_public_key_openssh": user_public_key_openssh,
+            "key_type": key_type.as_str(),
+            "not_before": not_before.to_rfc3339(),
+            "not_after": not_after.to_rfc3339(),
+        });
+        self.post(&format!("/ca/{ca_id}/sign-ssh"), &req).await
     }
 
     // ─────────────────────────── SSH certificates (M4) ───────────────────────────

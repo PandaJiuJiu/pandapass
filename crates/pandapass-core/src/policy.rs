@@ -49,7 +49,6 @@ pub enum PolicyDecision {
 #[derive(Debug, Clone)]
 struct CompiledPolicy {
     id: Uuid,
-    name: String,
     engine: Engine,
 }
 
@@ -95,7 +94,6 @@ impl PolicyEngine {
 
         let compiled = CompiledPolicy {
             id: policy.id,
-            name: policy.name.clone(),
             engine,
         };
 
