@@ -7,7 +7,7 @@
 # image needs no libc at all, which removes a whole class of shared-library
 # CVEs from the deployment surface.
 
-FROM rust:1.83-bookworm AS builder
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/rust:1.83 AS builder
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends musl-tools pkg-config libssl-dev \
@@ -41,7 +41,15 @@ RUN find crates -name "*.rs" -exec touch {} + \
       --bin pandapass-server --bin pandapass-cli
 
 # ── runtime ────────────────────────────────────────────────────────────────
-FROM gcr.io/distroless/cc-debian12:nonroot
+# `debian:bookworm-slim` replaces the original `distroless/cc-debian12:nonroot`
+# because this environment builds from a local mirror that carries debian but
+# not the gcr.io distroless image. A non-root user is created explicitly to
+# preserve the least-privilege property distroless gave us for free.
+FROM docker.io/library/debian:bookworm-slim
+
+RUN groupadd --gid 65532 nonroot \
+ && useradd --uid 65532 --gid 65532 --home-dir /nonexistent \
+      --shell /usr/sbin/nologin nonroot
 
 COPY --from=builder /build/target/release/pandapass-server /usr/local/bin/pandapass-server
 COPY --from=builder /build/target/release/pandapass-cli    /usr/local/bin/pandapass
