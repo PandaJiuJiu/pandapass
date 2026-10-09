@@ -506,7 +506,7 @@ pub fn verify_totp(secret_base32: &str, code: &str) -> bool {
         Err(_) => return false,
     };
     let totp = TotpBuilder::new()
-        .with_algorithm(Algorithm::SHA1)
+        .with_algorithm(Algorithm::SHA256)
         .with_digits(6)
         .with_step_duration(30)
         .with_secret(secret)
@@ -523,7 +523,7 @@ pub fn totp_uri(email: &str, secret_base32: &str, issuer: &str) -> String {
         Err(_) => return String::new(),
     };
     let totp = TotpBuilder::new()
-        .with_algorithm(Algorithm::SHA1)
+        .with_algorithm(Algorithm::SHA256)
         .with_digits(6)
         .with_step_duration(30)
         .with_secret(secret)
@@ -710,7 +710,7 @@ mod tests {
     fn totp_verifies_a_freshly_generated_code() {
         let secret = generate_totp_secret();
         let totp = TotpBuilder::new()
-            .with_algorithm(Algorithm::SHA1)
+            .with_algorithm(Algorithm::SHA256)
             .with_digits(6)
             .with_step_duration(30)
             .with_secret(Secret::try_from_base32(&secret).unwrap())
