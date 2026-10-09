@@ -333,7 +333,10 @@ pub struct InjectArgs {
     /// Input template file
     #[arg(short, long)]
     pub input: PathBuf,
-    /// Output file
+    /// Output file. Writing a substituted template to disk violates the
+    /// agent-safety contract: secrets that sit on disk are out of scope for
+    /// the rest of the system. `inject` therefore defaults to refusing
+    /// on-disk output — pass `--force` to override the refusal.
     #[arg(short, long)]
     pub output: PathBuf,
     /// Project slug
@@ -342,6 +345,11 @@ pub struct InjectArgs {
     /// Environment slug
     #[arg(long)]
     pub env: String,
+    /// Required to confirm an on-disk write. The default is "do not write":
+    /// the substituted template goes to stdout and the on-disk file is left
+    /// untouched.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1108,8 +1116,29 @@ async fn run_inject(api: &ApiClient, _config: &crate::client::CliConfig, args: I
         output = output.replace(&placeholder2, &secret.value);
     }
 
-    tokio::fs::write(&args.output, output).await?;
-    println!("Injected secrets into {}", args.output.display());
+    if args.force {
+        // The operator has explicitly confirmed that they want the substituted
+        // template to live on disk. We do not zeroize the buffer after
+        // writing — the file outlives the process and the user accepts that.
+        tokio::fs::write(&args.output, output).await?;
+        println!("Injected secrets into {}", args.output.display());
+    } else {
+        // Refuse by default. Writing a secret to disk is the precise failure
+        // mode SKILL.md warns about: the value outlives the process in
+        // plaintext, defeats the audit log, and is not what `pandapass run`
+        // is for. Print the substituted content to stdout so the operator
+        // can pipe it where it actually belongs (env vars, a temp pipe,
+        // never a long-lived file).
+        eprintln!(
+            "Refusing to write substituted template to disk without --force. \
+             The SKILL recommends using `pandapass run` instead. Printing to \
+             stdout instead."
+        );
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        out.write_all(output.as_bytes())?;
+        out.flush()?;
+    }
     Ok(())
 }
 

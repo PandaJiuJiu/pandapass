@@ -344,3 +344,51 @@ async fn run_with_empty_allowlist_does_not_block() {
         "empty allowlist should not block, got: {msg}"
     );
 }
+
+/// Without `--force`, `inject` must NOT write to the output path. This is the
+/// contract that keeps a substituted template from being persisted to disk
+/// by accident.
+#[tokio::test]
+async fn inject_refuses_disk_write_without_force() {
+    use pandapass_cli::commands::{Command, InjectArgs};
+    use pandapass_core::models::CreateProjectRequest;
+
+    let (base_url, _handle) = start_server().await;
+
+    let operator = AgeIdentity::generate();
+    let operator_pub = operator.public_key().expect("public key");
+
+    let setup = ApiClient::new(base_url.clone(), false).expect("setup client");
+    let token = register_and_login(&setup, "inject-user@example.com", operator_pub.as_str()).await;
+    setup.set_auth_token(Some(token.clone())).await;
+
+    setup.create_project(&CreateProjectRequest {
+        name: "inj".into(),
+        slug: "inj".into(),
+        description: None,
+    }).await.expect("create project");
+    setup.set_secret("inj", "dev", "KEY", "value").await.expect("set secret");
+
+    let (api, mut config) = make_cli(&base_url, &token, &PathBuf::from("/nonexistent/age.key")).await;
+    let workdir = std::env::temp_dir().join(format!("pandapass-inject-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&workdir).expect("workdir");
+    let input = workdir.join("template.txt");
+    let output = workdir.join("out.txt");
+    std::fs::write(&input, "before ${KEY} after").expect("write input");
+
+    let res = run_command(
+        &api,
+        &mut config,
+        Command::Inject(InjectArgs {
+            input: input.clone(),
+            output: output.clone(),
+            project: "inj".into(),
+            env: "dev".into(),
+            force: false,
+        }),
+    )
+    .await;
+    // Should succeed (printing to stdout) and the output file must not exist.
+    assert!(res.is_ok(), "inject without --force should succeed: {res:?}");
+    assert!(!output.exists(), "output file must not be created without --force");
+}
