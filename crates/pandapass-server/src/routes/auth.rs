@@ -111,8 +111,23 @@ pub async fn login(
         return Err(ApiError::Unauthorized("User disabled".into()));
     }
 
+    // Per-account lockout: a distributed brute force (many IPs, one account)
+    // is bounded by this counter, which the per-IP rate limiter cannot see.
+    const MAX_FAILURES: i64 = 5;
+    const LOCKOUT_SECS: i64 = 900; // 15 minutes
+    if let Some(until) = user.locked_until {
+        if until > chrono::Utc::now() {
+            return Err(ApiError::Unauthorized(
+                "Account temporarily locked after too many failed attempts. Try again later.".into(),
+            ));
+        }
+        // Lockout expired: clear it so the next failure starts fresh.
+        db::reset_login_failures(&state.db, user.id).await?;
+    }
+
     let valid = verify_password(&login_req.password, &user.password_hash)?;
     if !valid {
+        db::record_login_failure(&state.db, user.id, MAX_FAILURES, LOCKOUT_SECS).await?;
         return Err(ApiError::Unauthorized("Invalid credentials".into()));
     }
 
@@ -126,6 +141,7 @@ pub async fn login(
         let code = login_req.totp_code.ok_or_else(|| ApiError::Unauthorized("TOTP required".into()))?;
         let totp_secret = decrypt_totp_secret(&state, &user).await?;
         if !verify_totp(&totp_secret, &code) {
+            db::record_login_failure(&state.db, user.id, MAX_FAILURES, LOCKOUT_SECS).await?;
             return Err(ApiError::Unauthorized("Invalid TOTP code".into()));
         }
     } else if state.config.require_totp {
@@ -133,6 +149,7 @@ pub async fn login(
         return Err(ApiError::Unauthorized("TOTP setup required".into()));
     }
 
+    db::reset_login_failures(&state.db, user.id).await?;
     db::touch_last_login(&state.db, user.id).await?;
 
     let (session_token, csrf) = issue_session(&state, user.id, None, None).await?;

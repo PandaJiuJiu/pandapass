@@ -2816,3 +2816,48 @@ async fn admin_cannot_disable_self() {
     let d = h.post(&format!("/api/v1/admin/users/{my_id}/disable"), &admin, json!({})).await;
     assert_eq!(d.status, StatusCode::BAD_REQUEST);
 }
+
+/// A distributed brute force (many IPs, same account) is bounded by the
+/// per-account failed-login counter. After a handful of wrong passwords,
+/// even a correct password is refused for the lockout window.
+#[tokio::test]
+async fn account_locks_after_repeated_failed_logins() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.post(
+        "/api/v1/auth/register",
+        "",
+        json!({"email": "alice@example.com", "password": "alice-password-123"}),
+    ).await;
+
+    // 6 wrong attempts from 6 different IPs.
+    for i in 0..6 {
+        let r = h.send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("x-forwarded-for", format!("10.1.{}.{}", i / 256, i % 256))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"email": "alice@example.com", "password": "wrong"}).to_string()))
+                .unwrap(),
+        ).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    }
+
+    // Now a correct password is locked out.
+    let r = h.send(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header("x-forwarded-for", "10.9.9.9")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"email": "alice@example.com", "password": "alice-password-123"}).to_string()))
+            .unwrap(),
+    ).await;
+    assert_eq!(
+        r.status,
+        StatusCode::UNAUTHORIZED,
+        "locked account must refuse even the correct password: {:?}",
+        r.body
+    );
+}

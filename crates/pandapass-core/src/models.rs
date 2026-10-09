@@ -69,6 +69,10 @@ pub struct User {
     pub created_at: DateTime<Utc>,
     pub disabled_at: Option<DateTime<Utc>>,
     pub last_login_at: Option<DateTime<Utc>>,
+    /// Consecutive failed login attempts. Zeroed on a successful login.
+    pub failed_login_count: i64,
+    /// When non-NULL, login is refused until this timestamp.
+    pub locked_until: Option<DateTime<Utc>>,
 }
 
 /// User for API responses (no sensitive fields)

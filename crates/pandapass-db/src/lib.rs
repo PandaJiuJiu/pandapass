@@ -162,6 +162,8 @@ fn row_to_user(row: &SqliteRow) -> User {
         created_at: parse_ts(&row.get::<String, _>("created_at")),
         disabled_at: parse_opt_ts(row.get("disabled_at")),
         last_login_at: parse_opt_ts(row.get("last_login_at")),
+        failed_login_count: row.get::<i64, _>("failed_login_count"),
+        locked_until: parse_opt_ts(row.get("locked_until")),
     }
 }
 
@@ -1865,4 +1867,31 @@ pub async fn list_ca_keys_for_user(db: &Db, user_id: uuid::Uuid) -> Result<Vec<C
     .fetch_all(db)
     .await?;
     Ok(rows.iter().map(row_to_ca_key).collect())
+}
+
+/// Increment the consecutive-failed-login counter. When it reaches
+/// `max_failures`, set a lockout window of `lockout_secs`.
+pub async fn record_login_failure(db: &Db, user_id: uuid::Uuid, max_failures: i64, lockout_secs: i64) -> Result<()> {
+    sqlx::query(
+        "UPDATE users SET failed_login_count = failed_login_count + 1, \
+         locked_until = CASE \
+           WHEN failed_login_count + 1 >= ?2 THEN ?3 \
+           ELSE locked_until END \
+         WHERE id = ?1",
+    )
+    .bind(user_id.to_string())
+    .bind(max_failures)
+    .bind(ts(chrono::Utc::now() + chrono::Duration::seconds(lockout_secs)))
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Zero the failed-login counter and clear the lockout on success.
+pub async fn reset_login_failures(db: &Db, user_id: uuid::Uuid) -> Result<()> {
+    sqlx::query("UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = ?1")
+        .bind(user_id.to_string())
+        .execute(db)
+        .await?;
+    Ok(())
 }
