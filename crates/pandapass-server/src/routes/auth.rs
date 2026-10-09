@@ -387,8 +387,37 @@ pub async fn totp_setup(
     let uri = totp_uri(&auth.user.email, &secret, "PandaPass");
     let qr_code_svg = qr_code_svg(&uri);
 
-    // Get user's master key and encrypt the TOTP secret
-    let mk = get_master_key_for_user(&state, auth.user.id).await?;
+    // A user who registered without an age public key has no envelope and
+    // therefore no master key. Without one, TOTP cannot be stored. Instead
+    // of refusing (which would permanently block a REQUIRE_TOTP deployment
+    // for such accounts), mint a master key here and seal it to the server
+    // recipient. The member can re-enrol with `enroll_key rotate=true`
+    // later to add their age key as a recipient.
+    let envelope = db::get_envelope(&state.db, auth.user.id).await?;
+    let mk = match envelope {
+        Some(env) => env
+            .decrypt(&crate::routes::secrets::server_identity_str(&state)?)
+            .map_err(ApiError::from)?,
+        None => {
+            let identity = crate::routes::secrets::server_identity_str(&state)?;
+            let age = AgeIdentity::parse(&identity)
+                .map_err(|e| ApiError::Internal(format!("server age: {e}")))?;
+            let server_pub = age
+                .public_key()
+                .map_err(|e| ApiError::Internal(format!("server public: {e}")))?;
+            let mk = MasterKey::generate();
+            let env = Envelope::create(
+                auth.user.id,
+                &mk,
+                &server_pub,
+                &SealOptions { server: Some(server_pub.clone()) },
+            )
+            .map_err(ApiError::from)?;
+            db::put_envelope(&state.db, auth.user.id, &env.ciphertext).await?;
+            mk
+        }
+    };
+
     let secret_enc = EncryptedSecret::encrypt_with_purpose(
         &secret,
         &mk,

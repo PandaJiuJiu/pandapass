@@ -2861,3 +2861,23 @@ async fn account_locks_after_repeated_failed_logins() {
         r.body
     );
 }
+
+/// A user who registered without an age public key (no envelope) can
+/// still set up TOTP: the server mints a master key sealed to itself and
+/// stores the TOTP secret under it. This is what keeps a REQUIRE_TOTP
+/// deployment from permanently locking out such accounts.
+#[tokio::test]
+async fn totp_setup_works_without_enrolled_key() {
+    let h = Harness::start().await;
+    // Register without age_public_key.
+    let reg = h.post(
+        "/api/v1/auth/register",
+        "",
+        json!({"email": "no-key@example.com", "password": "password-123456"}),
+    ).await;
+    let token = reg.body["session_token"].as_str().unwrap().to_string();
+
+    let setup = h.get("/api/v1/auth/totp/setup", &token).await;
+    assert_eq!(setup.status, StatusCode::OK, "{:?}", setup.body);
+    assert!(setup.body["secret"].as_str().unwrap().len() > 0);
+}

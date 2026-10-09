@@ -444,3 +444,17 @@ pub async fn list_secret_versions(
 
     Ok(Json(versions))
 }
+/// The server's age identity string (`AGE-SECRET-KEY-1...`), or a clear
+/// error telling the operator what to configure. Exposed so auth routes
+/// (TOTP setup) can unwrap envelopes without a per-user member key.
+pub fn server_identity_str(state: &AppState) -> Result<String, ApiError> {
+    let identity = state
+        .config
+        .server_age_identity
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::Forbidden(
+            "This server has no age identity. Configure PANDAPASS_SERVER_AGE_IDENTITY.".into(),
+        ))?;
+    Ok(identity.to_string())
+}
