@@ -161,8 +161,12 @@ pub async fn login(
         .same_site(axum_extra::extract::cookie::SameSite::Lax)
         .path("/")
         .build());
+    // Deliberately NOT HttpOnly: the web UI reads this cookie from
+    // document.cookie and echoes it in the x-csrf-token header (double-submit
+    // pattern). The CSRF token is not a secret — an attacker who can read it
+    // still cannot craft a cross-site request because SameSite=Lax + the
+    // custom header requirement block the cross-site send.
     jar = jar.add(Cookie::build((CSRF_COOKIE, csrf))
-        .http_only(true)
         .secure(state.config.cookie_secure)
         .same_site(axum_extra::extract::cookie::SameSite::Lax)
         .path("/")
@@ -307,8 +311,12 @@ pub async fn register(
         .same_site(axum_extra::extract::cookie::SameSite::Lax)
         .path("/")
         .build());
+    // Deliberately NOT HttpOnly: the web UI reads this cookie from
+    // document.cookie and echoes it in the x-csrf-token header (double-submit
+    // pattern). The CSRF token is not a secret — an attacker who can read it
+    // still cannot craft a cross-site request because SameSite=Lax + the
+    // custom header requirement block the cross-site send.
     jar = jar.add(Cookie::build((CSRF_COOKIE, csrf))
-        .http_only(true)
         .secure(state.config.cookie_secure)
         .same_site(axum_extra::extract::cookie::SameSite::Lax)
         .path("/")
