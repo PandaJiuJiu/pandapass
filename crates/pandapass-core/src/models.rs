@@ -838,3 +838,36 @@ pub struct CommandResult {
     pub injected_keys: Vec<String>,
     pub duration_ms: u64,
 }
+
+/// GitOps: local secrets file format (plaintext YAML before age encryption).
+///
+/// This is the structure written to `.pandapass/secrets/<env>.yaml` and then
+/// age-encrypted to `.pandapass/secrets/<env>.yaml.age`. The plaintext is a
+/// simple key-value mapping where values are plaintext strings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitOpsSecretFile {
+    /// Map of secret key -> plaintext value
+    #[serde(default)]
+    pub secrets: std::collections::HashMap<String, String>,
+}
+
+/// GitOps: sync state tracked per environment.
+///
+/// Stored in `.pandapass/.sync-state.json` (gitignored). Contains the last-known
+/// remote state for each secret so `diff` can detect modifications without
+/// pulling all ciphertexts.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SyncState {
+    /// Project and environment this state belongs to
+    pub project_id: Option<uuid::Uuid>,
+    pub env_id: Option<uuid::Uuid>,
+    /// Per-secret remote version info: key -> { version, updated_at }
+    #[serde(default)]
+    pub secrets: std::collections::HashMap<String, SecretSyncInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretSyncInfo {
+    pub version: i32,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}

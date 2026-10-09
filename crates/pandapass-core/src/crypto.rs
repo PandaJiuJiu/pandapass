@@ -193,6 +193,111 @@ pub struct EncryptedSecret {
     pub ciphertext: String, // base64 encoded
 }
 
+/// Encrypt a whole file's content (e.g. a YAML secrets file) with age.
+///
+/// This is the GitOps sync path: the local `.pandapass/secrets/*.yaml` file is
+/// sealed to the operator's age public key (and optionally the server's), so it
+/// can sit in a git repository in ciphertext form. Unlike [`Envelope`] there is
+/// no master key involved — the file content itself is the plaintext.
+///
+/// Returns ASCII-armored age ciphertext (a `String`), suitable for storing as a
+/// `.yaml.age` file.
+pub fn age_encrypt_file(
+    content: &str,
+    recipients: &[AgePublicKey],
+) -> Result<String> {
+    if recipients.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "age_encrypt_file requires at least one recipient".into(),
+        ));
+    }
+    let age_recipients: Vec<Box<dyn age::Recipient>> = recipients
+        .iter()
+        .map(|r| r.to_recipient())
+        .collect::<Result<_>>()?;
+    let encryptor = age::Encryptor::with_recipients(age_recipients.iter().map(|r| r.as_ref()))
+        .map_err(|e| CoreError::Internal(format!("Encryptor error: {}", e)))?;
+
+    let mut ciphertext = Vec::new();
+    {
+        use age::armor::Format;
+        use std::io::Write;
+        let mut writer = encryptor
+            .wrap_output(age::armor::ArmoredWriter::wrap_output(
+                &mut ciphertext,
+                Format::AsciiArmor,
+            )?)
+            .map_err(|e| CoreError::Internal(format!("Writer error: {}", e)))?;
+        writer
+            .write_all(content.as_bytes())
+            .map_err(|e| CoreError::Internal(format!("Write error: {}", e)))?;
+        writer
+            .finish()
+            .map_err(|e| CoreError::Internal(format!("Finish error: {}", e)))?
+            .finish()
+            .map_err(|e| CoreError::Internal(format!("Armor finish error: {}", e)))?;
+    }
+    String::from_utf8(ciphertext)
+        .map_err(|_| CoreError::Internal("Armored output is not UTF-8".into()))
+}
+
+/// Decrypt an ASCII-armored age file (as produced by [`age_encrypt_file`]).
+pub fn age_decrypt_file(ciphertext: &str, identity: &AgeIdentity) -> Result<String> {
+    use age::armor::ArmoredReader;
+    use std::io::Read;
+
+    let decryptor = age::Decryptor::new_buffered(ArmoredReader::new(ciphertext.as_bytes()))
+        .map_err(|e| CoreError::Internal(format!("Decryptor error: {}", e)))?;
+
+    let age_identity: age::x25519::Identity = identity
+        .as_str()
+        .parse()
+        .map_err(|e| CoreError::Internal(format!("Identity parse error: {}", e)))?;
+
+    let mut plaintext = vec![];
+    decryptor
+        .decrypt(std::iter::once(&age_identity as &dyn age::Identity))
+        .map_err(|e| CoreError::Internal(format!("Decrypt error: {}", e)))?
+        .read_to_end(&mut plaintext)
+        .map_err(|e| CoreError::Internal(format!("Read error: {}", e)))?;
+
+    String::from_utf8(plaintext)
+        .map_err(|_| CoreError::Internal("Decrypted file is not UTF-8".into()))
+}
+
+#[cfg(test)]
+mod gitops_crypto_tests {
+    use super::*;
+
+    #[test]
+    fn file_round_trips_through_age() {
+        let identity = AgeIdentity::generate();
+        let public = identity.public_key().unwrap();
+        let content = "API_KEY: super-secret\nDB_URL: postgres://u:p@db/app\n";
+
+        let enc = age_encrypt_file(content, &[public]).unwrap();
+        assert!(enc.starts_with("-----BEGIN AGE ENCRYPTED FILE-----"));
+
+        let dec = age_decrypt_file(&enc, &identity).unwrap();
+        assert_eq!(dec, content);
+    }
+
+    #[test]
+    fn file_rejects_foreign_identity() {
+        let identity = AgeIdentity::generate();
+        let stranger = AgeIdentity::generate();
+        let public = identity.public_key().unwrap();
+
+        let enc = age_encrypt_file("secret", &[public]).unwrap();
+        assert!(age_decrypt_file(&enc, &stranger).is_err());
+    }
+
+    #[test]
+    fn file_encrypt_requires_recipient() {
+        assert!(age_encrypt_file("secret", &[]).is_err());
+    }
+}
+
 impl EncryptedSecret {
     /// Encrypt a secret value with the master key
     pub fn encrypt(value: &str, master_key: &MasterKey) -> Result<Self> {

@@ -59,6 +59,7 @@ url = "2.5"
 base64 = "0.22"
 hex = "0.4"
 strum = { version = "0.26", features = ["derive"] }
+serde_yaml = "0.9"
 regorus = "0.11"
 rcgen = { version = "0.14.10", features = ["crypto", "pem", "ring", "x509-parser"] }
 # rcgen 0.14 exposes its validity window as `time::OffsetDateTime`; pin the same

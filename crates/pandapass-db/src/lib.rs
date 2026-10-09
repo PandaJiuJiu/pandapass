@@ -546,9 +546,14 @@ pub async fn upsert_secret(
 ) -> Result<Secret> {
     let now = utc_now();
 
-    // Try to find an existing (non-deleted) secret
+    // Try to find an existing secret with this key — active first, then a
+    // soft-deleted row. A GitOps `push` that re-creates a key which was soft
+    // deleted must *resurrect* the row (clear deleted_at, keep its id, archive
+    // the old value) rather than hitting the UNIQUE(project_id, env_id, key)
+    // constraint with a fresh INSERT.
     let existing = sqlx::query(
-        "SELECT * FROM secrets WHERE project_id = ?1 AND env_id = ?2 AND key = ?3 AND deleted_at IS NULL",
+        "SELECT * FROM secrets WHERE project_id = ?1 AND env_id = ?2 AND key = ?3
+         ORDER BY (deleted_at IS NULL) DESC, version DESC LIMIT 1",
     )
     .bind(project_id.to_string())
     .bind(env_id.to_string())
@@ -561,8 +566,13 @@ pub async fn upsert_secret(
             let id = uuid::Uuid::parse_str(row.get::<String, _>("id").as_str())
                 .unwrap_or(uuid::Uuid::nil());
             let version: i64 = row.get("version");
+            let was_deleted: bool = row
+                .get::<Option<String>, _>("deleted_at")
+                .is_some();
 
-            // Archive the old value into version history
+            // Archive the old value into version history (only if there was a
+            // live value worth preserving; a soft-deleted row still holds the
+            // last value, which we overwrite).
             let old_enc: String = row.get("value_enc");
             sqlx::query(
                 "INSERT INTO secret_versions (id, secret_id, version, value_enc, created_by, created_at)
@@ -577,15 +587,29 @@ pub async fn upsert_secret(
             .execute(db)
             .await?;
 
-            sqlx::query(
-                "UPDATE secrets SET value_enc = ?2, version = ?3, updated_at = ?4 WHERE id = ?1",
-            )
-            .bind(id.to_string())
-            .bind(enc_json(value_enc))
-            .bind(version + 1)
-            .bind(&now)
-            .execute(db)
-            .await?;
+            if was_deleted {
+                // Resurrect the soft-deleted row, keep its identity and version
+                // history continuous, and mark it active again.
+                sqlx::query(
+                    "UPDATE secrets SET value_enc = ?2, version = ?3, updated_at = ?4, deleted_at = NULL WHERE id = ?1",
+                )
+                .bind(id.to_string())
+                .bind(enc_json(value_enc))
+                .bind(version + 1)
+                .bind(&now)
+                .execute(db)
+                .await?;
+            } else {
+                sqlx::query(
+                    "UPDATE secrets SET value_enc = ?2, version = ?3, updated_at = ?4 WHERE id = ?1",
+                )
+                .bind(id.to_string())
+                .bind(enc_json(value_enc))
+                .bind(version + 1)
+                .bind(&now)
+                .execute(db)
+                .await?;
+            }
         }
         None => {
             let id = uuid::Uuid::now_v7();
