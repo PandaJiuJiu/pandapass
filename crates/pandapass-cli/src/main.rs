@@ -175,6 +175,23 @@ async fn main() -> Result<()> {
 
     // Create API client
     let api = ApiClient::new(config.server_url.clone(), cli.insecure)?;
+    if cli.insecure {
+        eprintln!(
+            "WARNING: TLS certificate verification is disabled (--insecure). \
+             Bearer tokens and secret values will travel over an unverified \
+             TLS connection. Do not use this flag against any non-loopback host."
+        );
+        if !config.server_url.starts_with("http://127.0.0.1")
+            && !config.server_url.starts_with("http://localhost")
+        {
+            eprintln!(
+                "ERROR: --insecure is not allowed against a non-loopback host ({}). \
+                 Use a real certificate or connect over a trusted network.",
+                config.server_url
+            );
+            std::process::exit(2);
+        }
+    }
     if let Some(token) = &config.auth_token {
         api.set_auth_token(Some(token.clone())).await;
     }
