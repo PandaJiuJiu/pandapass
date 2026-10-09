@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{AppState, StartupInfo};
 use crate::middleware::auth::{ApiError, require_csrf};
-use crate::routes::{auth, dynamic, policies, pki, projects, secrets, tokens};
+use crate::routes::{auth, dynamic, policies, pki, projects, scan, secrets, tokens};
 use pandapass_core::{AuditAction, AuditContext, CommandResult};
 
 pub mod state;
@@ -24,6 +24,7 @@ mod routes {
     pub mod dynamic;
     pub mod policies;
     pub mod pki;
+    pub mod scan;
 }
 
 pub mod middleware {
@@ -85,7 +86,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/tokens", get(tokens::list_tokens).post(tokens::create_token))
         .route("/api/v1/tokens/{id}", delete(tokens::revoke_token))
         .route("/api/v1/audit", get(tokens::list_audit))
-        .route("/api/v1/audit/verify", get(tokens::verify_audit));
+        .route("/api/v1/audit/verify", get(tokens::verify_audit))
+        .route("/api/v1/scan", post(scan::trigger_scan))
+        .route("/api/v1/scan/results", get(scan::list_results));
 
     // Internal routes: service token only. Used by agents and CI where the
     // age private key must not leave the operator's machine.

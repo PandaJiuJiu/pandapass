@@ -871,3 +871,23 @@ pub struct SecretSyncInfo {
     pub version: i32,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
+
+/// A persisted secret-scan finding, as stored in `scan_findings` and returned
+/// by the scan API.
+///
+/// Mirrors [`crate::scanner::ScanFinding`] (which is the scanner's in-memory
+/// output) plus the row identity and lookup columns needed for storage and the
+/// web UI. Like its in-memory counterpart it carries **no plaintext fragment**.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanFindingRecord {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub env_id: Uuid,
+    pub secret_key: String,
+    pub rule_id: String,
+    pub rule_name: String,
+    pub severity: crate::scanner::ScanSeverity,
+    pub match_start: usize,
+    pub match_end: usize,
+    pub detected_at: DateTime<Utc>,
+}

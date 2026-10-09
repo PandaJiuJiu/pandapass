@@ -2,6 +2,7 @@ use pandapass_core::{
     crypto::{EncryptedSecret, Envelope},
     error::Result,
     models::*,
+    scanner::ScanSeverity,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
@@ -1709,4 +1710,111 @@ fn row_to_ssh_cert(row: &SqliteRow) -> SshCert {
         created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str()).unwrap_or(uuid::Uuid::nil()),
         created_at: parse_ts(&row.get::<String, _>("created_at")),
     }
+}
+
+// ─────────────────────────── secret scanning (M4) ───────────────────────────
+
+fn parse_severity(s: &str) -> ScanSeverity {
+    match s {
+        "high" => ScanSeverity::High,
+        "medium" => ScanSeverity::Medium,
+        _ => ScanSeverity::Low,
+    }
+}
+
+fn row_to_scan_finding(row: &SqliteRow) -> ScanFindingRecord {
+    ScanFindingRecord {
+        id: uuid::Uuid::parse_str(row.get::<String, _>("id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        project_id: uuid::Uuid::parse_str(row.get::<String, _>("project_id").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
+        env_id: uuid::Uuid::parse_str(row.get::<String, _>("env_id").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
+        secret_key: row.get("secret_key"),
+        rule_id: row.get("rule_id"),
+        rule_name: row.get("rule_name"),
+        severity: parse_severity(&row.get::<String, _>("severity")),
+        match_start: row.get::<i64, _>("match_start") as usize,
+        match_end: row.get::<i64, _>("match_end") as usize,
+        detected_at: parse_ts(&row.get::<String, _>("detected_at")),
+    }
+}
+
+/// Replace all scan findings with a new run's results, atomically.
+///
+/// A scan run is a snapshot: the `scan_findings` table always holds the latest
+/// scan's output, so re-scanning overwrites (rather than appends to) the
+/// previous run. This is the "每次扫描覆盖旧结果" contract.
+pub async fn replace_scan_findings(
+    db: &Db,
+    findings: &[ScanFindingRecord],
+) -> Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM scan_findings").execute(&mut *tx).await?;
+
+    for f in findings {
+        sqlx::query(
+            "INSERT INTO scan_findings
+             (id, project_id, env_id, secret_key, rule_id, rule_name, severity, match_start, match_end, detected_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )
+        .bind(f.id.to_string())
+        .bind(f.project_id.to_string())
+        .bind(f.env_id.to_string())
+        .bind(&f.secret_key)
+        .bind(&f.rule_id)
+        .bind(&f.rule_name)
+        .bind(f.severity.as_str())
+        .bind(f.match_start as i64)
+        .bind(f.match_end as i64)
+        .bind(ts(f.detected_at))
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// List scan findings, optionally filtered by project/env, with pagination.
+pub async fn list_scan_findings(
+    db: &Db,
+    project_id: Option<uuid::Uuid>,
+    env_id: Option<uuid::Uuid>,
+    page: i64,
+    per_page: i64,
+) -> Result<Vec<ScanFindingRecord>> {
+    let page = page.max(1);
+    let per_page = per_page.clamp(1, 200);
+    let offset = (page - 1) * per_page;
+
+    let rows = sqlx::query(
+        "SELECT * FROM scan_findings
+         WHERE (?1 IS NULL OR project_id = ?1) AND (?2 IS NULL OR env_id = ?2)
+         ORDER BY detected_at DESC, id DESC
+         LIMIT ?3 OFFSET ?4",
+    )
+    .bind(project_id.map(|v| v.to_string()))
+    .bind(env_id.map(|v| v.to_string()))
+    .bind(per_page)
+    .bind(offset)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.iter().map(row_to_scan_finding).collect())
+}
+
+/// Total number of scan findings matching the given filters.
+pub async fn count_scan_findings(
+    db: &Db,
+    project_id: Option<uuid::Uuid>,
+    env_id: Option<uuid::Uuid>,
+) -> Result<i64> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) as c FROM scan_findings
+         WHERE (?1 IS NULL OR project_id = ?1) AND (?2 IS NULL OR env_id = ?2)",
+    )
+    .bind(project_id.map(|v| v.to_string()))
+    .bind(env_id.map(|v| v.to_string()))
+    .fetch_one(db)
+    .await?;
+    Ok(row.get::<i64, _>("c"))
 }

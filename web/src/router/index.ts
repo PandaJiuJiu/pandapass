@@ -9,6 +9,7 @@ import AuditView from '@/views/AuditView.vue'
 import DynamicCredsView from '@/views/DynamicCredsView.vue'
 import PoliciesView from '@/views/PoliciesView.vue'
 import PkiView from '@/views/PkiView.vue'
+import ScanView from '@/views/ScanView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -22,6 +23,7 @@ export const router = createRouter({
     { path: '/projects/:slug/dynamic-creds', component: DynamicCredsView, props: true },
     { path: '/policies', component: PoliciesView },
     { path: '/pki', component: PkiView },
+    { path: '/scan', component: ScanView },
   ],
 })
 

@@ -2201,3 +2201,156 @@ async fn ssh_cert_signing_end_to_end() {
         .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 }
+
+// ── secret scanning (M4) ───────────────────────────────────────────────────
+
+/// A secret holding an AWS-style access key must be detected by a scan run.
+///
+/// The finding carries the rule id, severity, secret key, and byte offsets —
+/// but never the plaintext value. The scan response and the audit entry must
+/// both respect the no-plaintext contract.
+#[tokio::test]
+async fn secret_scan_finds_aws_key_without_leaking_plaintext() {
+    const PLAINTEXT: &str = "AKIA1234567890123456";
+
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    let written = h.set_secret(&admin, "AWS_KEY", PLAINTEXT).await;
+    assert!(written.ok(), "write failed: {:?}", written.body);
+
+    let res = h.post("/api/v1/scan", &admin, json!({})).await;
+    assert!(res.ok(), "scan failed: {:?}", res.body);
+    assert_eq!(res.body["findings"], 1);
+
+    // The findings list contains the detection.
+    let results = h.get("/api/v1/scan/results", &admin).await;
+    assert!(results.ok(), "list results failed: {:?}", results.body);
+    let items = results.body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["secret_key"], "AWS_KEY");
+    assert_eq!(items[0]["rule_id"], "aws_access_key_id");
+    assert_eq!(items[0]["severity"], "high");
+    let start = items[0]["match_start"].as_i64().unwrap() as usize;
+    let end = items[0]["match_end"].as_i64().unwrap() as usize;
+    assert!(start < end, "match offsets must be ordered");
+    assert!(end <= PLAINTEXT.len(), "match offsets must be within the value");
+
+    // Neither the scan response nor the findings may carry the plaintext.
+    let scan_rendered = res.body.to_string();
+    assert!(
+        !scan_rendered.contains(PLAINTEXT),
+        "scan response leaked the plaintext: {scan_rendered}"
+    );
+    let results_rendered = results.body.to_string();
+    assert!(
+        !results_rendered.contains(PLAINTEXT),
+        "results leaked the plaintext: {results_rendered}"
+    );
+
+    // The audit entry exists, is a secret_scan, and its meta is the run-level
+    // summary — no secret keys, no rule ids, no offsets, no plaintext.
+    let audit = h.get("/api/v1/audit", &admin).await;
+    assert!(audit.ok());
+    let scans: Vec<&Value> = audit.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "secret_scan" && e["outcome"] == "success")
+        .collect();
+    assert_eq!(scans.len(), 1, "one successful scan should be audited");
+    let meta = &scans[0]["meta"];
+    assert_eq!(meta["findings"], 1);
+    assert_eq!(meta["secrets_scanned"], 1);
+    assert_eq!(meta["projects"], 1);
+    assert_eq!(meta["envs"], 1);
+    assert_eq!(meta["errors"], 0);
+    let audit_rendered = scans[0].to_string();
+    assert!(
+        !audit_rendered.contains(PLAINTEXT),
+        "audit leaked the plaintext: {audit_rendered}"
+    );
+    assert!(
+        !audit_rendered.contains("AWS_KEY"),
+        "audit meta must carry only the run summary, not finding detail: {audit_rendered}"
+    );
+}
+
+/// Re-scanning must overwrite the previous findings rather than append.
+/// A secret that no longer matches leaves no stale finding behind.
+#[tokio::test]
+async fn secret_scan_rerun_overwrites_previous_findings() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+
+    h.set_secret(&admin, "AWS_KEY", "AKIA1234567890123456").await;
+    let first = h.post("/api/v1/scan", &admin, json!({})).await;
+    assert!(first.ok());
+    assert_eq!(first.body["findings"], 1);
+
+    // Rewrite the secret to a benign value, then scan again.
+    h.set_secret(&admin, "AWS_KEY", "not-a-secret-value").await;
+    let second = h.post("/api/v1/scan", &admin, json!({})).await;
+    assert!(second.ok());
+    assert_eq!(second.body["findings"], 0);
+
+    let results = h.get("/api/v1/scan/results", &admin).await;
+    assert!(results.ok());
+    let items = results.body["items"].as_array().unwrap();
+    assert!(
+        items.is_empty(),
+        "stale findings must be overwritten, got: {0}",
+        results.body
+    );
+}
+
+/// Non-admin callers — editor/viewer sessions and service tokens — must get
+/// 403 on both the trigger and the results list.
+#[tokio::test]
+async fn secret_scan_admin_only() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    h.set_secret(&admin, "AWS_KEY", "AKIA1234567890123456").await;
+
+    // A second non-admin account with editor role on the project.
+    let key = AgeIdentity::generate();
+    let public = key.public_key().unwrap().as_str().to_string();
+    let reg = h
+        .post(
+            "/api/v1/auth/register",
+            "",
+            json!({
+                "email": "editor@example.com",
+                "password": "hunter2hunter2",
+                "age_public_key": public,
+            }),
+        )
+        .await;
+    assert!(reg.ok(), "register failed: {:?}", reg.body);
+    let editor = reg.body["session_token"].as_str().unwrap().to_string();
+    let add = h
+        .post(
+            "/api/v1/projects/demo/members",
+            &admin,
+            json!({ "email": "editor@example.com", "role": "editor" }),
+        )
+        .await;
+    assert!(add.ok(), "add member failed: {:?}", add.body);
+
+    // Editor session: denied.
+    let denied_trigger = h.post("/api/v1/scan", &editor, json!({})).await;
+    assert_eq!(denied_trigger.status, StatusCode::FORBIDDEN);
+    let denied_list = h.get("/api/v1/scan/results", &editor).await;
+    assert_eq!(denied_list.status, StatusCode::FORBIDDEN);
+
+    // Service tokens with various scopes: denied (no scope grants ManageUsers).
+    for scopes in [&["read:secret"][..], &["write:secret", "read:secret"][..], &["list:secret"][..]] {
+        let tok = h.token(&admin, scopes).await;
+        let denied_trigger = h.post("/api/v1/scan", &tok, json!({})).await;
+        assert_eq!(denied_trigger.status, StatusCode::FORBIDDEN);
+        let denied_list = h.get("/api/v1/scan/results", &tok).await;
+        assert_eq!(denied_list.status, StatusCode::FORBIDDEN);
+    }
+}

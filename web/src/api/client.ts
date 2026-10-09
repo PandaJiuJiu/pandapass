@@ -246,6 +246,37 @@ export interface SshCert {
   created_at: string
 }
 
+// ── secret scanning (M4) ──
+
+export type ScanSeverity = 'high' | 'medium' | 'low'
+
+/**
+ * A persisted scan finding. Deliberately contains NO plaintext fragment —
+ * only the secret key's name, the rule that fired, and the byte offsets of
+ * the match inside the scanned value.
+ */
+export interface ScanFinding {
+  id: string
+  project_id: string
+  env_id: string
+  secret_key: string
+  rule_id: string
+  rule_name: string
+  severity: ScanSeverity
+  match_start: number
+  match_end: number
+  detected_at: string
+}
+
+/** Aggregate summary of a scan run (also stored in the audit meta). */
+export interface ScanRunResult {
+  secrets_scanned: number
+  findings: number
+  projects: number
+  envs: number
+  errors: number
+}
+
 // ── encrypted secret type (shared with core) ──
 
 export interface EncryptedSecret {
@@ -416,4 +447,20 @@ export const api = {
     post<SshCert>('/ssh-certs', { user_id: userId, project_id: projectId, principal, cert_pem: certPem, key_type: keyType, valid_before: validBefore, valid_after: validAfter }),
 
   revokeSshCert: (id: string) => del<void>(`/ssh-certs/${id}`),
+
+  // ── secret scanning (M4) ──
+
+  /** Trigger a full scan of every active secret. Admin only. */
+  triggerScan: () => post<ScanRunResult>('/scan'),
+
+  /** List persisted scan findings. Admin only. */
+  getScanResults: (projectId?: string, envId?: string, page = 1, perPage = 50) => {
+    const params = new URLSearchParams({
+      page: String(page),
+      per_page: String(perPage),
+    })
+    if (projectId) params.set('project_id', projectId)
+    if (envId) params.set('env_id', envId)
+    return get<Paginated<ScanFinding>>(`/scan/results?${params}`)
+  },
 }
