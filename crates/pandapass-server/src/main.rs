@@ -57,6 +57,32 @@ async fn run() -> anyhow::Result<()> {
         );
     }
 
+    // Startup self-check: if the server age identity is loaded from a file,
+    // verify the file's mode is 0600 (or 0400). A world-readable private
+    // key is worse than no encryption at all.
+    if let Some(path) = std::env::var("PANDAPASS_SERVER_AGE_IDENTITY_FILE")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        if let Ok(meta) = std::fs::metadata(&path) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = meta.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    anyhow::bail!(
+                        "{path:?} is readable by group/other (mode {:o}). \
+                         Refusing to start. chmod 600 or 400 the file and try again.",
+                        mode
+                    );
+                }
+            }
+            if !meta.is_file() {
+                anyhow::bail!("{path:?} is not a regular file");
+            }
+        }
+    }
+
     // Connect to database
     let db = connect(&config.db_url).await?;
     migrate(&db).await?;
