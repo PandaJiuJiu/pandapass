@@ -351,3 +351,66 @@ pub async fn server_age_show(
         fingerprint,
     }))
 }
+
+/// Admin: list all users. Returns minimal public fields, so the admin can
+/// find the account to disable or promote.
+#[derive(Serialize)]
+pub struct AdminListUsersResponse {
+    pub users: Vec<UserPublic>,
+}
+
+pub async fn list_users_admin(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+) -> Result<Json<AdminListUsersResponse>, ApiError> {
+    if !auth.can(Permission::ManageUsers) {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
+    let users: Vec<UserPublic> = db::list_users(&state.db).await?.into_iter().map(Into::into).collect();
+    Ok(Json(AdminListUsersResponse { users }))
+}
+
+/// Admin: disable a user. A disabled account cannot log in, and every
+/// token it holds stops resolving in Auth::from_headers. This is the
+/// offboarding primitive the security docs have been promising.
+pub async fn disable_user_admin(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path(user_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !auth.can(Permission::ManageUsers) {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
+    // Refuse to disable yourself — there is no way back without a live
+    // account.
+    if user_id == auth.user.id {
+        return Err(ApiError::BadRequest("You cannot disable your own account".into()));
+    }
+    db::disable_user(&state.db, user_id).await?;
+    // Kill all active sessions so the disabled user is signed out everywhere.
+    db::delete_all_sessions(&state.db, user_id).await?;
+
+    let mut audit = AuditContext::new(&auth, AuditAction::UserDisable)
+        .with_meta(serde_json::json!({ "target_user_id": user_id.to_string() }));
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// Admin: re-enable a disabled user.
+pub async fn enable_user_admin(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path(user_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !auth.can(Permission::ManageUsers) {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
+    db::enable_user(&state.db, user_id).await?;
+
+    let mut audit = AuditContext::new(&auth, AuditAction::UserEnable)
+        .with_meta(serde_json::json!({ "target_user_id": user_id.to_string() }));
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}

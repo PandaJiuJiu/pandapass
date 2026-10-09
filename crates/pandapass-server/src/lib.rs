@@ -92,6 +92,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/audit", get(tokens::list_audit))
         .route("/api/v1/audit/verify", get(tokens::verify_audit))
         .route("/api/v1/admin/server-age", get(tokens::server_age_show))
+        .route("/api/v1/admin/users", get(tokens::list_users_admin))
+        .route("/api/v1/admin/users/{user_id}/disable", post(tokens::disable_user_admin))
+        .route("/api/v1/admin/users/{user_id}/enable", post(tokens::enable_user_admin))
         .route("/api/v1/scan", post(scan::trigger_scan))
         .route("/api/v1/scan/results", get(scan::list_results));
 

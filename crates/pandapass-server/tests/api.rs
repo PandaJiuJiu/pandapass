@@ -2740,3 +2740,77 @@ async fn password_reset_via_recovery_code() {
     ).await;
     assert_eq!(r2.status, StatusCode::BAD_REQUEST);
 }
+
+/// Admin can disable a user, which kills all their sessions and blocks
+/// future logins. The same admin can re-enable them.
+#[tokio::test]
+async fn admin_disable_and_enable_user() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    // Register alice.
+    h.post(
+        "/api/v1/auth/register",
+        "",
+        json!({"email": "alice@example.com", "password": "alice-password-123"}),
+    ).await;
+    let login = h.post(
+        "/api/v1/auth/login",
+        "",
+        json!({"email": "alice@example.com", "password": "alice-password-123"}),
+    ).await;
+    let alice = login.body["session_token"].as_str().unwrap().to_string();
+
+    // List users to find alice's id.
+    let lst = h.get("/api/v1/admin/users", &admin).await;
+    let alice_id = lst.body["users"].as_array().unwrap().iter()
+        .find(|u| u["email"] == "alice@example.com")
+        .unwrap()["id"].as_str().unwrap().to_string();
+
+    // Disable.
+    let d = h.post(
+        &format!("/api/v1/admin/users/{alice_id}/disable"),
+        &admin,
+        json!({}),
+    ).await;
+    assert_eq!(d.status, StatusCode::OK, "{:?}", d.body);
+
+    // Alice's session is now dead.
+    let me = h.get("/api/v1/auth/me", &alice).await;
+    assert_eq!(me.status, StatusCode::UNAUTHORIZED);
+
+    // Alice cannot log in either.
+    let l2 = h.post(
+        "/api/v1/auth/login",
+        "",
+        json!({"email": "alice@example.com", "password": "alice-password-123"}),
+    ).await;
+    assert_eq!(l2.status, StatusCode::UNAUTHORIZED);
+
+    // Re-enable.
+    let e = h.post(
+        &format!("/api/v1/admin/users/{alice_id}/enable"),
+        &admin,
+        json!({}),
+    ).await;
+    assert_eq!(e.status, StatusCode::OK, "{:?}", e.body);
+
+    // Alice can log in again.
+    let l3 = h.post(
+        "/api/v1/auth/login",
+        "",
+        json!({"email": "alice@example.com", "password": "alice-password-123"}),
+    ).await;
+    assert_eq!(l3.status, StatusCode::OK);
+}
+
+/// Admin cannot disable themselves.
+#[tokio::test]
+async fn admin_cannot_disable_self() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    let lst = h.get("/api/v1/admin/users", &admin).await;
+    let my_id = lst.body["users"].as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+    let d = h.post(&format!("/api/v1/admin/users/{my_id}/disable"), &admin, json!({})).await;
+    assert_eq!(d.status, StatusCode::BAD_REQUEST);
+}
