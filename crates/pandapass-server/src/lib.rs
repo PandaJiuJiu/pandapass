@@ -160,19 +160,14 @@ async fn auth_middleware(
     mut req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Result<axum::http::Response<axum::body::Body>, ApiError> {
-    // Extract and store client IP for rate limiting
-    let headers = req.headers().clone();
-    if let Some(ip) = crate::middleware::auth::extract_client_ip_from_headers(&headers) {
-        req.extensions_mut().insert(crate::middleware::auth::ClientIp(ip));
-    }
-
     // Bearer-token requests skip CSRF entirely; cookie sessions must prove they
     // meant it for mutating verbs.
     require_csrf(req.headers(), req.method()).await?;
 
-    let ctx = Auth::from_headers(req.headers(), &state).await?;
-    req.extensions_mut().insert(Auth(ctx));
-
+    // Force the auth to resolve here. FromRequestParts will hit this again,
+    // but if it fails (no bearer / no cookie) we want a 401 before the
+    // handler runs, and that resolution is cheap.
+    let _ = Auth::from_headers(req.headers(), &state).await?;
     Ok(next.run(req).await)
 }
 
@@ -237,6 +232,8 @@ async fn internal_auth_middleware(
         project_role: role,
         project_id: svc_project_id,
         env_id: svc_env_id,
+        client_ip: None,
+        user_agent: None,
     });
 
     req.extensions_mut().insert(auth);

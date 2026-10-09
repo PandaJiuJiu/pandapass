@@ -85,7 +85,7 @@ impl Harness {
             auth_rate_limit_window_secs: 60,
             dynamic_proxy_listen: None,
             dynamic_proxy_upstream: None,
-            trusted_proxy_cidrs: vec![],
+            trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
         };
 
         let db = connect(&config.db_url).await.expect("connect");
@@ -2946,7 +2946,7 @@ async fn harness_with_idle_timeout(idle_secs: i64) -> Harness {
         auth_rate_limit_window_secs: 60,
         dynamic_proxy_listen: None,
         dynamic_proxy_upstream: None,
-        trusted_proxy_cidrs: vec![],
+        trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
     };
     let db = connect(&config.db_url).await.expect("connect");
     migrate(&db).await.expect("migrate");
@@ -3001,4 +3001,36 @@ async fn list_and_revoke_sessions() {
     // Session is now dead.
     let me = h.get("/api/v1/auth/me", &admin).await;
     assert_eq!(me.status, StatusCode::UNAUTHORIZED);
+}
+
+/// Audit entries must carry the client IP and user agent, not empty
+/// strings. The middleware now populates AuthContext with them and
+/// AuditContext::new picks them up automatically.
+#[tokio::test]
+async fn audit_entries_include_ip_and_user_agent() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    // Create a project with a User-Agent header. send_from injects a
+    // ConnectInfo peer so the trusted-proxy gate accepts our test
+    // loopback as a known proxy and the IP flows into the audit entry.
+    let r = h.send_from(
+        "127.0.0.1:51234".parse().unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects")
+            .header("authorization", format!("Bearer {admin}"))
+            .header("user-agent", "test-agent/1.0")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"name": "UA", "slug": "ua"}).to_string()))
+            .unwrap(),
+    ).await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    let aud = h.get("/api/v1/audit?page=1&per_page=50", &admin).await;
+    let entries = aud.body["items"].as_array().unwrap();
+    let create = entries.iter().find(|e| e["action"] == "project_create");
+    let create = create.expect("project_create audit entry");
+    assert_eq!(create["user_agent"], "test-agent/1.0");
+    assert!(!create["ip"].as_str().unwrap().is_empty(), "ip must not be empty");
 }

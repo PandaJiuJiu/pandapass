@@ -219,6 +219,8 @@ mod tests {
             project_role: None,
             project_id: None,
             env_id: None,
+            client_ip: None,
+            user_agent: None,
         }
     }
 

@@ -206,6 +206,8 @@ impl Auth {
             project_role: role,
             project_id: None,
             env_id: None,
+            client_ip: None,
+            user_agent: None,
         }))
     }
 
@@ -249,6 +251,8 @@ impl Auth {
             project_role: None,
             project_id: None,
             env_id: None,
+            client_ip: None,
+            user_agent: None,
         }))
     }
 }
@@ -261,8 +265,21 @@ where
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        // Resolve the auth from the request headers, then populate the
+        // client_ip and user_agent fields so every AuditContext built
+        // from this Auth carries them. The ClientIp extension was
+        // inserted earlier by the outer client_ip_middleware.
         let app_state = AppState::from_ref(state);
-        let ctx = Auth::from_headers(&parts.headers, &app_state).await?;
+        let mut ctx = Auth::from_headers(&parts.headers, &app_state).await?;
+        ctx.client_ip = parts
+            .extensions
+            .get::<ClientIp>()
+            .map(|c| c.0.to_string());
+        ctx.user_agent = parts
+            .headers
+            .get(http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
         Ok(Auth(ctx))
     }
 }

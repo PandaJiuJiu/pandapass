@@ -179,10 +179,13 @@ pub async fn login(
         project_role: None,
         project_id: None,
         env_id: None,
+            client_ip: None,
+            user_agent: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::Login);
-    audit = audit.with_ip("".into());
-    audit = audit.with_user_agent("".into());
+    let (ip, ua) = client_ip_and_ua(&parts.headers);
+    audit = audit.with_ip(ip);
+    audit = audit.with_user_agent(ua);
     state.audit.log_success(&mut audit).await.ok();
 
     let key_enrolled = db::get_envelope(&state.db, user.id).await?.is_some();
@@ -329,10 +332,13 @@ pub async fn register(
         project_role: None,
         project_id: None,
         env_id: None,
+            client_ip: None,
+            user_agent: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::Register);
-    audit = audit.with_ip("".into());
-    audit = audit.with_user_agent("".into());
+    let (ip, ua) = client_ip_and_ua(&_parts.headers);
+    audit = audit.with_ip(ip);
+    audit = audit.with_user_agent(ua);
     audit = audit.with_meta(serde_json::json!({ "key_enrolled": enrolled }));
     state.audit.log_success(&mut audit).await.ok();
 
@@ -1027,6 +1033,8 @@ pub async fn recovery_code_redeem(
         project_role: None,
         project_id: None,
         env_id: None,
+            client_ip: None,
+            user_agent: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::Register);
     let meta = serde_json::json!({ "recovery_code_redeemed": true });
@@ -1120,6 +1128,8 @@ pub async fn password_reset(
         project_role: None,
         project_id: None,
         env_id: None,
+            client_ip: None,
+            user_agent: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::PasswordChange);
     let meta = serde_json::json!({ "via": "recovery_code" });
@@ -1195,4 +1205,15 @@ pub async fn revoke_my_session(
     state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+fn client_ip_and_ua(headers: &axum::http::HeaderMap) -> (String, String) {
+    let ip = pandapass_core::audit::extract_client_ip(headers, None)
+        .unwrap_or_default();
+    let ua = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    (ip, ua)
 }

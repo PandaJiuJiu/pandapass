@@ -471,6 +471,11 @@ pub struct AuthContext {
     pub project_role: Option<ProjectRole>,
     pub project_id: Option<Uuid>,
     pub env_id: Option<Uuid>,
+    /// Client IP and user agent, populated by the middleware so audit entries
+    /// written by handlers carry them without every handler having to dig
+    /// through the request.
+    pub client_ip: Option<String>,
+    pub user_agent: Option<String>,
 }
 
 impl AuthContext {

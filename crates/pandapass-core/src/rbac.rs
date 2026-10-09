@@ -135,8 +135,8 @@ impl<'a> AuditContext<'a> {
             project_id: auth.project_id,
             env_id: auth.env_id,
             secret_key: None,
-            ip: None,
-            user_agent: None,
+            ip: auth.client_ip.clone(),
+            user_agent: auth.user_agent.clone(),
             outcome: crate::models::AuditOutcome::Success,
             meta: None,
         }
@@ -223,6 +223,8 @@ mod tests {
             project_role: Some(ProjectRole::Owner),
             project_id: None,
             env_id: None,
+            client_ip: None,
+            user_agent: None,
         }
     }
 
