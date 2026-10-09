@@ -3,12 +3,9 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::error;
 
-mod client;
-mod commands;
-mod model;
-
-use client::{ApiClient, CliConfig};
-use commands::run_command;
+use pandapass_cli::commands;
+use pandapass_cli::client::{ApiClient, CliConfig};
+use pandapass_cli::commands::run_command;
 
 #[derive(Parser, Debug)]
 #[command(name = "pandapass", version, about = "PandaPass - Team secrets management", long_about = None)]
@@ -86,6 +83,10 @@ enum Commands {
     #[command(subcommand)]
     Pki(commands::PkiCmd),
 
+    /// GitOps sync (M3): pull/push/diff secrets to/from a local directory
+    #[command(name = "gitops", subcommand)]
+    GitOps(commands::GitOpsCmd),
+
 
     /// Inject secrets into environment and run command
     Run(commands::RunArgs),
@@ -113,6 +114,7 @@ impl From<Commands> for commands::Command {
             Commands::Config(x) => C::Config(x),
             Commands::Policy(x) => C::Policy(x),
             Commands::Pki(x) => C::Pki(x),
+            Commands::GitOps(x) => C::GitOps(x),
             Commands::Run(x) => C::Run(x),
             Commands::Inject(x) => C::Inject(x),
         }

@@ -338,6 +338,71 @@ pub struct InjectArgs {
     env: String,
 }
 
+#[derive(Args, Debug)]
+pub struct GitOpsPullArgs {
+    /// Project slug
+    #[arg(long)]
+    pub project: String,
+    /// Environment slug
+    #[arg(long)]
+    pub env: String,
+    /// Directory to write `.pandapass/` into
+    #[arg(long, default_value = ".pandapass")]
+    pub dir: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct GitOpsDiffArgs {
+    /// Project slug
+    #[arg(long)]
+    pub project: String,
+    /// Environment slug
+    #[arg(long)]
+    pub env: String,
+    /// Directory containing `.pandapass/`
+    #[arg(long, default_value = ".pandapass")]
+    pub dir: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct GitOpsPushArgs {
+    /// Project slug
+    #[arg(long)]
+    pub project: String,
+    /// Environment slug
+    #[arg(long)]
+    pub env: String,
+    /// Directory containing `.pandapass/`
+    #[arg(long, default_value = ".pandapass")]
+    pub dir: PathBuf,
+    /// Also delete remote secrets that are not present locally.
+    #[arg(long)]
+    pub allow_delete: bool,
+}
+
+/// GitOps sync (M3): pull/push/diff secrets between the server and a local
+/// `.pandapass/` directory.
+#[derive(Subcommand, Debug)]
+pub enum GitOpsCmd {
+    /// Pull secrets from the server into the local `.pandapass/secrets/` dir.
+    ///
+    /// Each environment is written as an age-encrypted `<env>.yaml.age` file
+    /// (sealed to the operator's age public key), and the sync state is
+    /// recorded in `.pandapass/.sync-state.json`. Requires `list:secret` and
+    /// `read:secret` scopes (for a service token).
+    Pull(GitOpsPullArgs),
+    /// Push local secrets to the server.
+    ///
+    /// Only creates/updates by default. Use `--allow-delete` to also soft-delete
+    /// remote secrets that are absent locally. Requires `list:secret` and
+    /// `write:secret` scopes (for a service token).
+    Push(GitOpsPushArgs),
+    /// Show the difference between local `.pandapass/` and the server.
+    ///
+    /// Read-only. Requires `list:secret` scope (for a service token).
+    Diff(GitOpsDiffArgs),
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     Login(LoginArgs),
@@ -365,6 +430,9 @@ pub enum Command {
     Policy(PolicyCmd),
     #[command(subcommand)]
     Pki(PkiCmd),
+    /// GitOps sync (M3): pull/push/diff secrets to/from a local directory
+    #[command(subcommand)]
+    GitOps(GitOpsCmd),
     Run(RunArgs),
     Inject(InjectArgs),
 }
@@ -390,6 +458,7 @@ pub async fn run_command(
         Command::Config(cmd) => run_config(config, cmd).await,
         Command::Policy(cmd) => run_policy(api, cmd).await,
         Command::Pki(cmd) => run_pki(api, cmd).await,
+        Command::GitOps(cmd) => run_gitops(api, config, cmd).await,
         Command::Run(args) => run_run(api, config, args).await,
         Command::Inject(args) => run_inject(api, config, args).await,
     }
@@ -975,6 +1044,272 @@ async fn run_inject(api: &ApiClient, _config: &crate::client::CliConfig, args: I
     tokio::fs::write(&args.output, output).await?;
     println!("Injected secrets into {}", args.output.display());
     Ok(())
+}
+
+// ─────────────────────────── GitOps sync (M3) ───────────────────────────
+
+/// Load the age identity from the CLI config path, if configured. GitOps needs
+/// it to decrypt pulled ciphertexts locally — the plaintext must never come
+/// back over the wire if the operator holds the private key.
+fn load_age_identity(config: &crate::client::CliConfig) -> Result<pandapass_core::crypto::AgeIdentity> {
+    let path = config.age_identity_file.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No age identity configured. Run `pandapass config set-age-identity <path>` \
+             (or pass --age-identity) before using gitops."
+        )
+    })?;
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("cannot read age identity {}: {}", path.display(), e))?;
+    pandapass_core::crypto::AgeIdentity::parse(&content)
+        .map_err(|e| anyhow::anyhow!("invalid age identity in {}: {}", path.display(), e))
+}
+
+/// Resolve a project slug to its id, and an env slug to its id, for sync state.
+async fn resolve_env_ids(api: &ApiClient, project: &str, env: &str) -> Result<(uuid::Uuid, uuid::Uuid)> {
+    let project_id = api.resolve_project_id(project).await?;
+    let envs = api.list_envs(project).await?;
+    let env = envs
+        .iter()
+        .find(|e| e.slug == env)
+        .ok_or_else(|| anyhow::anyhow!("No environment '{env}' in project '{project}'"))?;
+    Ok((project_id, env.id))
+}
+
+/// Path of the local age-encrypted YAML file for an environment.
+fn local_secrets_path(dir: &std::path::Path, env: &str) -> std::path::PathBuf {
+    dir.join("secrets").join(format!("{env}.yaml.age"))
+}
+
+/// Path of the sync-state JSON file.
+fn sync_state_path(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join(".sync-state.json")
+}
+
+/// Read and age-decrypt the local secrets file into a map.
+///
+/// Missing file = empty map (a fresh checkout has nothing yet). The file on
+/// disk is always ciphertext (`.yaml.age`), so this requires the operator's
+/// age identity to recover the plaintext.
+fn read_local_secrets(
+    path: &std::path::Path,
+    identity: &pandapass_core::crypto::AgeIdentity,
+) -> Result<std::collections::HashMap<String, String>> {
+    use pandapass_core::models::GitOpsSecretFile;
+    if !path.exists() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("cannot read {}: {}", path.display(), e))?;
+    let plaintext = pandapass_core::crypto::age_decrypt_file(&content, identity)
+        .map_err(|e| anyhow::anyhow!("cannot decrypt {}: {}", path.display(), e))?;
+    let file: GitOpsSecretFile = serde_yaml::from_str(&plaintext)
+        .map_err(|e| anyhow::anyhow!("invalid YAML in {}: {}", path.display(), e))?;
+    Ok(file.secrets)
+}
+
+/// Age-encrypt and write the local secrets file.
+///
+/// The plaintext exists only in memory: it is sealed to the operator's own age
+/// public key before touching disk, so the file can be committed to git.
+async fn write_local_secrets(
+    path: &std::path::Path,
+    secrets: &std::collections::HashMap<String, String>,
+    identity: &pandapass_core::crypto::AgeIdentity,
+) -> Result<()> {
+    use pandapass_core::models::GitOpsSecretFile;
+    let file = GitOpsSecretFile { secrets: secrets.clone() };
+    let yaml = serde_yaml::to_string(&file)?;
+    let recipient = identity.public_key()?;
+    let ciphertext = pandapass_core::crypto::age_encrypt_file(&yaml, std::slice::from_ref(&recipient))?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(path, ciphertext).await?;
+    Ok(())
+}
+
+/// Read the sync state for an env (or a fresh empty state).
+async fn read_sync_state(dir: &std::path::Path, project_id: uuid::Uuid, env_id: uuid::Uuid) -> Result<pandapass_core::models::SyncState> {
+    use pandapass_core::models::SyncState;
+    let path = sync_state_path(dir);
+    let mut state: SyncState = if path.exists() {
+        let content = tokio::fs::read_to_string(&path).await?;
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        SyncState::default()
+    };
+    state.project_id = Some(project_id);
+    state.env_id = Some(env_id);
+    Ok(state)
+}
+
+async fn write_sync_state(dir: &std::path::Path, state: &pandapass_core::models::SyncState) -> Result<()> {
+    tokio::fs::create_dir_all(dir).await?;
+    let content = serde_json::to_string_pretty(state)?;
+    let path = sync_state_path(dir);
+    let tmp = dir.join(".sync-state.json.tmp");
+    tokio::fs::write(&tmp, content.as_bytes()).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
+    }
+    tokio::fs::rename(&tmp, path).await?;
+    Ok(())
+}
+
+/// `gitops pull`: fetch remote secrets (server-decrypted plaintext), seal them
+/// locally to the operator's age public key, and write `<env>.yaml.age`.
+async fn run_gitops_pull(api: &ApiClient, config: &crate::client::CliConfig, args: GitOpsPullArgs) -> Result<()> {
+    let identity = load_age_identity(config)?;
+    let (project_id, env_id) = resolve_env_ids(api, &args.project, &args.env).await?;
+
+    let metas_resp = api.list_secrets(&args.project, &args.env).await?;
+    let metas = &metas_resp.items;
+
+    // The plaintext comes over the existing `read:secret` path — the same one
+    // `pandapass secret get` uses — and is immediately sealed to the
+    // operator's age key in memory; it never touches disk unencrypted.
+    let mut plaintext_map = std::collections::HashMap::new();
+    for meta in metas {
+        let secret = api.get_secret(&args.project, &args.env, &meta.key).await?;
+        plaintext_map.insert(meta.key.clone(), secret.value);
+    }
+
+    let path = local_secrets_path(&args.dir, &args.env);
+    write_local_secrets(&path, &plaintext_map, &identity).await?;
+
+    // Record remote versions for future diffs.
+    let mut sync_state = pandapass_core::models::SyncState {
+        project_id: Some(project_id),
+        env_id: Some(env_id),
+        secrets: std::collections::HashMap::new(),
+    };
+    for meta in metas {
+        sync_state.secrets.insert(
+            meta.key.clone(),
+            pandapass_core::models::SecretSyncInfo {
+                version: meta.version,
+                updated_at: meta.updated_at,
+            },
+        );
+    }
+    write_sync_state(&args.dir, &sync_state).await?;
+
+    println!(
+        "Pulled {} secret(s) from {}/{} into {}",
+        metas.len(),
+        args.project,
+        args.env,
+        path.display()
+    );
+    Ok(())
+}
+
+/// `gitops diff`: compare local file against remote metadata, print a table.
+async fn run_gitops_diff(api: &ApiClient, config: &crate::client::CliConfig, args: GitOpsDiffArgs) -> Result<()> {
+    let identity = load_age_identity(config)?;
+    let path = local_secrets_path(&args.dir, &args.env);
+    let local = read_local_secrets(&path, &identity)?;
+
+    let metas_resp = api.list_secrets(&args.project, &args.env).await?;
+    let (project_id, env_id) = resolve_env_ids(api, &args.project, &args.env).await?;
+    let sync_state = read_sync_state(&args.dir, project_id, env_id).await?;
+
+    let report = pandapass_core::gitops::diff_metadata(&local, &metas_resp.items, &sync_state);
+    use pandapass_core::gitops::SecretDiffState;
+
+    let mut n = 0;
+    for entry in &report.entries {
+        let marker = match entry.state {
+            SecretDiffState::OnlyLocal => "+",
+            SecretDiffState::OnlyRemote => "-",
+            SecretDiffState::Modified => "~",
+            SecretDiffState::InSync => "=",
+        };
+        let detail = match entry.state {
+            SecretDiffState::OnlyLocal => "only local".to_string(),
+            SecretDiffState::OnlyRemote => "only remote".to_string(),
+            SecretDiffState::Modified => format!("modified (remote v{})", entry.remote_version.unwrap_or(0)),
+            SecretDiffState::InSync => "in sync".to_string(),
+        };
+        println!("{marker} {}  {}", entry.key, detail);
+        n += 1;
+    }
+    if n == 0 {
+        println!("No differences.");
+    }
+    Ok(())
+}
+
+/// `gitops push`: write local changes back to the server.
+async fn run_gitops_push(api: &ApiClient, config: &crate::client::CliConfig, args: GitOpsPushArgs) -> Result<()> {
+    let identity = load_age_identity(config)?;
+    let path = local_secrets_path(&args.dir, &args.env);
+    let local = read_local_secrets(&path, &identity)?;
+
+    let metas_resp = api.list_secrets(&args.project, &args.env).await?;
+    let remote: std::collections::HashMap<String, &pandapass_core::models::SecretMeta> = metas_resp
+        .items
+        .iter()
+        .map(|m| (m.key.clone(), m))
+        .collect();
+
+    let mut created = 0;
+    let mut updated = 0;
+    let mut deleted = 0;
+
+    for (key, value) in &local {
+        // Re-encrypt with the server's master key via the plaintext write path.
+        if remote.contains_key(key) {
+            updated += 1;
+        } else {
+            created += 1;
+        }
+        api.set_secret(&args.project, &args.env, key, value).await?;
+    }
+
+    if args.allow_delete {
+        for key in remote.keys() {
+            if !local.contains_key(key) {
+                api.delete_secret(&args.project, &args.env, key).await?;
+                deleted += 1;
+            }
+        }
+    }
+
+    // Update sync state to reflect what the server now holds.
+    let (project_id, env_id) = resolve_env_ids(api, &args.project, &args.env).await?;
+    let new_metas = api.list_secrets(&args.project, &args.env).await?;
+    let mut sync_state = pandapass_core::models::SyncState {
+        project_id: Some(project_id),
+        env_id: Some(env_id),
+        secrets: std::collections::HashMap::new(),
+    };
+    for m in &new_metas.items {
+        sync_state.secrets.insert(
+            m.key.clone(),
+            pandapass_core::models::SecretSyncInfo {
+                version: m.version,
+                updated_at: m.updated_at,
+            },
+        );
+    }
+    write_sync_state(&args.dir, &sync_state).await?;
+
+    println!(
+        "Pushed {created} created, {updated} updated, {deleted} deleted (if --allow-delete) from {}/{}",
+        args.project, args.env
+    );
+    Ok(())
+}
+
+async fn run_gitops(api: &ApiClient, config: &crate::client::CliConfig, cmd: GitOpsCmd) -> Result<()> {
+    match cmd {
+        GitOpsCmd::Pull(args) => run_gitops_pull(api, config, args).await,
+        GitOpsCmd::Diff(args) => run_gitops_diff(api, config, args).await,
+        GitOpsCmd::Push(args) => run_gitops_push(api, config, args).await,
+    }
 }
 
 // ─────────────────────────── Dynamic Credentials (M2) ───────────────────────────
