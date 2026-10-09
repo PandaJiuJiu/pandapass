@@ -368,10 +368,48 @@ mod gitops_crypto_tests {
     }
 }
 
+/// Domain-separation info strings for HKDF. Each kind of ciphertext under
+/// the master key derives a different subkey, so a leak of one (a TOTP
+/// secret, a CA private key) does not let an attacker decrypt any of
+/// the others. **Do not** reuse these for new purposes without thinking
+/// about the implication: a new caller should add a new variant.
+pub mod key_purpose {
+    /// Regular secret values (`EncryptedSecret` rows in `secrets`).
+    pub const SECRET_VALUE: &[u8] = b"pandapass/v1/secret-value";
+    /// TOTP secret encrypted at rest.
+    pub const TOTP_SECRET: &[u8] = b"pandapass/v1/totp-secret";
+    /// Dynamic-credential password (PostgreSQL / MySQL / Redis).
+    pub const DYNAMIC_CRED_PASSWORD: &[u8] = b"pandapass/v1/dynamic-cred-password";
+    /// X.509 CA private key (PEM). Also used for OpenSSH-format SSH CA
+    /// private keys: the same master-key holder uploads the PEM, and the
+    /// path through the API is admin-gated either way.
+    pub const CA_X509_KEY: &[u8] = b"pandapass/v1/ca-x509-key";
+}
+
+/// Derive a 32-byte subkey from the user's master key for a specific
+/// purpose. Domain separation: every kind of data under the master key
+/// uses a different subkey, so a subkey compromise cannot be used to
+/// decrypt other kinds.
+pub fn derive_subkey(master_key: &MasterKey, purpose: &[u8]) -> [u8; 32] {
+    use hkdf::Hkdf;
+    let hk = Hkdf::<Sha256>::new(None, master_key.as_bytes());
+    let mut out = [0u8; 32];
+    hk.expand(purpose, &mut out)
+        .expect("HKDF expand with 32-byte output never fails");
+    out
+}
+
 impl EncryptedSecret {
-    /// Encrypt a secret value with the master key
-    pub fn encrypt(value: &str, master_key: &MasterKey) -> Result<Self> {
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(master_key.as_bytes()));
+    /// Encrypt a secret value with the master key, deriving the AEAD key
+    /// from `purpose` via HKDF-SHA256. The same plaintext encrypted under
+    /// two different `purpose` values produces two unrelated ciphertexts.
+    pub fn encrypt_with_purpose(
+        value: &str,
+        master_key: &MasterKey,
+        purpose: &[u8],
+    ) -> Result<Self> {
+        let subkey = derive_subkey(master_key, purpose);
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&subkey));
         let mut nonce_bytes = [0u8; 12];
         OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -385,9 +423,15 @@ impl EncryptedSecret {
         })
     }
 
-    /// Decrypt a secret value with the master key
-    pub fn decrypt(&self, master_key: &MasterKey) -> Result<SecretString> {
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(master_key.as_bytes()));
+    /// Decrypt a secret value with the master key, using the same `purpose`
+    /// info that was used at encryption time.
+    pub fn decrypt_with_purpose(
+        &self,
+        master_key: &MasterKey,
+        purpose: &[u8],
+    ) -> Result<SecretString> {
+        let subkey = derive_subkey(master_key, purpose);
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&subkey));
         let nonce_bytes = general_purpose::STANDARD.decode(&self.nonce)?;
         let ciphertext = general_purpose::STANDARD.decode(&self.ciphertext)?;
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -398,6 +442,19 @@ impl EncryptedSecret {
         let plaintext_str = String::from_utf8(plaintext)
             .map_err(|_| CoreError::Internal("Invalid UTF-8".into()))?;
         Ok(SecretString::new(plaintext_str.into()))
+    }
+
+    /// Encrypt a secret value with the master key using the default
+    /// "secret value" purpose. Equivalent to the historical behaviour but
+    /// routed through the domain-separated subkey.
+    pub fn encrypt(value: &str, master_key: &MasterKey) -> Result<Self> {
+        Self::encrypt_with_purpose(value, master_key, key_purpose::SECRET_VALUE)
+    }
+
+    /// Decrypt a secret value with the master key using the default
+    /// "secret value" purpose.
+    pub fn decrypt(&self, master_key: &MasterKey) -> Result<SecretString> {
+        self.decrypt_with_purpose(master_key, key_purpose::SECRET_VALUE)
     }
 }
 
@@ -712,5 +769,45 @@ mod envelope_backend_tests {
         // through the trait by verifying the API is callable and returns
         // 32 bytes (the master-key length check).
         assert_eq!(mk_via_backend.as_bytes().len(), 32);
+    }
+}
+
+#[cfg(test)]
+mod domain_separation_tests {
+    use super::*;
+
+    /// A plaintext encrypted with one purpose must not decrypt under a
+    /// different purpose, even with the same master key. This is the
+    /// invariant that keeps a leak of one kind of ciphertext (a TOTP
+    /// secret, a CA key) from also leaking any other.
+    #[test]
+    fn encryption_with_different_purposes_produces_unrelated_ciphertexts() {
+        let mk = MasterKey::generate();
+        let plaintext = "shared value";
+
+        let enc_a = EncryptedSecret::encrypt_with_purpose(plaintext, &mk, key_purpose::SECRET_VALUE).unwrap();
+        let enc_b = EncryptedSecret::encrypt_with_purpose(plaintext, &mk, key_purpose::TOTP_SECRET).unwrap();
+
+        // Both encrypt the same plaintext but the ciphertexts must differ
+        // (different AEAD keys via HKDF).
+        assert_ne!(enc_a.ciphertext, enc_b.ciphertext);
+
+        // Cross-decrypting must fail — that is the whole point.
+        assert!(enc_a.decrypt_with_purpose(&mk, key_purpose::TOTP_SECRET).is_err());
+        assert!(enc_b.decrypt_with_purpose(&mk, key_purpose::SECRET_VALUE).is_err());
+    }
+
+    /// Subkeys derived for the same purpose with the same MK are equal —
+    /// otherwise two ciphertexts under the same purpose would not
+    /// decrypt.
+    #[test]
+    fn derive_subkey_is_deterministic_for_a_purpose() {
+        let mk = MasterKey::generate();
+        let a = derive_subkey(&mk, key_purpose::SECRET_VALUE);
+        let b = derive_subkey(&mk, key_purpose::SECRET_VALUE);
+        assert_eq!(a, b);
+        // Different purpose must produce a different subkey.
+        let c = derive_subkey(&mk, key_purpose::TOTP_SECRET);
+        assert_ne!(a, c);
     }
 }

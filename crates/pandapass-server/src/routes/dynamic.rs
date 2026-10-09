@@ -98,7 +98,11 @@ pub async fn create_dynamic_cred(
 
     // Get the user's master key to encrypt the password
     let mk = get_master_key(&state, auth.user.id).await?;
-    let password_enc = EncryptedSecret::encrypt(&plain_password, &mk)?;
+    let password_enc = EncryptedSecret::encrypt_with_purpose(
+        &plain_password,
+        &mk,
+        pandapass_core::crypto::key_purpose::DYNAMIC_CRED_PASSWORD,
+    )?;
 
     let cred = db::create_dynamic_cred(
         &state.db,

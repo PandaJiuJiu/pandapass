@@ -55,7 +55,10 @@ async fn decrypt_totp_secret(state: &AppState, user: &User) -> Result<String, Ap
         .as_ref()
         .ok_or_else(|| ApiError::BadRequest("TOTP not set up".into()))?;
     let mk = get_master_key_for_user(state, user.id).await?;
-    let secret_str = totp_secret_enc.decrypt(&mk)?;
+    let secret_str = totp_secret_enc.decrypt_with_purpose(
+        &mk,
+        pandapass_core::crypto::key_purpose::TOTP_SECRET,
+    )?;
     Ok(secret_str.expose_secret().to_string())
 }
 
@@ -368,7 +371,11 @@ pub async fn totp_setup(
 
     // Get user's master key and encrypt the TOTP secret
     let mk = get_master_key_for_user(&state, auth.user.id).await?;
-    let secret_enc = EncryptedSecret::encrypt(&secret, &mk)?;
+    let secret_enc = EncryptedSecret::encrypt_with_purpose(
+        &secret,
+        &mk,
+        pandapass_core::crypto::key_purpose::TOTP_SECRET,
+    )?;
 
     // Store encrypted TOTP secret (not enabled yet - user must verify)
     db::set_user_totp(&state.db, auth.user.id, Some(&secret_enc), false).await?;

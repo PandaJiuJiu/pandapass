@@ -56,7 +56,11 @@ pub async fn create_ca_key(
 
     // Get the user's master key to encrypt the CA private key
     let mk = crate::routes::secrets::get_master_key(&state, auth.user.id).await?;
-    let key_enc = pandapass_core::crypto::EncryptedSecret::encrypt(&req.key_pem, &mk)?;
+    let key_enc = pandapass_core::crypto::EncryptedSecret::encrypt_with_purpose(
+        &req.key_pem,
+        &mk,
+        pandapass_core::crypto::key_purpose::CA_X509_KEY,
+    )?;
 
     let ca_key = db::create_ca_key(
         &state.db,

@@ -198,7 +198,10 @@ async fn decrypt_cred_password(
         .map_err(|_| anyhow::anyhow!("envelope not sealed to server"))?;
 
     // Decrypt the password
-    let password = cred.password_enc.decrypt(&mk)?;
+    let password = cred.password_enc.decrypt_with_purpose(
+        &mk,
+        pandapass_core::crypto::key_purpose::DYNAMIC_CRED_PASSWORD,
+    )?;
     Ok(Some(password.expose_secret().to_string()))
 }
 
@@ -610,7 +613,12 @@ mod tests {
             .await
             .unwrap();
 
-        let password_enc = EncryptedSecret::encrypt("s3cret-pass", &mk).unwrap();
+        let password_enc = EncryptedSecret::encrypt_with_purpose(
+            "s3cret-pass",
+            &mk,
+            pandapass_core::crypto::key_purpose::DYNAMIC_CRED_PASSWORD,
+        )
+        .unwrap();
         let cred = pandapass_db::create_dynamic_cred(
             &db,
             project.id,

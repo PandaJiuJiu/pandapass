@@ -30,6 +30,7 @@ x25519-dalek = { workspace = true }
 sqlx = { workspace = true }
 strum = { workspace = true }
 sha2 = { workspace = true }
+hkdf = { workspace = true }
 regorus = { workspace = true }
 regex = { workspace = true }
 rcgen = { workspace = true }

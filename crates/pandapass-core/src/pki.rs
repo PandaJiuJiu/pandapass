@@ -107,7 +107,7 @@ pub fn sign_x509_from_csr(
     // 1. Decrypt CA private key
     use secrecy::ExposeSecret;
     let ca_key_pem = ca_key_enc
-        .decrypt(master_key)
+        .decrypt_with_purpose(master_key, crate::crypto::key_purpose::CA_X509_KEY)
         .map_err(|e| PkiError::KeyDecode(e.to_string()))?
         .expose_secret()
         .to_string();
@@ -238,7 +238,7 @@ pub fn sign_ssh_cert(
 
     // 1. Decrypt the CA private key (same as every other stored secret).
     let ca_key_pem = ca_key_enc
-        .decrypt(master_key)
+        .decrypt_with_purpose(master_key, crate::crypto::key_purpose::CA_X509_KEY)
         .map_err(|e| PkiError::KeyDecode(e.to_string()))?
         .expose_secret()
         .to_string();
@@ -326,7 +326,7 @@ mod tests {
 
         // The CA key is stored the same way every other secret is.
         let mk = MasterKey::generate();
-        let ca_key_enc = EncryptedSecret::encrypt(&ca_key_pem, &mk).unwrap();
+        let ca_key_enc = EncryptedSecret::encrypt_with_purpose(&ca_key_pem, &mk, crate::crypto::key_purpose::CA_X509_KEY).unwrap();
 
         // Client side: key pair stays here, only the CSR travels.
         let req = create_client_csr("alice@build", &["alice.example.com".to_string()]).unwrap();
@@ -381,7 +381,7 @@ mod tests {
         let (ca_cert_pem, ca_key_pem) =
             generate_root_ca("CN=PandaPass Test Root", not_before, not_after).unwrap();
         let mk = MasterKey::generate();
-        let ca_key_enc = EncryptedSecret::encrypt(&ca_key_pem, &mk).unwrap();
+        let ca_key_enc = EncryptedSecret::encrypt_with_purpose(&ca_key_pem, &mk, crate::crypto::key_purpose::CA_X509_KEY).unwrap();
 
         let err = sign_x509_from_csr(
             &ca_key_enc,
@@ -406,7 +406,7 @@ mod tests {
         let (ca_cert_pem, ca_key_pem) =
             generate_root_ca("CN=PandaPass Test Root", not_before, not_after).unwrap();
         let ca_key_enc =
-            EncryptedSecret::encrypt(&ca_key_pem, &MasterKey::generate()).unwrap();
+            EncryptedSecret::encrypt_with_purpose(&ca_key_pem, &MasterKey::generate(), crate::crypto::key_purpose::CA_X509_KEY).unwrap();
         let req = create_client_csr("alice", &[]).unwrap();
 
         let err = sign_x509_from_csr(
@@ -436,7 +436,7 @@ mod tests {
         let ca_private = ssh_key::private::PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
         let ca_pem = ca_private.to_openssh(ssh_key::LineEnding::LF).unwrap();
         let mk = MasterKey::generate();
-        let ca_key_enc = EncryptedSecret::encrypt(&ca_pem, &mk).unwrap();
+        let ca_key_enc = EncryptedSecret::encrypt_with_purpose(&ca_pem, &mk, crate::crypto::key_purpose::CA_X509_KEY).unwrap();
 
         // User side: a fresh ed25519 keypair. Only the public half travels.
         let user_private = ssh_key::private::PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn ssh_cert_signing_refuses_rsa() {
         let mk = MasterKey::generate();
-        let ca_key_enc = EncryptedSecret::encrypt("not a key", &mk).unwrap();
+        let ca_key_enc = EncryptedSecret::encrypt_with_purpose("not a key", &mk, crate::crypto::key_purpose::CA_X509_KEY).unwrap();
         let err = sign_ssh_cert(
             &ca_key_enc,
             "",
