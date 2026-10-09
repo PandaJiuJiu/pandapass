@@ -34,6 +34,7 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
         session_ttl_days: 30,
         allowed_origins: vec![],
         bootstrap_admin_email: None,
+            bootstrap_enabled: false,
         require_totp: false,
         allow_registration: true,
         max_concurrent_exec: 10,

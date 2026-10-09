@@ -57,6 +57,10 @@ pub struct Config {
     pub session_ttl_days: i64,
     pub allowed_origins: Vec<String>,
     pub bootstrap_admin_email: Option<String>,
+    /// Must be `1`/`true` for bootstrap to run even when
+    /// `PANDAPASS_ADMIN_EMAIL` is set. Guards against accidentally
+    /// creating an admin account just by leaving an env var around.
+    pub bootstrap_enabled: bool,
     pub require_totp: bool,
     /// Whether `/auth/register` accepts new signups after the bootstrap admin.
     /// Off by default — a secrets vault should not hand accounts to strangers.
@@ -106,7 +110,14 @@ impl Config {
             .filter(|s| !s.trim().is_empty())
             .map(|s| s.trim().to_string())
             .collect();
-        let bootstrap_admin_email = std::env::var("PANDAPASS_ADMIN_EMAIL").ok();
+        let bootstrap_enabled = std::env::var("PANDAPASS_BOOTSTRAP")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let bootstrap_admin_email = if bootstrap_enabled {
+            std::env::var("PANDAPASS_ADMIN_EMAIL").ok()
+        } else {
+            None
+        };
         let require_totp = std::env::var("PANDAPASS_REQUIRE_TOTP")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
@@ -173,6 +184,7 @@ impl Config {
             session_ttl_days,
             allowed_origins,
             bootstrap_admin_email,
+            bootstrap_enabled,
             require_totp,
             allow_registration,
             max_concurrent_exec,
