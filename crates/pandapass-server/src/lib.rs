@@ -108,12 +108,28 @@ pub fn build_router(state: AppState) -> Router {
             internal_routes
                 .layer(axum::middleware::from_fn_with_state(state.clone(), internal_auth_middleware))
         )
+        .layer(axum::middleware::from_fn_with_state(state.clone(), client_ip_middleware))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
                 .layer(cors)
         )
         .with_state(state)
+}
+
+/// Extract the client IP and stash it in the request extensions. Runs on
+/// **every** route (public included) so that the per-IP rate limiter on
+/// `/auth/login` and `/auth/register` actually sees an IP — without this
+/// the rate limiter silently no-ops for the credential-exchange endpoints.
+async fn client_ip_middleware(
+    mut req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Result<axum::http::Response<axum::body::Body>, ApiError> {
+    let headers = req.headers().clone();
+    if let Some(ip) = crate::middleware::auth::extract_client_ip_from_headers(&headers) {
+        req.extensions_mut().insert(crate::middleware::auth::ClientIp(ip));
+    }
+    Ok(next.run(req).await)
 }
 
 /// Auth middleware for regular routes

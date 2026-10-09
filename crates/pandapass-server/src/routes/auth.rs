@@ -208,19 +208,27 @@ fn create_envelope(
 pub async fn register(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<RegisterRequest>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<(CookieJar, Json<LoginResponse>), ApiError> {
-    // Extract client IP from request extensions (set by auth_middleware)
-    // Note: register doesn't go through auth_middleware, so we'll need a different approach
-    // For now, we skip rate limiting on register since it's closed by default
-    // Rate limit check for registration attempts
-    // if let Some(ip) = client_ip {
-    //     if let Err(retry_after) = state.rate_limiter.check(ip).await {
-    //         return Err(ApiError::TooManyRequests(format!(
-    //             "Too many registration attempts. Try again in {retry_after} seconds."
-    //         )));
-    //     }
-    // }
+    // Extract client IP (set by the outer `client_ip_middleware`) and the
+    // JSON body. Doing this by hand keeps the rate-limit gate before the
+    // registration rule check, so the limit holds even when registration is
+    // open for the bootstrap admin.
+    let client_ip = req.extensions().get::<crate::middleware::auth::ClientIp>().map(|c| c.0);
+    let (_parts, body) = req.into_parts();
+    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .map_err(|_| ApiError::BadRequest("Failed to read body".into()))?;
+    let req: RegisterRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|_| ApiError::BadRequest("Invalid JSON".into()))?;
+
+    if let Some(ip) = client_ip {
+        if let Err(retry_after) = state.rate_limiter.check(ip).await {
+            return Err(ApiError::TooManyRequests(format!(
+                "Too many registration attempts. Try again in {retry_after} seconds."
+            )));
+        }
+    }
 
     // Registration is closed by default: a secrets vault must never accept
     // self-service signups, or anyone who finds the URL gets an account.
@@ -239,10 +247,9 @@ pub async fn register(
 
     let user = db::create_user(&state.db, &req.email, &password_hash, global_role).await?;
 
-    // Successful registration — reset the rate limit bucket for this IP
-    // if let Some(ip) = client_ip {
-    //     state.rate_limiter.reset(ip).await;
-    // }
+    if let Some(ip) = client_ip {
+        state.rate_limiter.reset(ip).await;
+    }
 
     // Seal a master key to the caller's public key, if they supplied one.
     let mut enrolled = false;

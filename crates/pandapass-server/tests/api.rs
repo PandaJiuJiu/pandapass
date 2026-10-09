@@ -2354,3 +2354,111 @@ async fn secret_scan_admin_only() {
         assert_eq!(denied_list.status, StatusCode::FORBIDDEN);
     }
 }
+
+/// Build a harness with a deliberately tiny rate limit, so we can prove the
+/// limiter actually fires on `/auth/login` and `/auth/register` — the bug
+/// where the limit was silently a no-op on those routes lived for a long
+/// time because the production default of 5 / 15min is hard to reach in a
+/// unit test.
+async fn harness_with_rate_limit(max: u32, window_secs: u64) -> Harness {
+    let dir = std::env::temp_dir().join(format!("pandapass-rl-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db_path = dir.join("test.db");
+    let identity = AgeIdentity::generate();
+    let config = Config {
+        listen_addr: "127.0.0.1:0".into(),
+        public_url: "http://localhost:8233".into(),
+        db_url: format!("sqlite://{}?mode=rwc", db_path.display()),
+        session_ttl_days: 30,
+        allowed_origins: vec![],
+        bootstrap_admin_email: None,
+        require_totp: false,
+        allow_registration: true,
+        max_concurrent_exec: 10,
+        command_timeout_secs: 120,
+        command_allowlist: vec![],
+        cookie_secure: false,
+        server_age_identity: Some(identity.as_str().to_string()),
+        auth_rate_limit_max: max,
+        auth_rate_limit_window_secs: window_secs,
+        dynamic_proxy_listen: None,
+        dynamic_proxy_upstream: None,
+    };
+    let db = connect(&config.db_url).await.expect("connect");
+    migrate(&db).await.expect("migrate");
+    let chain_key = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(format!("pandapass-audit-chain:{}", identity.as_str()).as_bytes()).to_vec()
+    };
+    let audit_logger: Arc<dyn AuditLogger> =
+        Arc::new(DbAuditLogger::with_chain_key(db.clone(), chain_key.clone()));
+    let audit = AuditService::new(audit_logger);
+    let state = AppState::new(db.clone(), audit, config).with_audit_chain_key(chain_key);
+    Harness { router: build_router(state), db_path, db }
+}
+
+/// The regression this asserts: until the public-route ClientIp middleware
+/// was added, `state.rate_limiter.check(ip)` on `/auth/login` could never
+/// see a real IP (the extension was only inserted by `auth_middleware`,
+/// which public routes never went through). With it, a low limit kicks in.
+#[tokio::test]
+async fn login_rate_limit_actually_fires_on_public_route() {
+    let h = harness_with_rate_limit(2, 60).await;
+    let body = json!({
+        "email": "noone@example.com",
+        "password": "irrelevant",
+    });
+    let mut statuses = Vec::new();
+    for _ in 0..4 {
+        let res = h.send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("x-forwarded-for", "203.0.113.7")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        ).await;
+        statuses.push(res.status.as_u16());
+    }
+    // The first two attempts should reach the handler (and return 401 because
+    // the user does not exist), and the next two should be 429 from the
+    // limiter. The bug we are guarding against is "all four are 401" — the
+    // limiter silently no-op'ing.
+    assert_eq!(
+        statuses,
+        vec![401, 401, 429, 429],
+        "rate limit must fire on /auth/login (got {statuses:?})"
+    );
+}
+
+/// Same as above for /auth/register. The original code had the limiter
+/// commented out.
+#[tokio::test]
+async fn register_rate_limit_fires_when_registration_is_open() {
+    let h = harness_with_rate_limit(2, 60).await;
+    let body = json!({
+        "email": "noone@example.com",
+        "password": "irrelevant",
+    });
+    let mut statuses = Vec::new();
+    for _ in 0..4 {
+        let res = h.send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/register")
+                .header("x-forwarded-for", "198.51.100.42")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        ).await;
+        statuses.push(res.status.as_u16());
+    }
+    // First two are 201/200 (the first user bootstraps as admin), the next
+    // two are 403 (closed), and *then* 429 once the limiter trips. The
+    // precise order is not the point — what matters is that 429 shows up.
+    assert!(
+        statuses.iter().any(|s| *s == 429),
+        "register rate limit must fire (got {statuses:?})"
+    );
+}
