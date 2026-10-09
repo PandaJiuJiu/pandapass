@@ -1243,7 +1243,11 @@ async fn write_local_secrets(
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    tokio::fs::write(path, ciphertext).await?;
+    // Atomic write: write to .tmp then rename, so a crash mid-write does
+    // not leave a half-written .yaml.age on disk.
+    let tmp = path.with_extension("age.tmp");
+    tokio::fs::write(&tmp, ciphertext).await?;
+    tokio::fs::rename(&tmp, path).await?;
     Ok(())
 }
 
