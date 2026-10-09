@@ -108,6 +108,12 @@ pub struct Config {
     /// Empty (the default) means XFF is ignored and only the socket peer is
     /// trusted — which is what you want in a deployment without a proxy.
     pub trusted_proxy_cidrs: Vec<String>,
+    /// Optional path to a hex-encoded 32-byte key used to anchor the audit
+    /// chain. When unset, the chain key is derived from the server's age
+    /// identity (the historical behaviour, which means rotating the age
+    /// key also invalidates the chain). When set, the chain can survive
+    /// age-key rotation — and the key can be backed up independently.
+    pub audit_chain_key_file: Option<String>,
 }
 
 impl Config {
@@ -202,6 +208,10 @@ impl Config {
             .filter(|s| !s.is_empty())
             .collect();
 
+        let audit_chain_key_file = std::env::var("PANDAPASS_AUDIT_CHAIN_KEY_FILE")
+            .ok()
+            .filter(|s| !s.is_empty());
+
         Self {
             listen_addr,
             public_url,
@@ -223,6 +233,7 @@ impl Config {
             dynamic_proxy_listen,
             dynamic_proxy_upstream,
             trusted_proxy_cidrs,
+            audit_chain_key_file,
         }
     }
 }

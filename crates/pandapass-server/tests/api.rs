@@ -90,6 +90,7 @@ impl Harness {
             dynamic_proxy_listen: None,
             dynamic_proxy_upstream: None,
             trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
+            audit_chain_key_file: None,
         };
 
         let db = connect(&config.db_url).await.expect("connect");
@@ -2419,6 +2420,7 @@ async fn harness_with_rate_limit(max: u32, window_secs: u64) -> Harness {
         dynamic_proxy_listen: None,
         dynamic_proxy_upstream: None,
         trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
+            audit_chain_key_file: None,
     };
     let db = connect(&config.db_url).await.expect("connect");
     migrate(&db).await.expect("migrate");
@@ -2952,6 +2954,7 @@ async fn harness_with_idle_timeout(idle_secs: i64) -> Harness {
         dynamic_proxy_listen: None,
         dynamic_proxy_upstream: None,
         trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
+            audit_chain_key_file: None,
     };
     let db = connect(&config.db_url).await.expect("connect");
     migrate(&db).await.expect("migrate");

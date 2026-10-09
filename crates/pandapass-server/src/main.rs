@@ -64,24 +64,49 @@ async fn run() -> anyhow::Result<()> {
     // Clone for background cleanup task (must clone before moving into AppState)
     let cleanup_db = db.clone();
 
-    // Audit entries go to SQLite, not memory — a restart must not lose the trail.
-    // The chain key is derived from the server's age identity so the HMAC key
-    // never lives in the database the log protects.
-    let (audit_logger, chain_key) = match &config.server_age_identity {
-        Some(identity) => {
+    // The chain key can come from one of three sources, in priority order:
+    //   1. PANDAPASS_AUDIT_CHAIN_KEY_FILE — a hex-encoded 32-byte key
+    //      independent of the server's age identity. Recommended path: it
+    //      survives age-key rotation and can be backed up on its own.
+    //   2. The server's age identity (historical fallback). A SHA-256 of
+    //      the identity string is used; rotating the age key therefore
+    //      also invalidates the audit chain.
+    //   3. None — chain is disabled.
+    let (audit_logger, chain_key): (Arc<dyn pandapass_core::AuditLogger>, Vec<u8>) =
+        if let Some(path) = &config.audit_chain_key_file {
+            use sha2::Digest;
+            let hex_str = std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("audit chain key file {path:?}: {e}"))?;
+            let bytes = hex::decode(hex_str.trim())
+                .map_err(|e| anyhow::anyhow!("audit chain key file is not valid hex: {e}"))?;
+            if bytes.is_empty() {
+                (
+                    Arc::new(DbAuditLogger::new(db.clone()))
+                        as Arc<dyn pandapass_core::AuditLogger>,
+                    Vec::new(),
+                )
+            } else {
+                let key = bytes.clone();
+                (
+                    Arc::new(DbAuditLogger::with_chain_key(db.clone(), key.clone()))
+                        as Arc<dyn pandapass_core::AuditLogger>,
+                    key,
+                )
+            }
+        } else if let Some(identity) = &config.server_age_identity {
             use sha2::{Digest, Sha256};
-            let key = Sha256::digest(format!("pandapass-audit-chain:{identity}").as_bytes());
+            let key = Sha256::digest(format!("pandapass-audit-chain:{identity}").as_bytes()).to_vec();
             (
-                Arc::new(DbAuditLogger::with_chain_key(db.clone(), key.to_vec()))
+                Arc::new(DbAuditLogger::with_chain_key(db.clone(), key.clone()))
                     as Arc<dyn pandapass_core::AuditLogger>,
-                key.to_vec(),
+                key,
             )
-        }
-        None => (
-            Arc::new(DbAuditLogger::new(db.clone())) as Arc<dyn pandapass_core::AuditLogger>,
-            Vec::new(),
-        ),
-    };
+        } else {
+            (
+                Arc::new(DbAuditLogger::new(db.clone())) as Arc<dyn pandapass_core::AuditLogger>,
+                Vec::new(),
+            )
+        };
     let audit = pandapass_core::AuditService::new(audit_logger);
 
     // Create app state (consumes db)
