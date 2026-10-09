@@ -2,6 +2,7 @@ use axum::{extract::{Path, Query, State}, Json};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::crypto::{generate_token, hash_token};
 use pandapass_core::models::*;
+use pandapass_core::policy::{PolicyDecision, PolicyInput};
 use pandapass_db as db;
 use serde::{Deserialize, Serialize};
 
@@ -90,6 +91,24 @@ pub async fn create_token(
         revoked_at: None,
     };
 
+    // Policy evaluation in the token's scope (global if not project-scoped)
+    let project_slug = if let Some(pid) = req.project_id {
+        db::get_project(&state.db, pid).await.map(|p| p.slug).ok().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let input = PolicyInput::for_context(&auth, &project_slug, "", Permission::CreateToken, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(req.project_id, req.env_id, &input).await?
+    {
+        let mut denied = AuditContext::new(&auth, AuditAction::TokenCreate);
+        if let Some(pid) = req.project_id {
+            denied = denied.with_project(pid);
+        }
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+    }
+
     db::create_service_token(&state.db, &token).await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::TokenCreate);
@@ -119,8 +138,25 @@ pub async fn revoke_token(
 
     // Verify ownership
     let tokens = db::list_tokens(&state.db, auth.user.id).await?;
-    if !tokens.iter().any(|t| t.id == id) {
-        return Err(ApiError::NotFound("Token not found".into()));
+    let token = tokens.iter().find(|t| t.id == id)
+        .ok_or_else(|| ApiError::NotFound("Token not found".into()))?;
+
+    // Policy evaluation in the token's scope
+    let project_slug = if let Some(pid) = token.project_id {
+        db::get_project(&state.db, pid).await.map(|p| p.slug).ok().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let input = PolicyInput::for_context(&auth, &project_slug, "", Permission::RevokeToken, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(token.project_id, token.env_id, &input).await?
+    {
+        let mut denied = AuditContext::new(&auth, AuditAction::TokenRevoke);
+        if let Some(pid) = token.project_id {
+            denied = denied.with_project(pid);
+        }
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
     }
 
     db::revoke_token(&state.db, id).await?;
@@ -173,6 +209,31 @@ pub async fn list_audit(
         } else {
             return Err(ApiError::Forbidden("Admin access required for global audit".into()));
         }
+    }
+
+    // Policy evaluation for audit access
+    let project_slug = if let Some(pid) = query.project_id {
+        db::get_project(&state.db, pid).await.map(|p| p.slug).ok().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let mut ctx = auth.clone();
+    if let Some(pid) = query.project_id {
+        ctx.project_id = Some(pid);
+        ctx.project_role = db::get_member_role(&state.db, pid, auth.user.id)
+            .await
+            .unwrap_or(None);
+    }
+    let input = PolicyInput::for_context(&ctx, &project_slug, "", Permission::ReadAudit, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(query.project_id, None, &input).await?
+    {
+        let mut denied = AuditContext::new(&ctx, AuditAction::AuditRead);
+        if let Some(pid) = query.project_id {
+            denied = denied.with_project(pid);
+        }
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
     }
 
     let page = query.page.unwrap_or(1);

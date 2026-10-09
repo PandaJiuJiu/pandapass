@@ -1,6 +1,7 @@
 use axum::{extract::{Path, State}, Json};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::models::*;
+use pandapass_core::policy::{PolicyDecision, PolicyInput};
 use pandapass_db as db;
 use serde::Deserialize;
 
@@ -107,6 +108,22 @@ pub async fn update_project(
         return Err(ApiError::Forbidden("Only project owner can update".into()));
     }
 
+    // Scope the auth context to this project for RBAC and policy evaluation
+    let mut ctx = auth.clone();
+    ctx.project_id = Some(project.id);
+    ctx.project_role = role;
+
+    // Policy evaluation
+    let input = PolicyInput::for_context(&ctx, &slug, "", Permission::UpdateProject, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(Some(project.id), None, &input).await?
+    {
+        let mut denied = AuditContext::new(&ctx, AuditAction::ProjectUpdate)
+            .with_project(project.id);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+    }
+
     db::update_project(&state.db, project.id, req.name.as_deref(), req.description.as_deref()).await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::ProjectUpdate);
@@ -128,6 +145,22 @@ pub async fn delete_project(
 
     if auth.user.global_role != GlobalRole::Admin && role != Some(ProjectRole::Owner) {
         return Err(ApiError::Forbidden("Only project owner can delete".into()));
+    }
+
+    // Scope the auth context to this project for RBAC and policy evaluation
+    let mut ctx = auth.clone();
+    ctx.project_id = Some(project.id);
+    ctx.project_role = role;
+
+    // Policy evaluation
+    let input = PolicyInput::for_context(&ctx, &slug, "", Permission::DeleteProject, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(Some(project.id), None, &input).await?
+    {
+        let mut denied = AuditContext::new(&ctx, AuditAction::ProjectDelete)
+            .with_project(project.id);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
     }
 
     db::delete_project(&state.db, project.id).await?;
@@ -188,6 +221,24 @@ pub async fn add_member(
         return Err(ApiError::Conflict("User is already a member".into()));
     }
 
+    // Scope the auth context to this project for RBAC and policy evaluation
+    let mut ctx = auth.clone();
+    ctx.project_id = Some(project.id);
+    ctx.project_role = db::get_member_role(&state.db, project.id, auth.user.id)
+        .await
+        .unwrap_or(None);
+
+    // Policy evaluation
+    let input = PolicyInput::for_context(&ctx, &slug, "", Permission::ManageMembers, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(Some(project.id), None, &input).await?
+    {
+        let mut denied = AuditContext::new(&ctx, AuditAction::ProjectMemberAdd)
+            .with_project(project.id);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+    }
+
     db::add_member(&state.db, project.id, user.id, req.role, auth.user.id).await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::ProjectMemberAdd);
@@ -217,6 +268,24 @@ pub async fn update_member(
         return Err(ApiError::Forbidden("Cannot change owner role".into()));
     }
 
+    // Scope the auth context to this project for RBAC and policy evaluation
+    let mut ctx = auth.clone();
+    ctx.project_id = Some(project.id);
+    ctx.project_role = db::get_member_role(&state.db, project.id, auth.user.id)
+        .await
+        .unwrap_or(None);
+
+    // Policy evaluation
+    let input = PolicyInput::for_context(&ctx, &slug, "", Permission::ManageMembers, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(Some(project.id), None, &input).await?
+    {
+        let mut denied = AuditContext::new(&ctx, AuditAction::ProjectMemberUpdate)
+            .with_project(project.id);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+    }
+
     db::update_member_role(&state.db, project.id, user_id, req.role).await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::ProjectMemberUpdate);
@@ -243,6 +312,24 @@ pub async fn remove_member(
     let role = db::get_member_role(&state.db, project.id, user_id).await?;
     if role == Some(ProjectRole::Owner) {
         return Err(ApiError::Forbidden("Cannot remove project owner".into()));
+    }
+
+    // Scope the auth context to this project for RBAC and policy evaluation
+    let mut ctx = auth.clone();
+    ctx.project_id = Some(project.id);
+    ctx.project_role = db::get_member_role(&state.db, project.id, auth.user.id)
+        .await
+        .unwrap_or(None);
+
+    // Policy evaluation
+    let input = PolicyInput::for_context(&ctx, &slug, "", Permission::ManageMembers, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(Some(project.id), None, &input).await?
+    {
+        let mut denied = AuditContext::new(&ctx, AuditAction::ProjectMemberRemove)
+            .with_project(project.id);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
     }
 
     db::remove_member(&state.db, project.id, user_id).await?;
@@ -288,6 +375,22 @@ pub async fn create_env(
         return Err(ApiError::Forbidden("Insufficient permissions".into()));
     }
 
+    // Scope the auth context to this project for RBAC and policy evaluation
+    let mut ctx = auth.clone();
+    ctx.project_id = Some(project.id);
+    ctx.project_role = role;
+
+    // Policy evaluation
+    let input = PolicyInput::for_context(&ctx, &slug, "", Permission::CreateEnv, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(Some(project.id), None, &input).await?
+    {
+        let mut denied = AuditContext::new(&ctx, AuditAction::EnvCreate)
+            .with_project(project.id);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+    }
+
     if !req.slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
         return Err(ApiError::BadRequest("Slug must be lowercase alphanumeric with hyphens".into()));
     }
@@ -314,6 +417,23 @@ pub async fn delete_env(
 
     if auth.user.global_role != GlobalRole::Admin && !matches!(role, Some(ProjectRole::Owner | ProjectRole::Editor)) {
         return Err(ApiError::Forbidden("Insufficient permissions".into()));
+    }
+
+    // Scope the auth context to this project for RBAC and policy evaluation
+    let mut ctx = auth.clone();
+    ctx.project_id = Some(project.id);
+    ctx.project_role = role;
+
+    // Policy evaluation
+    let input = PolicyInput::for_context(&ctx, &slug, &env_slug, Permission::DeleteEnv, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await?
+    {
+        let mut denied = AuditContext::new(&ctx, AuditAction::EnvDelete)
+            .with_project(project.id)
+            .with_env(env.id);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
     }
 
     // Prevent deleting if there are secrets

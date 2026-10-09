@@ -27,15 +27,17 @@
 - 部署已同步：`docker-compose.yml`（127.0.0.1:5433）、`.env.example`、`docs/DEPLOY.md`。
 - 4 个端到端代理测试（真实 TCP + 假上游）：认证+中继、错误密码拒绝、过期凭证拒绝、消息格式。
 
-**API 测试**：`crates/pandapass-server/tests/api.rs`，25 个端到端用例，直接驱动 `build_router`（不起端口）。
-**总测试数**：`cargo test --workspace` 66 个（core 31 + server 10 + api 25）。
+**API 测试**：`crates/pandapass-server/tests/api.rs`，33 个端到端用例，直接驱动 `build_router`（不起端口）。
+**总测试数**：`cargo test --workspace` 74 个（core 31 + server 10 + api 33）。
 
 ## 没做完的（重要）
 
-### 1. M3 策略引擎：评估已接入 secrets 路由，但只限于 secrets
+### 1. M3 策略引擎：全部资源已接入策略评估（可用）
 - `policies` / `policy_bindings` 表、admin-only CRUD、regorus 评估均已完成。
 - secrets 路由在写/读/删除/版本/列表 5 处调用 `policy_engine.evaluate`。
-- **其他资源（projects、members、tokens、creds、ca、ssh-certs）尚未接入策略**。
+- **所有资源现已接入策略**：projects（update/delete）、members（add/update/remove）、envs（create/delete）、dynamic creds（list/create/revoke）、tokens（create/revoke）、audit（list/per-project）、CA（create/revoke/sign）、SSH certs（create/revoke/sign）。
+- 统一模式：RBAC 硬检查做兜底 → `PolicyInput::for_context` → `policy_engine.evaluate` → deny 记录审计（带 policy_id） → 返回 403。
+- 新增 8 个端到端策略测试（member、env、dynamic cred、project、token、audit、CA、SSH），总策略相关测试 10 个。
 
 ### 2. M4 PKI：SSH 证书已能签发，X.509 已能 CSR 签名，但还有缺口
 - CA 私钥用成员 MK 加密后入库，吊销位有；SSH 证书表有。
@@ -68,7 +70,7 @@
 ## 验证方式（每次都跑）
 
 ```bash
-cargo test --workspace            # 66 个测试
+cargo test --workspace            # 74 个测试
 cd web && npm run typecheck && npm run build
 cargo build --workspace --release # 二进制名是 pandapass-cli / pandapass-server
 ```

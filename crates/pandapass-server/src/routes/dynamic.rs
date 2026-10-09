@@ -2,6 +2,7 @@ use axum::{extract::{Path, State}, Json};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::crypto::EncryptedSecret;
 use pandapass_core::models::*;
+use pandapass_core::policy::{PolicyDecision, PolicyInput};
 use pandapass_db as db;
 use serde::{Deserialize, Serialize};
 
@@ -31,8 +32,28 @@ pub async fn list_dynamic_creds(
     let project = db::get_project_by_slug(&state.db, &project_slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
 
-    if !auth.can(Permission::ListSecrets) {
+    // Scope the auth context to this project+env for RBAC and policy evaluation
+    let mut ctx = auth.clone();
+    ctx.project_id = Some(project.id);
+    ctx.env_id = Some(env.id);
+    ctx.project_role = db::get_member_role(&state.db, project.id, auth.user.id)
+        .await
+        .unwrap_or(None);
+
+    if !ctx.can(Permission::ListSecrets) {
         return Err(ApiError::Forbidden("Insufficient permissions".into()));
+    }
+
+    // Policy evaluation
+    let input = PolicyInput::for_context(&ctx, &project_slug, &env_slug, Permission::ListSecrets, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await?
+    {
+        let mut denied = AuditContext::new(&ctx, AuditAction::CredList)
+            .with_project(project.id)
+            .with_env(env.id);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
     }
 
     let creds = db::list_dynamic_creds(&state.db, project.id, env.id, false).await?;
@@ -48,8 +69,28 @@ pub async fn create_dynamic_cred(
     let project = db::get_project_by_slug(&state.db, &project_slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
 
-    if !auth.can(Permission::WriteSecret) {
+    // Scope the auth context to this project+env for RBAC and policy evaluation
+    let mut ctx = auth.clone();
+    ctx.project_id = Some(project.id);
+    ctx.env_id = Some(env.id);
+    ctx.project_role = db::get_member_role(&state.db, project.id, auth.user.id)
+        .await
+        .unwrap_or(None);
+
+    if !ctx.can(Permission::WriteSecret) {
         return Err(ApiError::Forbidden("Insufficient permissions".into()));
+    }
+
+    // Policy evaluation
+    let input = PolicyInput::for_context(&ctx, &project_slug, &env_slug, Permission::WriteSecret, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await?
+    {
+        let mut denied = AuditContext::new(&ctx, AuditAction::CredIssue)
+            .with_project(project.id)
+            .with_env(env.id);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
     }
 
     let ttl = if req.ttl_seconds > 0 { req.ttl_seconds } else { 3600 };
@@ -90,8 +131,28 @@ pub async fn revoke_dynamic_cred(
     let project = db::get_project_by_slug(&state.db, &project_slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
 
-    if !auth.can(Permission::WriteSecret) {
+    // Scope the auth context to this project+env for RBAC and policy evaluation
+    let mut ctx = auth.clone();
+    ctx.project_id = Some(project.id);
+    ctx.env_id = Some(env.id);
+    ctx.project_role = db::get_member_role(&state.db, project.id, auth.user.id)
+        .await
+        .unwrap_or(None);
+
+    if !ctx.can(Permission::WriteSecret) {
         return Err(ApiError::Forbidden("Insufficient permissions".into()));
+    }
+
+    // Policy evaluation
+    let input = PolicyInput::for_context(&ctx, &project_slug, &env_slug, Permission::WriteSecret, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await?
+    {
+        let mut denied = AuditContext::new(&ctx, AuditAction::CredRevoke)
+            .with_project(project.id)
+            .with_env(env.id);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
     }
 
     // Verify cred belongs to project/env

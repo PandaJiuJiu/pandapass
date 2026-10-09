@@ -310,6 +310,7 @@ pub enum AuditAction {
     // M2+
     CredIssue,
     CredRevoke,
+    CredList,
     // M3+
     PolicyCreate,
     PolicyUpdate,
@@ -319,9 +320,11 @@ pub enum AuditAction {
     // M4+
     CaCreate,
     CaSign,
+    CaRevoke,
     SshCertIssue,
     SshCertRevoke,
     SecretScan,
+    AuditRead,
 }
 
 impl AuditAction {
@@ -362,6 +365,7 @@ impl AuditAction {
             MkRotate => "mk_rotate",
             CredIssue => "cred_issue",
             CredRevoke => "cred_revoke",
+            CredList => "cred_list",
             PolicyCreate => "policy_create",
             PolicyUpdate => "policy_update",
             PolicyDelete => "policy_delete",
@@ -369,9 +373,11 @@ impl AuditAction {
             PolicyEvaluate => "policy_evaluate",
             CaCreate => "ca_create",
             CaSign => "ca_sign",
+            CaRevoke => "ca_revoke",
             SshCertIssue => "ssh_cert_issue",
             SshCertRevoke => "ssh_cert_revoke",
             SecretScan => "secret_scan",
+            AuditRead => "audit_read",
         }
     }
 
@@ -410,6 +416,7 @@ impl AuditAction {
             "mk_rotate" => MkRotate,
             "cred_issue" => CredIssue,
             "cred_revoke" => CredRevoke,
+            "cred_list" => CredList,
             "policy_create" => PolicyCreate,
             "policy_update" => PolicyUpdate,
             "policy_delete" => PolicyDelete,
@@ -417,9 +424,11 @@ impl AuditAction {
             "policy_evaluate" => PolicyEvaluate,
             "ca_create" => CaCreate,
             "ca_sign" => CaSign,
+            "ca_revoke" => CaRevoke,
             "ssh_cert_issue" => SshCertIssue,
             "ssh_cert_revoke" => SshCertRevoke,
             "secret_scan" => SecretScan,
+            "audit_read" => AuditRead,
             _ => Login,
         }
     }

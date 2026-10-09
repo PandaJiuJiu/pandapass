@@ -230,13 +230,16 @@ impl PolicyInput {
             Permission::WriteSecret | Permission::DeleteSecret => "write_secret",
             Permission::ListSecrets => "list_secrets",
             Permission::ReadAudit => "read_audit",
+            Permission::RunSecret => "run_secret",
             Permission::CreateProject
             | Permission::ReadProject
             | Permission::UpdateProject
             | Permission::DeleteProject => "manage_project",
             Permission::ManageMembers => "manage_members",
             Permission::CreateEnv | Permission::UpdateEnv | Permission::DeleteEnv => "manage_env",
-            _ => "unknown",
+            Permission::CreateToken => "create_token",
+            Permission::RevokeToken => "revoke_token",
+            Permission::ManageUsers => "manage_users",
         };
 
         let is_service_token = ctx.service_token.is_some();
