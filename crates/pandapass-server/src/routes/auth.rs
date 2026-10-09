@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     Json,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
@@ -1141,4 +1141,58 @@ fn is_cli_request(headers: &axum::http::HeaderMap) -> bool {
         .and_then(|v| v.to_str().ok())
         .map(|v| v.eq_ignore_ascii_case("cli"))
         .unwrap_or(false)
+}
+
+#[derive(Serialize)]
+pub struct SessionInfo {
+    pub id: uuid::Uuid,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_seen_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub ip: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+/// List the caller's active sessions. Only the current user's own sessions
+/// are returned; no admin surface needed for the common "where am I logged
+/// in?" workflow.
+pub async fn list_my_sessions(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<SessionInfo>>, ApiError> {
+    let sessions = db::list_sessions_for_user(&state.db, auth.user.id).await?;
+    Ok(Json(
+        sessions
+            .into_iter()
+            .map(|s| SessionInfo {
+                id: s.id,
+                created_at: s.created_at,
+                last_seen_at: s.last_seen_at,
+                expires_at: s.expires_at,
+                ip: s.ip,
+                user_agent: s.user_agent,
+            })
+            .collect(),
+    ))
+}
+
+/// Revoke one of the caller's sessions by id. The current request's own
+/// session is allowed to be revoked (that is the standard "log out this
+/// device" flow).
+pub async fn revoke_my_session(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path(session_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let sessions = db::list_sessions_for_user(&state.db, auth.user.id).await?;
+    if !sessions.iter().any(|s| s.id == session_id) {
+        return Err(ApiError::NotFound("Session not found".into()));
+    }
+    db::delete_session(&state.db, session_id).await?;
+
+    let mut audit = AuditContext::new(&auth, AuditAction::Logout)
+        .with_meta(serde_json::json!({ "session_id": session_id.to_string() }));
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(serde_json::json!({ "success": true })))
 }

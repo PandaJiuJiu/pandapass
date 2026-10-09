@@ -1905,3 +1905,25 @@ pub async fn touch_session(db: &Db, session_id: uuid::Uuid) -> Result<()> {
         .await?;
     Ok(())
 }
+
+/// List a user's active sessions (most recent first).
+pub async fn list_sessions_for_user(db: &Db, user_id: uuid::Uuid) -> Result<Vec<Session>> {
+    let rows = sqlx::query("SELECT * FROM sessions WHERE user_id = ?1 ORDER BY last_seen_at DESC")
+        .bind(user_id.to_string())
+        .fetch_all(db)
+        .await?;
+    Ok(rows.iter().map(row_to_session).collect())
+}
+
+fn row_to_session(r: &SqliteRow) -> Session {
+    Session {
+        id: uuid::Uuid::parse_str(r.get::<String, _>("id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        user_id: uuid::Uuid::parse_str(r.get::<String, _>("user_id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        token_hash: r.get("token_hash"),
+        ip: r.get("ip"),
+        user_agent: r.get("user_agent"),
+        created_at: parse_ts(&r.get::<String, _>("created_at")),
+        expires_at: parse_ts(&r.get::<String, _>("expires_at")),
+        last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
+    }
+}

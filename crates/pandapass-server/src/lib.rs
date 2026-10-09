@@ -61,6 +61,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/password", post(auth::change_password))
         .route("/api/v1/auth/logout-all", post(auth::logout_all))
+        .route("/api/v1/auth/sessions", get(auth::list_my_sessions))
+        .route("/api/v1/auth/sessions/{session_id}", delete(auth::revoke_my_session))
         .route("/api/v1/auth/key/enroll", post(auth::enroll_key))
         .route("/api/v1/auth/mk/rotate", post(auth::rotate_master_key))
         .route("/api/v1/auth/recovery-codes", post(auth::recovery_codes_generate))

@@ -2982,3 +2982,23 @@ async fn idle_timeout_expires_inactive_session() {
         me2.body
     );
 }
+
+/// A user can list their active sessions and revoke one, killing it
+/// server-side.
+#[tokio::test]
+async fn list_and_revoke_sessions() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    let lst = h.get("/api/v1/auth/sessions", &admin).await;
+    assert_eq!(lst.status, StatusCode::OK, "{:?}", lst.body);
+    assert_eq!(lst.body.as_array().unwrap().len(), 1);
+
+    let sid = lst.body[0]["id"].as_str().unwrap().to_string();
+    let rev = h.del(&format!("/api/v1/auth/sessions/{sid}"), &admin).await;
+    assert_eq!(rev.status, StatusCode::OK, "{:?}", rev.body);
+
+    // Session is now dead.
+    let me = h.get("/api/v1/auth/me", &admin).await;
+    assert_eq!(me.status, StatusCode::UNAUTHORIZED);
+}
