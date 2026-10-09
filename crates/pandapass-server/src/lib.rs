@@ -60,6 +60,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/password", post(auth::change_password))
         .route("/api/v1/auth/logout-all", post(auth::logout_all))
         .route("/api/v1/auth/key/enroll", post(auth::enroll_key))
+        .route("/api/v1/auth/mk/rotate", post(auth::rotate_master_key))
         .route("/api/v1/projects", get(projects::list_projects).post(projects::create_project))
         .route("/api/v1/projects/{slug}", get(projects::get_project).patch(projects::update_project).delete(projects::delete_project))
         .route("/api/v1/projects/{slug}/members", get(projects::list_members).post(projects::add_member))

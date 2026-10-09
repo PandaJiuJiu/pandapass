@@ -2518,3 +2518,62 @@ async fn trusted_peer_inherits_xff() {
         .expect("trusted peer should fall through to XFF");
     assert_eq!(ip.to_string(), "203.0.113.99", "XFF should be honoured when peer is trusted");
 }
+
+/// `POST /api/v1/auth/mk/rotate` must re-encrypt every secret the user
+/// owns under a new master key and keep the same plaintext readable.
+/// The endpoint requires password re-authentication.
+#[tokio::test]
+async fn mk_rotate_reencrypts_secrets() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    // Set a few secrets we can later read back.
+    h.post("/api/v1/projects", &admin, json!({"name": "P", "slug": "p"})).await;
+    h.put("/api/v1/projects/p/envs/dev/secrets/KEY1", &admin, json!({"value": "v1"})).await;
+    h.put("/api/v1/projects/p/envs/dev/secrets/KEY2", &admin, json!({"value": "v2"})).await;
+
+    // Wrong password rejected.
+    let bad = h.send_from(
+        "127.0.0.1:51000".parse().unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/mk/rotate")
+            .header("authorization", format!("Bearer {admin}"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"current_password": "wrong"}).to_string()))
+            .unwrap(),
+    ).await;
+    assert_eq!(bad.status, StatusCode::UNAUTHORIZED);
+
+    // Correct password accepted.
+    let res = h.send_from(
+        "127.0.0.1:51001".parse().unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/mk/rotate")
+            .header("authorization", format!("Bearer {admin}"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"current_password": "hunter2hunter2"}).to_string()))
+            .unwrap(),
+    ).await;
+    assert_eq!(res.status, StatusCode::OK, "rotate failed: {:?}", res.body);
+    assert_eq!(res.body["rotated"], true);
+    assert_eq!(res.body["secrets_reencrypted"], 2);
+
+    // The existing session was invalidated; the old bearer is now invalid.
+    let post = h.get("/api/v1/auth/me", &admin).await;
+    assert_eq!(post.status, StatusCode::UNAUTHORIZED);
+
+    // Log in again and confirm the secrets still read back.
+    let login = h.post(
+        "/api/v1/auth/login",
+        "",
+        json!({"email": "admin@example.com", "password": "hunter2hunter2"}),
+    ).await;
+    let new_token = login.body["session_token"].as_str().unwrap().to_string();
+    let g = h.get("/api/v1/projects/p/envs/dev/secrets/KEY1", &new_token).await;
+    assert_eq!(g.status, StatusCode::OK);
+    assert_eq!(g.body["value"], "v1");
+    let g2 = h.get("/api/v1/projects/p/envs/dev/secrets/KEY2", &new_token).await;
+    assert_eq!(g2.body["value"], "v2");
+}

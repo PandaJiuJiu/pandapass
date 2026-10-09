@@ -1818,3 +1818,48 @@ pub async fn count_scan_findings(
     .await?;
     Ok(row.get::<i64, _>("c"))
 }
+
+/// All non-deleted secrets whose `created_by` is `user_id`. Used by the
+/// master-key rotation path to re-encrypt every secret the user owns
+/// under a new MK without touching other users' data.
+pub async fn all_secrets_for_user(db: &Db, user_id: uuid::Uuid) -> Result<Vec<Secret>> {
+    let rows = sqlx::query(
+        "SELECT * FROM secrets WHERE deleted_at IS NULL AND created_by = ?1",
+    )
+    .bind(user_id.to_string())
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let enc_s: String = r.get("value_enc");
+            Secret {
+                meta: row_to_secret_meta(r),
+                value_enc: dec_json(&enc_s),
+            }
+        })
+        .collect())
+}
+
+/// All non-revoked dynamic credentials issued by `user_id`.
+pub async fn all_dynamic_creds_for_user(db: &Db, user_id: uuid::Uuid) -> Result<Vec<DynamicCred>> {
+    let rows = sqlx::query(
+        "SELECT * FROM dynamic_creds WHERE created_by = ?1 AND revoked_at IS NULL",
+    )
+    .bind(user_id.to_string())
+    .fetch_all(db)
+    .await?;
+    Ok(rows.iter().map(row_to_dynamic_cred).collect())
+}
+
+/// All CA keys (including revoked) uploaded by `user_id`. Used by the
+/// master-key rotation path.
+pub async fn list_ca_keys_for_user(db: &Db, user_id: uuid::Uuid) -> Result<Vec<CaKey>> {
+    let rows = sqlx::query(
+        "SELECT * FROM ca_keys WHERE created_by = ?1",
+    )
+    .bind(user_id.to_string())
+    .fetch_all(db)
+    .await?;
+    Ok(rows.iter().map(row_to_ca_key).collect())
+}

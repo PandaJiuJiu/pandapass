@@ -593,3 +593,189 @@ pub async fn change_password(
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
+#[derive(Serialize)]
+pub struct MkRotateResponse {
+    pub rotated: bool,
+    /// Number of secret values re-encrypted under the new master key.
+    pub secrets_reencrypted: usize,
+    /// Number of dynamic-credential passwords re-encrypted.
+    pub dynamic_creds_reencrypted: usize,
+    /// Number of CA private keys re-encrypted.
+    pub cas_reencrypted: usize,
+}
+
+/// Rotate the caller's master key.
+///
+/// Generates a fresh 32-byte master key, re-encrypts every secret the
+/// caller owns (regular values, dynamic-credential passwords, CA
+/// private keys) under it, and seals the new MK in the existing envelope.
+/// The new MK is unrelated to the old one, so a leak of the old key
+/// compromises no future ciphertext.
+///
+/// This is the "I lost my age key but kept the encrypted database"
+/// path: a member who holds only the server-side envelope (no member
+/// age key) can still recover because the server holds its own copy.
+/// A member who also enrolled an age key needs to re-enrol with
+/// `rotate=true` after this so the new MK is sealed to their new key.
+///
+/// Requires password re-authentication so a stolen session cannot
+/// silently rotate the user's MK.
+#[derive(Deserialize)]
+pub struct MkRotateRequest {
+    pub current_password: String,
+}
+
+pub async fn rotate_master_key(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Json(req): Json<MkRotateRequest>,
+) -> Result<Json<MkRotateResponse>, ApiError> {
+    let user = db::get_user_by_id(&state.db, auth.user.id).await?;
+    if !verify_password(&req.current_password, &user.password_hash)? {
+        return Err(ApiError::Unauthorized("Current password incorrect".into()));
+    }
+
+    let old_mk = crate::routes::secrets::get_master_key(&state, user.id).await?;
+    let new_mk = MasterKey::generate();
+
+    let mut secrets_count = 0usize;
+    let mut creds_count = 0usize;
+    let mut cas_count = 0usize;
+
+    // Re-encrypt regular secrets.
+    let secrets = db::all_secrets_for_user(&state.db, user.id).await?;
+    for secret in secrets {
+        let plaintext = secret
+            .value_enc
+            .decrypt(&old_mk)
+            .map_err(ApiError::from)?
+            .expose_secret()
+            .to_string();
+        let value_enc = EncryptedSecret::encrypt_with_purpose(
+            &plaintext,
+            &new_mk,
+            pandapass_core::crypto::key_purpose::SECRET_VALUE,
+        )
+        .map_err(ApiError::from)?;
+        sqlx::query(
+            "UPDATE secrets SET value_enc = ?2 WHERE id = ?1",
+        )
+        .bind(secret.meta.id.to_string())
+        .bind(serde_json::to_string(&value_enc).unwrap())
+        .execute(&state.db)
+        .await?;
+        secrets_count += 1;
+    }
+
+    // Re-encrypt dynamic-credential passwords.
+    let creds = db::all_dynamic_creds_for_user(&state.db, user.id).await?;
+    for cred in creds {
+        let plaintext = cred
+            .password_enc
+            .decrypt_with_purpose(&old_mk, pandapass_core::crypto::key_purpose::DYNAMIC_CRED_PASSWORD)
+            .map_err(ApiError::from)?
+            .expose_secret()
+            .to_string();
+        let password_enc = EncryptedSecret::encrypt_with_purpose(
+            &plaintext,
+            &new_mk,
+            pandapass_core::crypto::key_purpose::DYNAMIC_CRED_PASSWORD,
+        )
+        .map_err(ApiError::from)?;
+        sqlx::query(
+            "UPDATE dynamic_creds SET password_enc = ?2 WHERE id = ?1",
+        )
+        .bind(cred.id.to_string())
+        .bind(serde_json::to_string(&password_enc).unwrap())
+        .execute(&state.db)
+        .await?;
+        creds_count += 1;
+    }
+
+    // Re-encrypt CA private keys this user uploaded.
+    let cas = db::list_ca_keys_for_user(&state.db, user.id).await.unwrap_or_default();
+    for ca in cas {
+        let plaintext = ca
+            .key_enc
+            .decrypt_with_purpose(&old_mk, pandapass_core::crypto::key_purpose::CA_X509_KEY)
+            .map_err(ApiError::from)?
+            .expose_secret()
+            .to_string();
+        let key_enc = EncryptedSecret::encrypt_with_purpose(
+            &plaintext,
+            &new_mk,
+            pandapass_core::crypto::key_purpose::CA_X509_KEY,
+        )
+        .map_err(ApiError::from)?;
+        sqlx::query(
+            "UPDATE ca_keys SET key_enc = ?2 WHERE id = ?1",
+        )
+        .bind(ca.id.to_string())
+        .bind(serde_json::to_string(&key_enc).unwrap())
+        .execute(&state.db)
+        .await?;
+        cas_count += 1;
+    }
+
+    // Re-encrypt the TOTP secret if any.
+    if let Some(totp_enc) = user.totp_secret_enc.as_ref() {
+        let plaintext = totp_enc
+            .decrypt_with_purpose(&old_mk, pandapass_core::crypto::key_purpose::TOTP_SECRET)
+            .map_err(ApiError::from)?
+            .expose_secret()
+            .to_string();
+        let new_enc = EncryptedSecret::encrypt_with_purpose(
+            &plaintext,
+            &new_mk,
+            pandapass_core::crypto::key_purpose::TOTP_SECRET,
+        )
+        .map_err(ApiError::from)?;
+        db::set_user_totp(&state.db, user.id, Some(&new_enc), user.totp_enabled).await?;
+    }
+
+    // Re-seal the new MK to the same envelope (same set of age recipients).
+    let member = state
+        .config
+        .server_age_identity
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::Forbidden(
+            "This server has no age identity, so it cannot re-seal your master key.".into(),
+        ))?;
+    let identity = pandapass_core::crypto::AgeIdentity::parse(member)
+        .map_err(|e| ApiError::Internal(format!("server age identity: {e}")))?;
+    let server_pub = identity.public_key().map_err(|e| ApiError::Internal(format!("server public key: {e}")))?;
+    let env = Envelope::create(
+        user.id,
+        &new_mk,
+        // We do not know the member's public key without re-asking. For the
+        // rotate path we re-seal the new MK to the server recipient only
+        // and rely on the member re-enrolling with `rotate=true` to add
+        // their key as a recipient. Until they do, they cannot read
+        // anything client-side — which is fine, because the goal of this
+        // endpoint is to keep the server-side path alive, not to keep the
+        // member-side path.
+        &server_pub,
+        &SealOptions { server: Some(server_pub.clone()) },
+    )
+    .map_err(ApiError::from)?;
+    db::put_envelope(&state.db, user.id, &env.ciphertext).await?;
+
+    // Invalidate sessions so a leaked cookie does not survive the rotation.
+    db::delete_all_sessions(&state.db, user.id).await?;
+
+    let mut audit = AuditContext::new(&auth, AuditAction::MkRotate)
+        .with_meta(serde_json::json!({
+            "secrets_reencrypted": secrets_count,
+            "dynamic_creds_reencrypted": creds_count,
+            "cas_reencrypted": cas_count,
+        }));
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(MkRotateResponse {
+        rotated: true,
+        secrets_reencrypted: secrets_count,
+        dynamic_creds_reencrypted: creds_count,
+        cas_reencrypted: cas_count,
+    }))
+}
