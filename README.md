@@ -98,19 +98,23 @@ log deliberately does not record.
 ## Development
 
 ```bash
-cargo test --workspace      # 37 tests: crypto, RBAC, audit, and end-to-end API
+cargo test --workspace      # 66 tests: crypto, RBAC, audit, policy, proxy, and end-to-end API
 cargo run -p pandapass-server
 ```
 
 Integration tests drive the assembled router in-process against a temporary
-database. No ports, no shared fixtures.
+database. No ports, no shared fixtures. The dynamic-credential proxy has its
+own end-to-end tests over real TCP against a fake PostgreSQL upstream.
 
-The web UI is not covered by those tests and has never been built — see the
-known-limits section of the security doc.
+The web UI is not covered by those tests — see the known-limits section of the
+security doc.
 
 ## Status
 
 M1 is complete: storage, CLI, web UI, RBAC with enforced scopes, and an audit
-log. The M2–M4 features in the original plan — dynamic credentials, a policy
-engine, a CA and SSH certificates — are not started. The schema reserves room
-for them; nothing pretends otherwise.
+log. M2's dynamic-credential proxy is complete: a PostgreSQL wire-protocol
+proxy that enforces credential TTL and revocation at the handshake. M3's policy
+engine evaluates secrets routes (admin-only CRUD, regorus-backed), and M4's CA
+can sign both X.509 CSRs and SSH user certificates. Still open: policy
+coverage beyond secrets, GitOps sync, secret scanning, and parts of the PKI web
+UI. See `HANDOFF.md` for the current state.

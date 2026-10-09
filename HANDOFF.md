@@ -18,25 +18,26 @@
 - 文档：`docs/SECURITY.md` `docs/DEPLOY.md` `docs/AGENT-INTEGRATION.md`
 - 后台清理任务：过期 session + 过期动态凭证，60s 一轮
 
+**M2 动态凭证代理（可用）**
+- PostgreSQL wire protocol 代理：SSLRequest 处理、startup 解析、常量时间密码校验、
+  上游认证中继（cleartext password）、认证后双向字节中继。
+- TTL/吊销在握手时强制：凭证过期或撤销后，新连接在密码校验前即被拒绝。
+- 配置：`PANDAPASS_DYNAMIC_PROXY_LISTEN` / `PANDAPASS_DYNAMIC_PROXY_UPSTREAM`；
+  `main.rs` 启动时绑定并 fail-fast。需要 `PANDAPASS_SERVER_AGE_IDENTITY` 解密凭证密码。
+- 部署已同步：`docker-compose.yml`（127.0.0.1:5433）、`.env.example`、`docs/DEPLOY.md`。
+- 4 个端到端代理测试（真实 TCP + 假上游）：认证+中继、错误密码拒绝、过期凭证拒绝、消息格式。
+
 **API 测试**：`crates/pandapass-server/tests/api.rs`，25 个端到端用例，直接驱动 `build_router`（不起端口）。
-**总测试数**：`cargo test --workspace` 63 个（core 31 + server 7 + api 25）。
+**总测试数**：`cargo test --workspace` 66 个（core 31 + server 10 + api 25）。
 
 ## 没做完的（重要）
 
-### 1. M2 动态凭证：只有 CRUD 和握手认证，没有真正的代理
-PostgreSQL/MySQL 连接代理（`tokio-postgres` 转发 + 每连接改密码）只做了骨架：
-- `crates/pandapass-server/src/dynamic_proxy.rs` 监听、握手、密码校验都已完成，但
-  `handle_connection` 在认证后没有上游转发，直接给客户端返回 "not implemented" 并关闭。
-- `main.rs` 没有启动代理（config 里没有 `proxy_listen` 字段）。
-- Redis ACL 签发没写。
-- 验收标准「1 小时后同一凭证连接被拒」目前只能被 CRUD TTL 覆盖，还没有真实代理验证。
-
-### 2. M3 策略引擎：评估已接入 secrets 路由，但只限于 secrets
+### 1. M3 策略引擎：评估已接入 secrets 路由，但只限于 secrets
 - `policies` / `policy_bindings` 表、admin-only CRUD、regorus 评估均已完成。
 - secrets 路由在写/读/删除/版本/列表 5 处调用 `policy_engine.evaluate`。
 - **其他资源（projects、members、tokens、creds、ca、ssh-certs）尚未接入策略**。
 
-### 3. M4 PKI：SSH 证书已能签发，X.509 已能 CSR 签名，但还有缺口
+### 2. M4 PKI：SSH 证书已能签发，X.509 已能 CSR 签名，但还有缺口
 - CA 私钥用成员 MK 加密后入库，吊销位有；SSH 证书表有。
 - `/ca/{id}/sign-ssh` 已使用 `ssh-key` 签发 ed25519 用户证书，CLI `ssh sign` 已接。
 - `/ca/{id}/sign`（X.509 from CSR）已使用 `rcgen` 实现。
@@ -45,10 +46,10 @@ PostgreSQL/MySQL 连接代理（`tokio-postgres` 转发 + 每连接改密码）�
   `ManageUsers`，会让令牌路径全部 403，所以收紧了。要恢复自助查看，需要给 session
   单独开一条 `user_id = self` 的路径。
 
-### 4. GitOps 同步（计划里的 M3 后半）
+### 3. GitOps 同步（计划里的 M3 后半）
 完全没动。`.pandapass/project.yaml` + sops 加密的 `secrets/*.yaml`，双向 diff。
 
-### 5. 秘密扫描（M4）
+### 4. 秘密扫描（M4）
 没动。计划是集成 trufflehog。注意：扫描**结果**不能把命中的明文写进审计日志，
 和 secret 值同一原则。
 
@@ -67,7 +68,7 @@ PostgreSQL/MySQL 连接代理（`tokio-postgres` 转发 + 每连接改密码）�
 ## 验证方式（每次都跑）
 
 ```bash
-cargo test --workspace            # 63 个测试
+cargo test --workspace            # 66 个测试
 cd web && npm run typecheck && npm run build
 cargo build --workspace --release # 二进制名是 pandapass-cli / pandapass-server
 ```
