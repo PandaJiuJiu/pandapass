@@ -29,6 +29,7 @@ async-trait = { workspace = true }
 secrecy = { workspace = true }
 sha2 = { workspace = true }
 ipnet = "2.10"
+hex = { workspace = true }
 
 [dev-dependencies]
 # The integration tests drive the router in-process, so they need a body

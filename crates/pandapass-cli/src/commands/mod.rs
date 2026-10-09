@@ -311,6 +311,15 @@ pub enum ConfigCmd {
     SetCommandTimeout { seconds: u64 },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum AdminCmd {
+    /// Print the server's age public key (the recipient every envelope is
+    /// sealed to). Use this to record which key the vault was last
+    /// bootstrapped with, or to verify the server's identity before
+    /// re-enrolling.
+    ServerAgeShow,
+}
+
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// Project slug
@@ -441,6 +450,8 @@ pub enum Command {
     #[command(subcommand)]
     Config(ConfigCmd),
     #[command(subcommand)]
+    Admin(AdminCmd),
+    #[command(subcommand)]
     Policy(PolicyCmd),
     #[command(subcommand)]
     Pki(PkiCmd),
@@ -470,6 +481,7 @@ pub async fn run_command(
         Command::Token(cmd) => run_token(api, cmd).await,
         Command::Audit(cmd) => run_audit(api, cmd).await,
         Command::Config(cmd) => run_config(config, cmd).await,
+        Command::Admin(cmd) => run_admin(api, cmd).await,
         Command::Policy(cmd) => run_policy(api, cmd).await,
         Command::Pki(cmd) => run_pki(api, cmd).await,
         Command::GitOps(cmd) => run_gitops(api, config, cmd).await,
@@ -961,6 +973,17 @@ async fn run_config(config: &mut crate::client::CliConfig, cmd: ConfigCmd) -> Re
         ConfigCmd::SetCommandTimeout { seconds } => {
             config.command_timeout_secs = Some(seconds.max(1));
             println!("Command timeout set to {}s", seconds.max(1));
+        }
+    }
+    Ok(())
+}
+
+async fn run_admin(api: &ApiClient, cmd: AdminCmd) -> Result<()> {
+    match cmd {
+        AdminCmd::ServerAgeShow => {
+            let resp: serde_json::Value = api.get("/admin/server-age").await?;
+            println!("Server age public key: {}", resp["public_key"]);
+            println!("Fingerprint (sha256): {}", resp["fingerprint"]);
         }
     }
     Ok(())

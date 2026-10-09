@@ -2577,3 +2577,38 @@ async fn mk_rotate_reencrypts_secrets() {
     let g2 = h.get("/api/v1/projects/p/envs/dev/secrets/KEY2", &new_token).await;
     assert_eq!(g2.body["value"], "v2");
 }
+
+/// Admin endpoint: `GET /api/v1/admin/server-age` returns the bech32
+/// public key + a sha256 fingerprint of the running server's age
+/// identity. The endpoint is the only practical way to record what
+/// key the database was last sealed to without reading the file on
+/// disk.
+#[tokio::test]
+async fn admin_server_age_show_returns_public_key_and_fingerprint() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    let r = h.get("/api/v1/admin/server-age", &admin).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert!(r.body["public_key"].as_str().unwrap().starts_with("age1"));
+    assert_eq!(r.body["fingerprint"].as_str().unwrap().len(), 64);
+}
+
+#[tokio::test]
+async fn admin_server_age_show_requires_admin() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    let alice_email = "alice@example.com";
+    h.post(
+        "/api/v1/auth/register",
+        "",
+        json!({"email": alice_email, "password": "alice-password-123"}),
+    ).await;
+    let login = h.post(
+        "/api/v1/auth/login",
+        "",
+        json!({"email": alice_email, "password": "alice-password-123"}),
+    ).await;
+    let alice = login.body["session_token"].as_str().unwrap();
+    let r = h.get("/api/v1/admin/server-age", alice).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+}

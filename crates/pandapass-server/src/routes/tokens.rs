@@ -305,3 +305,49 @@ pub async fn verify_audit(
         },
     }))
 }
+/// Admin endpoint: print the server's age public key.
+///
+/// The server is one of the recipients every envelope is sealed to. This
+/// endpoint returns the bech32 form (`age1...`) so an operator can:
+///   - record which key the vault was last bootstrapped with,
+///   - compare against a freshly-generated key after a rotation,
+///   - verify that the running server still holds the same age identity
+///     the database expects.
+///
+/// Requires admin (ManageUsers). Returns 503 if the server has no
+/// age identity configured.
+#[derive(Serialize)]
+pub struct ServerAgeShowResponse {
+    pub public_key: String,
+    /// SHA-256 of the public key, hex-encoded. Useful for "did this
+    /// change since I last looked?" without having to eyeball bech32.
+    pub fingerprint: String,
+}
+
+pub async fn server_age_show(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+) -> Result<Json<ServerAgeShowResponse>, ApiError> {
+    if !auth.can(Permission::ManageUsers) {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
+    let identity = state
+        .config
+        .server_age_identity
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::NotImplemented(
+            "This server has no age identity configured.".into(),
+        ))?;
+    let age = pandapass_core::crypto::AgeIdentity::parse(identity)
+        .map_err(|e| ApiError::Internal(format!("server age identity: {e}")))?;
+    let public = age
+        .public_key()
+        .map_err(|e| ApiError::Internal(format!("server age public key: {e}")))?;
+    use sha2::{Digest, Sha256};
+    let fingerprint = hex::encode(Sha256::digest(public.as_str().as_bytes()));
+    Ok(Json(ServerAgeShowResponse {
+        public_key: public.as_str().to_string(),
+        fingerprint,
+    }))
+}
