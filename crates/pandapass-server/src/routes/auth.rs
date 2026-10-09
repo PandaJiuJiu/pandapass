@@ -246,6 +246,7 @@ pub async fn register(
     }
 
     let global_role = if is_first { GlobalRole::Admin } else { GlobalRole::User };
+    pandapass_core::crypto::validate_password_policy(&req.password)?;
     let password_hash = hash_password(&req.password)?;
 
     let user = db::create_user(&state.db, &req.email, &password_hash, global_role).await?;
@@ -577,6 +578,7 @@ pub async fn change_password(
         return Err(ApiError::Unauthorized("Current password incorrect".into()));
     }
 
+    pandapass_core::crypto::validate_password_policy(&req.new_password)?;
     let new_hash = hash_password(&req.new_password)?;
     // Update password (need to add this to db module)
     sqlx::query("UPDATE users SET password_hash = ?2 WHERE id = ?1")
@@ -1018,9 +1020,7 @@ pub async fn password_reset(
     let req: PasswordResetRequest = serde_json::from_slice(&body_bytes)
         .map_err(|_| ApiError::BadRequest("Invalid JSON".into()))?;
 
-    if req.new_password.len() < 12 {
-        return Err(ApiError::BadRequest("Password must be at least 12 characters".into()));
-    }
+    pandapass_core::crypto::validate_password_policy(&req.new_password)?;
 
     let user = db::get_user_by_email(&state.db, &req.email)
         .await?
@@ -1048,6 +1048,7 @@ pub async fn password_reset(
     db::set_recovery_codes(&state.db, user.id, &new_hashes).await?;
 
     // Update the password hash.
+    pandapass_core::crypto::validate_password_policy(&req.new_password)?;
     let new_hash = hash_password(&req.new_password)?;
     sqlx::query("UPDATE users SET password_hash = ?2 WHERE id = ?1")
         .bind(user.id.to_string())

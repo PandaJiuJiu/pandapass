@@ -458,6 +458,26 @@ impl EncryptedSecret {
     }
 }
 
+/// Validate a password against the deployment's minimum policy.
+///
+/// Returns `Ok(())` when the password is acceptable, or a
+/// human-readable explanation of what is wrong. The policy is deliberately
+/// small and immutable for now — the full story (breach-list checks,
+/// configurable complexity) is tracked in TODO.md.
+pub fn validate_password_policy(password: &str) -> Result<()> {
+    if password.len() < 12 {
+        return Err(CoreError::InvalidInput(
+            "Password must be at least 12 characters".into(),
+        ));
+    }
+    if password.len() > 1024 {
+        return Err(CoreError::InvalidInput(
+            "Password must be at most 1024 characters".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Password hashing with Argon2id
 pub fn hash_password(password: &str) -> Result<String> {
     let argon2 = Argon2::default();
