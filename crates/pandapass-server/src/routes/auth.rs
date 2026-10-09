@@ -779,3 +779,203 @@ pub async fn rotate_master_key(
         cas_reencrypted: cas_count,
     }))
 }
+
+#[derive(Serialize)]
+pub struct RecoveryCodesResponse {
+    /// Plaintext recovery codes, returned exactly once. The caller must
+    /// store them in a safe place; the server only retains argon2
+    /// hashes.
+    pub codes: Vec<String>,
+}
+
+/// Generate a fresh set of recovery codes for the caller.
+///
+/// 8 codes, each 16 random bytes URL-safe base64-encoded. The plaintext
+/// codes are returned exactly once; the server only stores argon2 hashes
+/// so a database compromise cannot replay them.
+///
+/// Calling this endpoint replaces any previously-issued codes. A
+/// successful login already implies possession of the password and
+/// (when enabled) TOTP, so re-issuing codes is a self-service
+/// administrative step.
+pub async fn recovery_codes_generate(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+) -> Result<Json<RecoveryCodesResponse>, ApiError> {
+    let mut codes: Vec<String> = (0..8)
+        .map(|_| pandapass_core::crypto::generate_token(16))
+        .collect();
+    // Sort the codes so the order is consistent for the caller.
+    codes.sort();
+
+    let hashes: Vec<String> = codes
+        .iter()
+        .map(|c| pandapass_core::crypto::hash_password(c).unwrap_or_default())
+        .collect();
+
+    db::set_recovery_codes(&state.db, auth.user.id, &hashes).await?;
+
+    let mut audit = AuditContext::new(&auth, AuditAction::Register)
+        .with_meta(serde_json::json!({ "recovery_codes_generated": codes.len() }));
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(RecoveryCodesResponse { codes }))
+}
+
+#[derive(Deserialize)]
+pub struct RecoveryCodeRedeemRequest {
+    pub code: String,
+}
+
+#[derive(Serialize)]
+pub struct RecoveryCodeRedeemResponse {
+    /// New master-key envelope sealed to the server (and to the supplied
+    /// age public key, if any). The new MK is unrelated to the old one,
+    /// so a leak of the old key compromises nothing going forward.
+    pub rotated: bool,
+}
+
+/// Redeem a recovery code: the user has lost both their password and
+/// TOTP. The recovery code is the only proof of identity they still
+/// hold. This endpoint rotates the master key and — if a member age
+/// public key is supplied — re-seals the new envelope to that key.
+///
+/// Rate-limited via the auth rate limiter (a fresh IP after a theft is
+/// expected; brute force is bounded by code space = 8 * 2**128).
+pub async fn recovery_code_redeem(
+    State(state): State<AppState>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<RecoveryCodeRedeemResponse>, ApiError> {
+    let client_ip = req.extensions().get::<crate::middleware::auth::ClientIp>().map(|c| c.0);
+    if let Some(ip) = client_ip {
+        if let Err(retry_after) = state.rate_limiter.check(ip).await {
+            return Err(ApiError::TooManyRequests(format!(
+                "Too many recovery attempts. Try again in {retry_after} seconds."
+            )));
+        }
+    }
+
+    let (_parts, body) = req.into_parts();
+    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .map_err(|_| ApiError::BadRequest("Failed to read body".into()))?;
+    let req: RecoveryCodeRedeemRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|_| ApiError::BadRequest("Invalid JSON".into()))?;
+
+    // The request must identify the user — either by email (separate
+    // field) or implicitly via the code prefix. For simplicity we ask the
+    // caller to send their email alongside the code.
+    #[derive(Deserialize)]
+    struct WithEmail {
+        email: String,
+        #[serde(default)]
+        age_public_key: Option<String>,
+    }
+    let raw: serde_json::Value = serde_json::from_slice(&body_bytes)
+        .map_err(|_| ApiError::BadRequest("Invalid JSON".into()))?;
+    let with_email: WithEmail = serde_json::from_value(raw)
+        .map_err(|_| ApiError::BadRequest("email is required".into()))?;
+
+    let user = db::get_user_by_email(&state.db, &with_email.email)
+        .await?
+        .ok_or_else(|| ApiError::Unauthorized("Invalid code or email".into()))?;
+
+    // Walk every hash; on match, consume the code.
+    let raw_hashes = user.recovery_codes_hash.clone();
+    let mut matched_idx: Option<usize> = None;
+    for (i, h) in raw_hashes.iter().enumerate() {
+        if h.is_empty() {
+            continue;
+        }
+        if pandapass_core::crypto::verify_password(&req.code, h).unwrap_or(false) {
+            matched_idx = Some(i);
+            break;
+        }
+    }
+    let Some(idx) = matched_idx else {
+        return Err(ApiError::Unauthorized("Invalid code or email".into()));
+    };
+
+    // Consume the matched code by removing it from the list.
+    let mut new_hashes = raw_hashes;
+    new_hashes.remove(idx);
+    db::set_recovery_codes(&state.db, user.id, &new_hashes).await?;
+
+    // Rotate the MK using the B3 helper. We need to re-implement the
+    // rotation here because the helper is on the user-self path; in
+    // principle this should call into a shared function, but to keep
+    // the change small we duplicate the small bit of logic.
+    let old_mk = crate::routes::secrets::get_master_key(&state, user.id).await?;
+    let new_mk = MasterKey::generate();
+    let secrets = db::all_secrets_for_user(&state.db, user.id).await?;
+    for secret in secrets {
+        let plaintext = secret
+            .value_enc
+            .decrypt(&old_mk)
+            .map_err(ApiError::from)?
+            .expose_secret()
+            .to_string();
+        let value_enc = EncryptedSecret::encrypt_with_purpose(
+            &plaintext,
+            &new_mk,
+            pandapass_core::crypto::key_purpose::SECRET_VALUE,
+        )
+        .map_err(ApiError::from)?;
+        sqlx::query("UPDATE secrets SET value_enc = ?2 WHERE id = ?1")
+            .bind(secret.meta.id.to_string())
+            .bind(serde_json::to_string(&value_enc).unwrap())
+            .execute(&state.db)
+            .await?;
+    }
+
+    // Re-seal the new MK in the envelope. If a new age public key was
+    // supplied we add it as a recipient; otherwise we only re-seal to
+    // the server (the member will need to re-enrol to read anything
+    // client-side, but the server-side path is alive).
+    let server_identity = state
+        .config
+        .server_age_identity
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::Forbidden(
+            "Server has no age identity; recovery rotation impossible.".into(),
+        ))?;
+    let age = AgeIdentity::parse(server_identity)
+        .map_err(|e| ApiError::Internal(format!("server age: {e}")))?;
+    let server_pub = age.public_key().map_err(|e| ApiError::Internal(format!("server public: {e}")))?;
+    let member_recipient = with_email
+        .age_public_key
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| AgePublicKey(s.trim().to_string()))
+        .unwrap_or_else(|| server_pub.clone());
+    if with_email.age_public_key.is_some() {
+        member_recipient.to_recipient()?;
+    }
+    let env = Envelope::create(
+        user.id,
+        &new_mk,
+        &member_recipient,
+        &SealOptions { server: Some(server_pub.clone()) },
+    )
+    .map_err(ApiError::from)?;
+    db::put_envelope(&state.db, user.id, &env.ciphertext).await?;
+
+    // Invalidate all sessions for the user.
+    db::delete_all_sessions(&state.db, user.id).await?;
+
+    let auth_ctx = AuthContext {
+        user: user.clone().into(),
+        session: None,
+        service_token: None,
+        project_role: None,
+        project_id: None,
+        env_id: None,
+    };
+    let mut audit = AuditContext::new(&auth_ctx, AuditAction::Register);
+    let meta = serde_json::json!({ "recovery_code_redeemed": true });
+    audit = audit.with_meta(meta);
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(RecoveryCodeRedeemResponse { rotated: true }))
+}

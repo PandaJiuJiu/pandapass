@@ -2612,3 +2612,70 @@ async fn admin_server_age_show_requires_admin() {
     let r = h.get("/api/v1/admin/server-age", alice).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
 }
+
+/// Recovery codes are generated server-side, returned once in plaintext,
+/// stored only as argon2 hashes, and consumed on first use. A second
+/// login attempt with the same code must fail because the code was
+/// removed from the list.
+#[tokio::test]
+async fn recovery_code_generation_and_redeem() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    let gen = h.send(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/recovery-codes")
+            .header("authorization", format!("Bearer {admin}"))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap(),
+    ).await;
+    assert_eq!(gen.status, StatusCode::OK, "{:?}", gen.body);
+    let codes: Vec<String> = gen.body["codes"]
+        .as_array().unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(codes.len(), 8);
+
+    // Redeem one of the codes with the right email.
+    let r = h.send(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/recovery-code/redeem")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"email": "admin@example.com", "code": codes[0]}).to_string(),
+            ))
+            .unwrap(),
+    ).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["rotated"], true);
+
+    // Same code must not work twice.
+    let r2 = h.send(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/recovery-code/redeem")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"email": "admin@example.com", "code": codes[0]}).to_string(),
+            ))
+            .unwrap(),
+    ).await;
+    assert_eq!(r2.status, StatusCode::UNAUTHORIZED);
+
+    // A wrong code must not work either.
+    let r3 = h.send(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/recovery-code/redeem")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"email": "admin@example.com", "code": "definitely-wrong"}).to_string(),
+            ))
+            .unwrap(),
+    ).await;
+    assert_eq!(r3.status, StatusCode::UNAUTHORIZED);
+}

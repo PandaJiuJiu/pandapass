@@ -154,12 +154,10 @@ fn row_to_user(row: &SqliteRow) -> User {
             .filter(|s| !s.is_empty())
             .map(|s| dec_json(&s)),
         totp_enabled: row.get::<i64, _>("totp_enabled") != 0,
-        recovery_codes_hash: row
-            .get::<String, _>("recovery_codes_hash")
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect(),
+        recovery_codes_hash: serde_json::from_str(
+            &row.get::<String, _>("recovery_codes_hash"),
+        )
+        .unwrap_or_default(),
         global_role: parse_global_role(&row.get::<String, _>("global_role")),
         created_at: parse_ts(&row.get::<String, _>("created_at")),
         disabled_at: parse_opt_ts(row.get("disabled_at")),
@@ -184,9 +182,14 @@ pub async fn set_user_totp(
 }
 
 pub async fn set_recovery_codes(db: &Db, user_id: uuid::Uuid, hashes: &[String]) -> Result<()> {
+    // Persist as a JSON array of strings. The argon2 PHC strings contain
+    // commas (e.g. "$argon2id$v=19$m=19456,t=2,p=1$..."), so a flat
+    // comma-joined format would be ambiguous on read. JSON survives both
+    // the round-trip and the inherent character set of the hashes.
+    let json = serde_json::to_string(hashes).unwrap_or_else(|_| "[]".to_string());
     sqlx::query("UPDATE users SET recovery_codes_hash = ?2 WHERE id = ?1")
         .bind(user_id.to_string())
-        .bind(hashes.join(","))
+        .bind(json)
         .execute(db)
         .await?;
     Ok(())
