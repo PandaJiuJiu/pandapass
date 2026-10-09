@@ -381,19 +381,35 @@ struct InternalExecRequest {
 use crate::middleware::auth::Auth;
 
 /// Startup: create admin user if configured
+///
+/// The admin password is **never** printed. Operators must either set
+/// `PANDAPASS_ADMIN_PASSWORD` in the environment (or pass it via the
+/// docker secret mount) or run `pandapass register` after the first boot
+/// to set the password interactively. Auto-generating a password and
+/// logging it is forbidden: JSON logs are forwarded to log aggregators
+/// and would leak the bootstrap credential to anyone with log access.
 pub async fn bootstrap(state: &AppState) -> StartupInfo {
     let user_count = db::count_users(&state.db).await.unwrap_or(0);
 
     if user_count == 0 {
         if let Some(email) = &state.config.bootstrap_admin_email {
-            let password = std::env::var("PANDAPASS_ADMIN_PASSWORD")
-                .unwrap_or_else(|_| pandapass_core::crypto::generate_token(16));
+            let password = match std::env::var("PANDAPASS_ADMIN_PASSWORD") {
+                Ok(p) if !p.is_empty() => p,
+                _ => {
+                    tracing::error!(
+                        "PANDAPASS_ADMIN_EMAIL is set but PANDAPASS_ADMIN_PASSWORD is \
+                         not. Refusing to bootstrap — automatic password generation has \
+                         been removed because JSON logs are forwarded to log aggregators. \
+                         Set PANDAPASS_ADMIN_PASSWORD in the environment, or start without \
+                         PANDAPASS_ADMIN_EMAIL and run `pandapass register` to create the \
+                         first account interactively."
+                    );
+                    return StartupInfo { admin_bootstrapped: false, user_count };
+                }
+            };
             let hash = pandapass_core::crypto::hash_password(&password).unwrap();
             let _ = db::create_user(&state.db, email, &hash, pandapass_core::models::GlobalRole::Admin).await;
             tracing::info!("Bootstrapped admin user: {}", email);
-            if std::env::var("PANDAPASS_ADMIN_PASSWORD").is_err() {
-                tracing::warn!("Admin password (save this!): {}", password);
-            }
             return StartupInfo { admin_bootstrapped: true, user_count: 1 };
         }
     }
