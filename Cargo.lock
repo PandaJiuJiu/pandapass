@@ -2645,6 +2645,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-extra",
+ "base64 0.22.1",
  "chrono",
  "hex",
  "hmac 0.12.1",
@@ -2669,6 +2670,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]

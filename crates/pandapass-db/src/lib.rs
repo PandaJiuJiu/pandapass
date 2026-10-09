@@ -1936,3 +1936,72 @@ pub async fn count_audit_log(db: &Db) -> Result<i64> {
         .await?;
     Ok(row.get::<i64, _>("c"))
 }
+
+/// Record a freshly-issued X.509 certificate so it can be revoked
+/// individually later. Returns the new row id.
+pub async fn record_issued_cert(
+    db: &Db,
+    ca_id: uuid::Uuid,
+    serial_number: &str,
+    subject: &str,
+    not_before: chrono::DateTime<chrono::Utc>,
+    not_after: chrono::DateTime<chrono::Utc>,
+    cert_pem: &str,
+    created_by: uuid::Uuid,
+) -> Result<uuid::Uuid> {
+    let id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO issued_certs (id, ca_id, serial_number, subject, not_before, not_after, cert_pem, created_by, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )
+    .bind(id.to_string())
+    .bind(ca_id.to_string())
+    .bind(serial_number)
+    .bind(subject)
+    .bind(ts(not_before))
+    .bind(ts(not_after))
+    .bind(cert_pem)
+    .bind(created_by.to_string())
+    .bind(utc_now())
+    .execute(db)
+    .await?;
+    Ok(id)
+}
+
+/// Revoke a single issued certificate. Sets revoked_at to now. The CA
+/// itself stays valid; the per-cert serial is the revocation handle.
+pub async fn revoke_issued_cert(db: &Db, id: uuid::Uuid) -> Result<()> {
+    sqlx::query("UPDATE issued_certs SET revoked_at = ?2 WHERE id = ?1")
+        .bind(id.to_string())
+        .bind(utc_now())
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// List certificates issued by a given CA, optionally including revoked.
+pub async fn list_issued_certs(db: &Db, ca_id: uuid::Uuid, include_revoked: bool) -> Result<Vec<serde_json::Value>> {
+    let sql = if include_revoked {
+        "SELECT * FROM issued_certs WHERE ca_id = ?1 ORDER BY created_at DESC"
+    } else {
+        "SELECT * FROM issued_certs WHERE ca_id = ?1 AND revoked_at IS NULL ORDER BY created_at DESC"
+    };
+    let rows = sqlx::query(sql)
+        .bind(ca_id.to_string())
+        .fetch_all(db)
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.get::<String, _>("id"),
+                "serial_number": r.get::<String, _>("serial_number"),
+                "subject": r.get::<String, _>("subject"),
+                "not_before": r.get::<String, _>("not_before"),
+                "not_after": r.get::<String, _>("not_after"),
+                "revoked_at": r.get::<Option<String>, _>("revoked_at"),
+                "created_at": r.get::<String, _>("created_at"),
+            })
+        })
+        .collect())
+}

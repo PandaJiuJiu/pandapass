@@ -1,10 +1,12 @@
 use axum::{extract::{Path, Query, State}, Json};
+use base64::{engine::general_purpose, Engine};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::models::*;
 use pandapass_core::pki::{sign_x509_from_csr, sign_ssh_cert, PkiError};
 use pandapass_core::policy::{PolicyDecision, PolicyInput};
 use pandapass_db as db;
 use serde::{Deserialize, Serialize};
+use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::state::AppState;
 use crate::middleware::auth::{Auth, ApiError};
@@ -165,7 +167,7 @@ pub async fn sign_csr(
 
     // Sign. A malformed CSR is the caller's bug (400); anything after that —
     // an unusable CA key, an rcgen failure — is ours (500).
-    let cert_pem = sign_x509_from_csr(
+    let (cert_pem, _serial) = sign_x509_from_csr(
         &ca_key.key_enc,
         &ca_key.cert_pem,
         &mk,
@@ -177,10 +179,38 @@ pub async fn sign_csr(
         other => ApiError::Internal(format!("PKI signing failed: {other}")),
     })?;
 
+    // Persist the issued cert so it can be revoked individually later.
+    // The subject is the CSR's distinguished name; x509-parser's `subject`
+    // string is "CN=..., O=...". Fall back to the CA's own subject if
+    // we cannot extract.
+    let body_b64 = req
+        .csr_pem
+        .lines()
+        .filter(|l| !l.starts_with("-----") && !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("");
+    let der = general_purpose::STANDARD.decode(&body_b64).ok();
+    let subject = match der.as_ref().and_then(|d| X509Certificate::from_der(d).ok()) {
+        Some((_r, xc)) => xc.subject().to_string(),
+        None => ca_key.cert_pem.clone(),
+    };
+    drop(der);
+    let _issued_id = db::record_issued_cert(
+        &state.db,
+        ca_id,
+        &_serial,
+        &subject,
+        req.not_before,
+        req.not_after,
+        &cert_pem,
+        auth.user.id,
+    ).await?;
+
     let mut audit = AuditContext::new(&auth, AuditAction::CaSign);
     audit = audit.with_meta(serde_json::json!({
         "ca_id": ca_id,
         "action": "sign_csr",
+        "serial": _serial,
         "not_before": req.not_before,
         "not_after": req.not_after,
     }));
@@ -447,4 +477,35 @@ pub async fn revoke_ssh_cert(
     state.audit.log_success(&mut audit).await.ok();
 
     Ok(())
+}
+/// List the certs a given CA has issued. Admin-only.
+pub async fn list_issued_certs(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path(ca_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !auth.can(Permission::ManageUsers) {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
+    let certs = db::list_issued_certs(&state.db, ca_id, true).await?;
+    Ok(Json(serde_json::json!({ "certs": certs })))
+}
+
+/// Revoke a single previously-issued certificate. Admin-only. The CA
+/// itself stays valid; the per-cert serial is the revocation handle.
+pub async fn revoke_issued_cert(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !auth.can(Permission::ManageUsers) {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
+    db::revoke_issued_cert(&state.db, id).await?;
+
+    let mut audit = AuditContext::new(&auth, AuditAction::CaRevoke)
+        .with_meta(serde_json::json!({ "issued_cert_id": id.to_string() }));
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(serde_json::json!({ "success": true })))
 }

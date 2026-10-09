@@ -23,6 +23,8 @@ use rcgen::{
 };
 use time::OffsetDateTime;
 use thiserror::Error;
+use x509_parser::prelude::{FromDer, X509Certificate};
+use base64::{Engine, engine::general_purpose};
 
 /// PKI signing errors
 #[derive(Debug, Error)]
@@ -96,6 +98,10 @@ pub fn create_client_csr(subject_cn: &str, dns_names: &[String]) -> Result<Clien
 /// The CA private key (`ca_key_enc`) is age-encrypted; the server's master
 /// key decrypts it in-memory for the signing operation only. The user's
 /// private key never touches the server — only their CSR does.
+///
+/// Returns the signed certificate as PEM alongside its serial number
+/// (hex-encoded), so the caller can persist `(cert, serial)` to the
+/// issued_certs table for later individual revocation.
 pub fn sign_x509_from_csr(
     ca_key_enc: &EncryptedSecret,
     ca_cert_pem: &str,
@@ -103,7 +109,7 @@ pub fn sign_x509_from_csr(
     csr_pem: &str,
     not_before: chrono::DateTime<chrono::Utc>,
     not_after: chrono::DateTime<chrono::Utc>,
-) -> Result<String> {
+) -> Result<(String, String)> {
     // 1. Decrypt CA private key
     use secrecy::ExposeSecret;
     let ca_key_pem = ca_key_enc
@@ -141,8 +147,28 @@ pub fn sign_x509_from_csr(
     let cert = params.signed_by(&csr_params.public_key, &issuer)
         .map_err(|e| PkiError::Rcgen(e.to_string()))?;
 
-    // Certificate::pem() returns the PEM string directly
-    Ok(cert.pem())
+    let pem = cert.pem();
+    // Pull the serial out of the signed cert so callers can store it
+    // alongside the cert and revoke it individually later. We base64-
+    // decode the PEM body to get the DER, then run the existing
+    // x509-parser. The serial is hex-encoded for storage.
+    let serial = pem.lines()
+        .filter(|l| !l.starts_with("-----") && !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("");
+    let der = general_purpose::STANDARD.decode(&serial).ok();
+    let serial = match der.as_ref().and_then(|d| X509Certificate::from_der(d).ok()) {
+        Some((_rest, xc)) => xc
+            .tbs_certificate
+            .raw_serial_as_string()
+            .chars()
+            .filter(|c| *c != ':')
+            .collect::<String>(),
+        None => String::new(),
+    };
+    drop(der);
+
+    Ok((pem, serial))
 }
 
 /// Generate a new self-signed root CA (for bootstrap / testing).
@@ -332,7 +358,7 @@ mod tests {
         let req = create_client_csr("alice@build", &["alice.example.com".to_string()]).unwrap();
         assert!(req.csr_pem.contains("BEGIN CERTIFICATE REQUEST"));
 
-        let cert_pem = sign_x509_from_csr(
+        let (cert_pem, _serial) = sign_x509_from_csr(
             &ca_key_enc,
             &ca_cert_pem,
             &mk,
