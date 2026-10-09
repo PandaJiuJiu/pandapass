@@ -18,6 +18,9 @@ services:
     # publishing 8233 on all interfaces.
     ports:
       - "127.0.0.1:8233:8233"
+      # Dynamic credential proxy (M2): PostgreSQL wire protocol. Also
+      # loopback-only; clients reach it over the same VPN as the API.
+      - "127.0.0.1:5433:5433"
 
     environment:
       # Three slashes is correct. `sqlite://data/...` is a *relative* path, and
@@ -52,6 +55,12 @@ services:
       # The server's age private key is read from a file so it never appears in
       # the process environment, where `docker inspect` would show it.
       PANDAPASS_SERVER_AGE_IDENTITY_FILE: /data/server-age.key
+
+      # M2 dynamic credential proxy. Leave UPSTREAM empty to keep the proxy
+      # disabled (the default). When set, the proxy listens on 5433 and
+      # forwards PostgreSQL wire traffic to the configured upstream.
+      PANDAPASS_DYNAMIC_PROXY_LISTEN: ${PANDAPASS_DYNAMIC_PROXY_LISTEN:-}
+      PANDAPASS_DYNAMIC_PROXY_UPSTREAM: ${PANDAPASS_DYNAMIC_PROXY_UPSTREAM:-}
 
       # Structured logs. These carry request metadata only — never secret values.
       RUST_LOG: ${RUST_LOG:-info}

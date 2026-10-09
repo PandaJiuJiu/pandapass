@@ -1,11 +1,14 @@
-use pandapass_db::{connect, migrate, DbAuditLogger};
+use anyhow::Context;
+use pandapass_db::{DbAuditLogger, connect, migrate};
+use pandapass_server::dynamic_proxy;
 use pandapass_server::state::{AppState, Config};
-use pandapass_server::{build_router, bootstrap};
+use pandapass_server::{bootstrap, build_router};
 use std::process::ExitCode;
 use std::sync::Arc;
+use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{info, warn};
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -82,8 +85,7 @@ async fn run() -> anyhow::Result<()> {
     let audit = pandapass_core::AuditService::new(audit_logger);
 
     // Create app state (consumes db)
-    let state = AppState::new(db, audit, config.clone())
-        .with_audit_chain_key(chain_key);
+    let state = AppState::new(db, audit, config.clone()).with_audit_chain_key(chain_key);
 
     // Bootstrap admin user
     let startup = bootstrap(&state).await;
@@ -104,11 +106,58 @@ async fn run() -> anyhow::Result<()> {
         }
         let bindings = list_policy_bindings(&state.db, None, None).await?;
         state.policy_engine.rebuild_bindings(&bindings).await;
-        info!("Policy engine loaded: {} policies, {} bindings", policies.len(), bindings.len());
+        info!(
+            "Policy engine loaded: {} policies, {} bindings",
+            policies.len(),
+            bindings.len()
+        );
     }
 
     // Build router
-    let app = build_router(state);
+    let app = build_router(state.clone());
+
+    // Start the dynamic credential proxy if configured. It shares the
+    // database with the HTTP API, so the TTL and revocation state the proxy
+    // enforces at the handshake is the same state the API exposes.
+    if let (Some(listen), Some(upstream)) =
+        (&config.dynamic_proxy_listen, &config.dynamic_proxy_upstream)
+    {
+        let listen_addr = listen
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid PANDAPASS_DYNAMIC_PROXY_LISTEN: {listen}"))?;
+        let upstream_addr = upstream
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid PANDAPASS_DYNAMIC_PROXY_UPSTREAM: {upstream}"))?;
+
+        // Require server_age_identity for the proxy to decrypt credential passwords.
+        let server_age_identity = match config.server_age_identity.as_deref() {
+            Some(s) if !s.is_empty() => s.to_string(),
+            Some(_) => {
+                anyhow::bail!(
+                    "PANDAPASS_SERVER_AGE_IDENTITY is set but empty; the dynamic proxy cannot decrypt credentials without a valid age identity"
+                );
+            }
+            None => {
+                anyhow::bail!(
+                    "PANDAPASS_SERVER_AGE_IDENTITY must be set when PANDAPASS_DYNAMIC_PROXY_LISTEN/UPSTREAM are configured; the dynamic proxy needs it to decrypt credential passwords"
+                );
+            }
+        };
+
+        // Bind first so a port conflict fails fast at startup.
+        let listener = TcpListener::bind(listen_addr)
+            .await
+            .context("bind dynamic proxy listener")?;
+        info!("Dynamic credential proxy listening on {listen_addr} (upstream {upstream_addr})");
+
+        let proxy_config = dynamic_proxy::ProxyConfig {
+            listen_addr,
+            db: state.db.clone(),
+            upstream_addr,
+            server_age_identity,
+        };
+        tokio::spawn(dynamic_proxy::run_proxy(listener, proxy_config));
+    }
 
     // Start server
     let listener = tokio::net::TcpListener::bind(&config.listen_addr).await?;
@@ -237,7 +286,9 @@ async fn health_check() -> anyhow::Result<()> {
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
     };
 
     #[cfg(unix)]

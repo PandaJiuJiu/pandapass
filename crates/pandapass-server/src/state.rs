@@ -1,7 +1,7 @@
+use crate::middleware::rate_limit::RateLimiter;
 use pandapass_core::audit::AuditService;
 use pandapass_core::policy::PolicyEngine;
 use pandapass_db::Db;
-use crate::middleware::rate_limit::RateLimiter;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -13,7 +13,6 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// Limits concurrent secret-decrypt + subprocess operations
     pub exec_semaphore: Arc<Semaphore>,
-    pub master_key_cache: Arc<tokio::sync::RwLock<Option<pandapass_core::crypto::MasterKey>>>,
     /// Policy evaluation engine (M3)
     pub policy_engine: Arc<PolicyEngine>,
     /// Rate limiter for auth endpoints (login, register)
@@ -31,7 +30,6 @@ impl AppState {
             audit: Arc::new(audit),
             config: Arc::new(config.clone()),
             exec_semaphore: Arc::new(Semaphore::new(max_concurrent)),
-            master_key_cache: Arc::new(tokio::sync::RwLock::new(None)),
             policy_engine: Arc::new(PolicyEngine::new()),
             rate_limiter: Arc::new(RateLimiter::new(
                 config.auth_rate_limit_max,
@@ -74,13 +72,23 @@ pub struct Config {
     /// Rate limiter config
     pub auth_rate_limit_max: u32,
     pub auth_rate_limit_window_secs: u64,
+    /// Optional dynamic-credential proxy listener, e.g. "127.0.0.1:5433".
+    /// `None` (the default) disables the proxy entirely.
+    pub dynamic_proxy_listen: Option<String>,
+    /// Upstream PostgreSQL address the dynamic-credential proxy forwards to.
+    pub dynamic_proxy_upstream: Option<String>,
 }
 
 impl Config {
     pub fn from_env() -> Self {
-        let listen_addr = std::env::var("PANDAPASS_LISTEN").unwrap_or_else(|_| "0.0.0.0:8233".to_string());
-        let public_url = std::env::var("PANDAPASS_PUBLIC_URL")
-            .unwrap_or_else(|_| format!("http://localhost:{}", listen_addr.rsplit(':').next().unwrap_or("8233")));
+        let listen_addr =
+            std::env::var("PANDAPASS_LISTEN").unwrap_or_else(|_| "0.0.0.0:8233".to_string());
+        let public_url = std::env::var("PANDAPASS_PUBLIC_URL").unwrap_or_else(|_| {
+            format!(
+                "http://localhost:{}",
+                listen_addr.rsplit(':').next().unwrap_or("8233")
+            )
+        });
         let db_url = std::env::var("PANDAPASS_DB_URL")
             .unwrap_or_else(|_| "sqlite://data/pandapass.db?mode=rwc".to_string());
         let session_ttl_days = std::env::var("PANDAPASS_SESSION_TTL_DAYS")
@@ -121,8 +129,12 @@ impl Config {
         // The server's age identity: inline value, or read from a file so the
         // private key never appears in the process environment.
         let server_age_identity = match std::env::var("PANDAPASS_SERVER_AGE_IDENTITY_FILE") {
-            Ok(path) if !path.is_empty() => std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string()),
-            _ => std::env::var("PANDAPASS_SERVER_AGE_IDENTITY").ok().filter(|s| !s.is_empty()),
+            Ok(path) if !path.is_empty() => std::fs::read_to_string(&path)
+                .ok()
+                .map(|s| s.trim().to_string()),
+            _ => std::env::var("PANDAPASS_SERVER_AGE_IDENTITY")
+                .ok()
+                .filter(|s| !s.is_empty()),
         };
 
         // Rate limiter: default 5 attempts per 15 minutes per IP
@@ -134,6 +146,13 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(900);
+
+        let dynamic_proxy_listen = std::env::var("PANDAPASS_DYNAMIC_PROXY_LISTEN")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let dynamic_proxy_upstream = std::env::var("PANDAPASS_DYNAMIC_PROXY_UPSTREAM")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
 
         Self {
             listen_addr,
@@ -151,6 +170,8 @@ impl Config {
             server_age_identity,
             auth_rate_limit_max,
             auth_rate_limit_window_secs,
+            dynamic_proxy_listen,
+            dynamic_proxy_upstream,
         }
     }
 }

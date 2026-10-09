@@ -19,8 +19,8 @@ use http_body_util::BodyExt;
 use pandapass_core::crypto::AgeIdentity;
 use pandapass_core::{AuditLogger, AuditService};
 use pandapass_db::{connect, migrate, DbAuditLogger};
-use pandapass_server::state::{AppState, Config};
 use pandapass_server::build_router;
+use pandapass_server::state::{AppState, Config};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -81,6 +81,8 @@ impl Harness {
             server_age_identity: Some(identity.as_str().to_string()),
             auth_rate_limit_max: 100, // high for tests
             auth_rate_limit_window_secs: 60,
+            dynamic_proxy_listen: None,
+            dynamic_proxy_upstream: None,
         };
 
         let db = connect(&config.db_url).await.expect("connect");
@@ -95,13 +97,17 @@ impl Harness {
             Sha256::digest(format!("pandapass-audit-chain:{}", identity.as_str()).as_bytes())
                 .to_vec()
         };
-        let audit_logger: Arc<dyn AuditLogger> = Arc::new(
-            DbAuditLogger::with_chain_key(db.clone(), chain_key.clone()),
-        );
+        let audit_logger: Arc<dyn AuditLogger> =
+            Arc::new(DbAuditLogger::with_chain_key(db.clone(), chain_key.clone()));
         let audit = AuditService::new(audit_logger);
-        let state = AppState::new(db.clone(), audit, config).with_audit_chain_key(chain_key.clone());
+        let state =
+            AppState::new(db.clone(), audit, config).with_audit_chain_key(chain_key.clone());
 
-        Self { router: build_router(state), db_path, db }
+        Self {
+            router: build_router(state),
+            db_path,
+            db,
+        }
     }
 
     async fn send(&self, req: Request<Body>) -> Res {
@@ -190,7 +196,11 @@ impl Harness {
     /// write below would fail for a reason unrelated to what it is testing.
     async fn admin(&self) -> String {
         let key = AgeIdentity::generate();
-        let public = key.public_key().expect("derive public key").as_str().to_string();
+        let public = key
+            .public_key()
+            .expect("derive public key")
+            .as_str()
+            .to_string();
         let res = self
             .post(
                 "/api/v1/auth/register",
@@ -202,13 +212,25 @@ impl Harness {
                 }),
             )
             .await;
-        assert_eq!(res.status, StatusCode::OK, "register failed: {:?}", res.body);
-        res.body["session_token"].as_str().expect("session token").to_string()
+        assert_eq!(
+            res.status,
+            StatusCode::OK,
+            "register failed: {:?}",
+            res.body
+        );
+        res.body["session_token"]
+            .as_str()
+            .expect("session token")
+            .to_string()
     }
 
     async fn project(&self, token: &str) -> Value {
         let res = self
-            .post("/api/v1/projects", token, json!({ "name": "Demo", "slug": "demo" }))
+            .post(
+                "/api/v1/projects",
+                token,
+                json!({ "name": "Demo", "slug": "demo" }),
+            )
             .await;
         assert!(res.ok(), "create project failed: {:?}", res.body);
         res.body.clone()
@@ -224,7 +246,10 @@ impl Harness {
             )
             .await;
         assert!(res.ok(), "create token failed: {:?}", res.body);
-        res.body["plain_token"].as_str().expect("plain token").to_string()
+        res.body["plain_token"]
+            .as_str()
+            .expect("plain token")
+            .to_string()
     }
 
     async fn set_secret(&self, token: &str, key: &str, value: &str) -> Res {
@@ -266,7 +291,9 @@ async fn a_read_only_token_cannot_write() {
     let tok = h.token(&admin, &["read:secret"]).await;
 
     // It can read.
-    let read = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok).await;
+    let read = h
+        .get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok)
+        .await;
     assert!(read.ok(), "read should be allowed: {:?}", read.body);
 
     // It cannot write, by any of the four write paths.
@@ -291,14 +318,23 @@ async fn a_read_only_token_cannot_write() {
         .await;
     assert_eq!(batch.status, StatusCode::FORBIDDEN, "batch must be denied");
 
-    let del = h.del("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok).await;
+    let del = h
+        .del("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok)
+        .await;
     assert_eq!(del.status, StatusCode::FORBIDDEN, "DELETE must be denied");
 
     // And the value it tried to write is not there.
-    let after = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &admin).await;
-    assert_eq!(after.body["value"], "original", "the write must not have landed");
+    let after = h
+        .get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &admin)
+        .await;
+    assert_eq!(
+        after.body["value"], "original",
+        "the write must not have landed"
+    );
 
-    let list = h.get("/api/v1/projects/demo/envs/prod/secrets", &admin).await;
+    let list = h
+        .get("/api/v1/projects/demo/envs/prod/secrets", &admin)
+        .await;
     let keys: Vec<&str> = list.body["items"]
         .as_array()
         .unwrap()
@@ -320,8 +356,14 @@ async fn scopes_do_not_imply_each_other() {
     let wrote = h.set_secret(&writer, "K", "v").await;
     assert!(wrote.ok(), "write:secret must write");
 
-    let read = h.get("/api/v1/projects/demo/envs/prod/secrets/K", &writer).await;
-    assert_eq!(read.status, StatusCode::FORBIDDEN, "write must not imply read");
+    let read = h
+        .get("/api/v1/projects/demo/envs/prod/secrets/K", &writer)
+        .await;
+    assert_eq!(
+        read.status,
+        StatusCode::FORBIDDEN,
+        "write must not imply read"
+    );
 
     // `manage:project` is about membership and structure, not credential access.
     let mgr = h.token(&admin, &["manage:project"]).await;
@@ -355,17 +397,28 @@ async fn a_token_cannot_issue_or_revoke_tokens() {
             json!({ "name": "escalated", "scopes": ["manage:project", "write:secret"] }),
         )
         .await;
-    assert_eq!(minted.status, StatusCode::FORBIDDEN, "a token must not mint tokens");
+    assert_eq!(
+        minted.status,
+        StatusCode::FORBIDDEN,
+        "a token must not mint tokens"
+    );
 
     // Revocation is gated on token ownership, and a token's creator *is* the
     // owner — so without an explicit refusal this would revoke every sibling.
     let list = h.get("/api/v1/tokens", &admin).await;
     let id = list.body[0]["id"].as_str().unwrap();
     let revoked = h.del(&format!("/api/v1/tokens/{id}"), &tok).await;
-    assert_eq!(revoked.status, StatusCode::FORBIDDEN, "a token must not revoke tokens");
+    assert_eq!(
+        revoked.status,
+        StatusCode::FORBIDDEN,
+        "a token must not revoke tokens"
+    );
 
     let after = h.get("/api/v1/tokens", &admin).await;
-    assert!(after.body[0]["revoked_at"].is_null(), "the token must still be live");
+    assert!(
+        after.body[0]["revoked_at"].is_null(),
+        "the token must still be live"
+    );
 }
 
 /// The audit log records every read across every project and every actor.
@@ -382,7 +435,11 @@ async fn reading_the_audit_log_needs_the_read_audit_scope() {
 
     let auditor = h.token(&admin, &["read:audit"]).await;
     let allowed = h.get("/api/v1/audit", &auditor).await;
-    assert!(allowed.ok(), "read:audit must be allowed: {:?}", allowed.body);
+    assert!(
+        allowed.ok(),
+        "read:audit must be allowed: {:?}",
+        allowed.body
+    );
 }
 
 /// The consequence of the above, seen from the caller's side: a session's own
@@ -431,14 +488,18 @@ async fn revocation_takes_effect_at_once() {
     h.set_secret(&admin, "API_KEY", "v").await;
 
     let tok = h.token(&admin, &["read:secret"]).await;
-    let before = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok).await;
+    let before = h
+        .get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok)
+        .await;
     assert!(before.ok());
 
     let list = h.get("/api/v1/tokens", &admin).await;
     let id = list.body[0]["id"].as_str().unwrap().to_string();
     assert!(h.del(&format!("/api/v1/tokens/{id}"), &admin).await.ok());
 
-    let after = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok).await;
+    let after = h
+        .get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &tok)
+        .await;
     assert_eq!(
         after.status,
         StatusCode::UNAUTHORIZED,
@@ -456,13 +517,14 @@ async fn secrets_are_stored_as_ciphertext() {
 
     let h = Harness::start().await;
     let admin = h.admin().await;
-    h.project(&admin).await
-        ;
+    h.project(&admin).await;
     let written = h.set_secret(&admin, "API_KEY", VALUE).await;
     assert!(written.ok(), "write failed: {:?}", written.body);
 
     // Reading it back works, so the value was really stored.
-    let read = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &admin).await;
+    let read = h
+        .get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &admin)
+        .await;
     assert_eq!(read.body["value"], VALUE);
 
     // And the database holds no trace of it.
@@ -482,13 +544,19 @@ async fn listing_secrets_returns_names_only() {
     let admin = h.admin().await;
     h.project(&admin).await;
     h.set_secret(&admin, "API_KEY", "should-not-appear").await;
-    h.set_secret(&admin, "DB_URL", "also-should-not-appear").await;
+    h.set_secret(&admin, "DB_URL", "also-should-not-appear")
+        .await;
 
-    let list = h.get("/api/v1/projects/demo/envs/prod/secrets", &admin).await;
+    let list = h
+        .get("/api/v1/projects/demo/envs/prod/secrets", &admin)
+        .await;
     assert!(list.ok());
 
     let rendered = list.body.to_string();
-    assert!(!rendered.contains("should-not-appear"), "list leaked a value");
+    assert!(
+        !rendered.contains("should-not-appear"),
+        "list leaked a value"
+    );
     assert!(!rendered.contains("also-should-not"), "list leaked a value");
 
     let keys: Vec<&str> = list.body["items"]
@@ -539,7 +607,11 @@ async fn session_writes_require_a_csrf_token() {
                 .unwrap(),
         )
         .await;
-    assert_eq!(cookie_only.status, StatusCode::FORBIDDEN, "CSRF must be enforced");
+    assert_eq!(
+        cookie_only.status,
+        StatusCode::FORBIDDEN,
+        "CSRF must be enforced"
+    );
     assert_eq!(cookie_only.error_code(), "forbidden");
 }
 
@@ -583,8 +655,7 @@ async fn protected_routes_require_authentication() {
             res.body
         );
         assert!(
-            res.status == StatusCode::UNAUTHORIZED
-                || res.status == StatusCode::FORBIDDEN,
+            res.status == StatusCode::UNAUTHORIZED || res.status == StatusCode::FORBIDDEN,
             "{method} {path} returned an unexpected {}: {:?}",
             res.status,
             res.body
@@ -668,7 +739,9 @@ async fn put_takes_the_key_from_the_path_not_the_body() {
     assert!(res.ok(), "put failed: {:?}", res.body);
     assert_eq!(res.body["key"], "REAL", "the path must win");
 
-    let list = h.get("/api/v1/projects/demo/envs/prod/secrets", &admin).await;
+    let list = h
+        .get("/api/v1/projects/demo/envs/prod/secrets", &admin)
+        .await;
     let keys: Vec<&str> = list.body["items"]
         .as_array()
         .unwrap()
@@ -689,7 +762,9 @@ async fn rewriting_a_secret_bumps_its_version() {
     assert_eq!(h.set_secret(&admin, "K", "v1").await.body["version"], 1);
     assert_eq!(h.set_secret(&admin, "K", "v2").await.body["version"], 2);
 
-    let read = h.get("/api/v1/projects/demo/envs/prod/secrets/K", &admin).await;
+    let read = h
+        .get("/api/v1/projects/demo/envs/prod/secrets/K", &admin)
+        .await;
     assert_eq!(read.body["value"], "v2");
     assert_eq!(read.body["version"], 2);
 }
@@ -703,9 +778,14 @@ async fn deleting_a_secret_does_not_destroy_it_immediately() {
     h.project(&admin).await;
     h.set_secret(&admin, "K", "v").await;
 
-    assert!(h.del("/api/v1/projects/demo/envs/prod/secrets/K", &admin).await.ok());
+    assert!(h
+        .del("/api/v1/projects/demo/envs/prod/secrets/K", &admin)
+        .await
+        .ok());
 
-    let list = h.get("/api/v1/projects/demo/envs/prod/secrets", &admin).await;
+    let list = h
+        .get("/api/v1/projects/demo/envs/prod/secrets", &admin)
+        .await;
     let live: Vec<&Value> = list.body["items"]
         .as_array()
         .unwrap()
@@ -737,13 +817,17 @@ async fn dynamic_creds_scope_boundary() {
 
     // list:secret can list (read:secret alone cannot)
     let lister = h.token(&admin, &["list:secret"]).await;
-    let list = h.get("/api/v1/projects/demo/envs/prod/creds", &lister).await;
+    let list = h
+        .get("/api/v1/projects/demo/envs/prod/creds", &lister)
+        .await;
     assert!(list.ok(), "list:secret must list: {:?}", list.body);
     assert_eq!(list.body.as_array().unwrap().len(), 1);
 
     // read:secret alone cannot list
     let reader = h.token(&admin, &["read:secret"]).await;
-    let list_denied = h.get("/api/v1/projects/demo/envs/prod/creds", &reader).await;
+    let list_denied = h
+        .get("/api/v1/projects/demo/envs/prod/creds", &reader)
+        .await;
     assert_eq!(list_denied.status, StatusCode::FORBIDDEN);
 
     // list:secret cannot create
@@ -758,7 +842,10 @@ async fn dynamic_creds_scope_boundary() {
 
     // list:secret cannot revoke
     let revoke_denied = h
-        .del(&format!("/api/v1/projects/demo/envs/prod/creds/{cred_id}"), &lister)
+        .del(
+            &format!("/api/v1/projects/demo/envs/prod/creds/{cred_id}"),
+            &lister,
+        )
         .await;
     assert_eq!(revoke_denied.status, StatusCode::FORBIDDEN);
 
@@ -775,7 +862,10 @@ async fn dynamic_creds_scope_boundary() {
     let cred_id2 = create2.body["cred"]["id"].as_str().unwrap().to_string();
 
     let revoke = h
-        .del(&format!("/api/v1/projects/demo/envs/prod/creds/{cred_id2}"), &writer)
+        .del(
+            &format!("/api/v1/projects/demo/envs/prod/creds/{cred_id2}"),
+            &writer,
+        )
         .await;
     assert!(revoke.ok(), "write:secret must revoke: {:?}", revoke.body);
 }
@@ -838,16 +928,24 @@ async fn policies_admin_only() {
     assert!(list.ok());
     assert_eq!(list.body.as_array().unwrap().len(), 1);
 
-    let get = h.get(&format!("/api/v1/policies/{policy_id}"), &admin).await;
+    let get = h
+        .get(&format!("/api/v1/policies/{policy_id}"), &admin)
+        .await;
     assert!(get.ok());
     assert_eq!(get.body["name"], "test-policy");
 
     let update = h
-        .patch(&format!("/api/v1/policies/{policy_id}"), &admin, json!({ "enabled": false }))
+        .patch(
+            &format!("/api/v1/policies/{policy_id}"),
+            &admin,
+            json!({ "enabled": false }),
+        )
         .await;
     assert!(update.ok());
 
-    let del = h.del(&format!("/api/v1/policies/{policy_id}"), &admin).await;
+    let del = h
+        .del(&format!("/api/v1/policies/{policy_id}"), &admin)
+        .await;
     assert!(del.ok());
 
     // Non-admin token cannot do any of the above
@@ -865,15 +963,23 @@ async fn policies_admin_only() {
     let denied = h.get("/api/v1/policies?enabled_only=true", &writer).await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 
-    let denied = h.get(&format!("/api/v1/policies/{policy_id}"), &writer).await;
-    assert_eq!(denied.status, StatusCode::FORBIDDEN);
-
     let denied = h
-        .patch(&format!("/api/v1/policies/{policy_id}"), &writer, json!({ "enabled": false }))
+        .get(&format!("/api/v1/policies/{policy_id}"), &writer)
         .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 
-    let denied = h.del(&format!("/api/v1/policies/{policy_id}"), &writer).await;
+    let denied = h
+        .patch(
+            &format!("/api/v1/policies/{policy_id}"),
+            &writer,
+            json!({ "enabled": false }),
+        )
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let denied = h
+        .del(&format!("/api/v1/policies/{policy_id}"), &writer)
+        .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 }
 
@@ -913,18 +1019,26 @@ async fn policy_bindings_admin_only() {
     // Non-admin cannot
     let writer = h.token(&admin, &["write:secret"]).await;
     let denied = h
-        .post("/api/v1/policies/bindings", &writer, json!({ "policy_id": policy_id }))
+        .post(
+            "/api/v1/policies/bindings",
+            &writer,
+            json!({ "policy_id": policy_id }),
+        )
         .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 
     let denied = h.get("/api/v1/policies/bindings", &writer).await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 
-    let denied = h.del(&format!("/api/v1/policies/bindings/{binding_id}"), &writer).await;
+    let denied = h
+        .del(&format!("/api/v1/policies/bindings/{binding_id}"), &writer)
+        .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 
     // Admin can unbind
-    let unbind = h.del(&format!("/api/v1/policies/bindings/{binding_id}"), &admin).await;
+    let unbind = h
+        .del(&format!("/api/v1/policies/bindings/{binding_id}"), &admin)
+        .await;
     assert!(unbind.ok());
 }
 
@@ -942,7 +1056,8 @@ async fn ca_keys_admin_only() {
 
     // Admin can create
     let key_pem = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg...\n-----END PRIVATE KEY-----";
-    let cert_pem = "-----BEGIN CERTIFICATE-----\nMIIBUTCCAQigAwIBAgIJ...\n-----END CERTIFICATE-----";
+    let cert_pem =
+        "-----BEGIN CERTIFICATE-----\nMIIBUTCCAQigAwIBAgIJ...\n-----END CERTIFICATE-----";
     let not_before = "2024-01-01T00:00:00Z";
     let not_after = "2025-01-01T00:00:00Z";
 
@@ -1005,7 +1120,9 @@ async fn ssh_certs_admin_only() {
     h.project(&admin).await;
 
     // Admin can list all
-    let list = h.get("/api/v1/ssh-certs?include_revoked=true", &admin).await;
+    let list = h
+        .get("/api/v1/ssh-certs?include_revoked=true", &admin)
+        .await;
     assert!(list.ok());
 
     // Admin can create for themselves
@@ -1030,12 +1147,18 @@ async fn ssh_certs_admin_only() {
             }),
         )
         .await;
-    assert!(create.ok(), "admin create ssh cert failed: {:?}", create.body);
+    assert!(
+        create.ok(),
+        "admin create ssh cert failed: {:?}",
+        create.body
+    );
     let cert_id = create.body["id"].as_str().unwrap().to_string();
 
     // Non-admin token cannot list (no scope grants ManageUsers)
     let writer = h.token(&admin, &["read:secret", "write:secret"]).await;
-    let denied = h.get("/api/v1/ssh-certs?include_revoked=true", &writer).await;
+    let denied = h
+        .get("/api/v1/ssh-certs?include_revoked=true", &writer)
+        .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 
     // Revoke
@@ -1086,20 +1209,37 @@ deny[msg] {
     assert!(bind.ok(), "admin bind failed: {:?}", bind.body);
 
     // Admin (global role) should still be allowed
-    let read = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &admin).await;
+    let read = h
+        .get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &admin)
+        .await;
     assert!(read.ok(), "admin should be allowed: {:?}", read.body);
 
     // Create a non-admin token with read:secret
     let reader = h.token(&admin, &["read:secret"]).await;
 
     // Reader should be denied by policy
-    let denied = h.get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &reader).await;
-    assert_eq!(denied.status, StatusCode::FORBIDDEN, "policy should deny: {:?}", denied.body);
+    let denied = h
+        .get("/api/v1/projects/demo/envs/prod/secrets/API_KEY", &reader)
+        .await;
+    assert_eq!(
+        denied.status,
+        StatusCode::FORBIDDEN,
+        "policy should deny: {:?}",
+        denied.body
+    );
 
     // Error message should contain the policy ID
     let error_msg = denied.body["error"]["message"].as_str().unwrap();
-    assert!(error_msg.contains(&policy_id), "error should contain policy ID: {}", error_msg);
-    assert!(error_msg.contains("denied"), "error should contain denial message: {}", error_msg);
+    assert!(
+        error_msg.contains(&policy_id),
+        "error should contain policy ID: {}",
+        error_msg
+    );
+    assert!(
+        error_msg.contains("denied"),
+        "error should contain denial message: {}",
+        error_msg
+    );
 }
 
 /// A binding scoped to one environment must not reach the others. Policies
@@ -1213,9 +1353,18 @@ async fn a_live_audit_log_verifies_intact() {
 
     let res = h.get("/api/v1/audit/verify", &admin).await;
     assert!(res.ok(), "verify failed: {:?}", res.body);
-    assert_eq!(res.body["intact"], true, "a log written by the chained logger must verify: {:?}", res.body);
-    let checked = res.body["entries_checked"].as_u64().expect("entries_checked");
-    assert!(checked >= 4, "expected the entries from registration, project, and secret writes; got {checked}");
+    assert_eq!(
+        res.body["intact"], true,
+        "a log written by the chained logger must verify: {:?}",
+        res.body
+    );
+    let checked = res.body["entries_checked"]
+        .as_u64()
+        .expect("entries_checked");
+    assert!(
+        checked >= 4,
+        "expected the entries from registration, project, and secret writes; got {checked}"
+    );
 }
 
 /// Editing a row behind the server's back must be detected, and the report
@@ -1255,10 +1404,17 @@ async fn deleting_a_row_breaks_the_chain_at_that_point() {
 
     let res = h.get("/api/v1/audit/verify", &admin).await;
     assert!(res.ok());
-    assert_eq!(res.body["intact"], false, "an edited row must break the chain: {:?}", res.body);
+    assert_eq!(
+        res.body["intact"], false,
+        "an edited row must break the chain: {:?}",
+        res.body
+    );
     assert_eq!(res.body["broken_at"], Value::String(middle));
     let reason = res.body["reason"].as_str().unwrap_or("");
-    assert!(reason.contains("edited"), "reason should say the row was edited: {reason}");
+    assert!(
+        reason.contains("edited"),
+        "reason should say the row was edited: {reason}"
+    );
 
     // The CLI reads the same shape; keep the contract exact so
     // `pandapass audit verify` can branch on `intact`.
@@ -1279,10 +1435,8 @@ async fn ssh_cert_signing_end_to_end() {
     let admin = h.admin().await;
 
     // 1. Generate an ed25519 SSH CA locally.
-    let ca_private = PrivateKey::random(&mut rand::rngs::OsRng,
-        Algorithm::Ed25519,
-    )
-    .expect("generate CA key");
+    let ca_private =
+        PrivateKey::random(&mut rand::rngs::OsRng, Algorithm::Ed25519).expect("generate CA key");
     let ca_key_pem = ca_private
         .to_openssh(ssh_key::LineEnding::LF)
         .expect("serialize CA key");
@@ -1312,10 +1466,8 @@ async fn ssh_cert_signing_end_to_end() {
     let ca_id = create.body["id"].as_str().unwrap();
 
     // 2. Generate a user keypair locally. Only the public half travels.
-    let user_private = PrivateKey::random(&mut rand::rngs::OsRng,
-        Algorithm::Ed25519,
-    )
-    .expect("generate user key");
+    let user_private =
+        PrivateKey::random(&mut rand::rngs::OsRng, Algorithm::Ed25519).expect("generate user key");
     let user_public_openssh = user_private
         .public_key()
         .to_openssh()
@@ -1340,7 +1492,9 @@ async fn ssh_cert_signing_end_to_end() {
         )
         .await;
     assert!(res.ok(), "SSH sign failed: {:?}", res.body);
-    let cert_line = res.body["cert_openssh"].as_str().expect("cert_openssh string");
+    let cert_line = res.body["cert_openssh"]
+        .as_str()
+        .expect("cert_openssh string");
     assert!(
         cert_line.starts_with("ssh-ed25519-cert-v01@openssh.com "),
         "output must be an OpenSSH certificate line"
@@ -1354,7 +1508,8 @@ async fn ssh_cert_signing_end_to_end() {
 
     // The signature verifies against the CA public key.
     let ca_fingerprint = ca_private.public_key().fingerprint(HashAlg::Sha256);
-    cert.validate(std::iter::once(&ca_fingerprint)).expect("signature verifies");
+    cert.validate(std::iter::once(&ca_fingerprint))
+        .expect("signature verifies");
 
     // 4. Scope boundary: a non-admin service token cannot sign.
     let writer = h.token(&admin, &["write:secret"]).await;

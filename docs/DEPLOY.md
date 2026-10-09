@@ -98,6 +98,27 @@ All server settings are environment variables. The ones that matter:
 | `PANDAPASS_COMMAND_ALLOWLIST` | empty | Comma-separated. Bounds what `pandapass run` can spawn. |
 | `PANDAPASS_SESSION_TTL_DAYS` | `30` | |
 | `RUST_LOG` | `info` | Request metadata only; never secret values. |
+| `PANDAPASS_DYNAMIC_PROXY_LISTEN` | unset | Bind address for the M2 PostgreSQL proxy, e.g. `127.0.0.1:5433`. Unset disables the proxy. |
+| `PANDAPASS_DYNAMIC_PROXY_UPSTREAM` | unset | Upstream PostgreSQL, e.g. `db.internal:5432`. Must be set together with LISTEN. |
+
+### Dynamic credential proxy (M2)
+
+When `PANDAPASS_DYNAMIC_PROXY_LISTEN` and `PANDAPASS_DYNAMIC_PROXY_UPSTREAM`
+are both set, the server also speaks the PostgreSQL wire protocol on the
+listen address. A client connects using a dynamic credential's username and
+password (issued through the API); the proxy checks the credential against the
+database — TTL, revocation, kind — before connecting to the upstream. Once
+authenticated, it relays bytes without inspecting them, so queries and results
+flow through unchanged.
+
+The proxy needs `PANDAPASS_SERVER_AGE_IDENTITY` to unwrap the creator's
+envelope and decrypt the stored password, so it cannot run without the server
+age identity (which the container already provides via
+`PANDAPASS_SERVER_AGE_IDENTITY_FILE`).
+
+In `docker-compose.yml`, the host port `127.0.0.1:5433` is already mapped to
+the container. Set `PANDAPASS_DYNAMIC_PROXY_UPSTREAM` in `.env` to point at
+your PostgreSQL and the proxy starts on boot.
 
 ## Backups
 
