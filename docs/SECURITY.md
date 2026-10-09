@@ -163,7 +163,10 @@ otherwise have had no CSRF check at all.
   `secret get` or `cat`-ing a value into its context. The skill tells it
   not to. A real guarantee needs a `run:secret` scope — one that permits
   injection but denies retrieval — so the credentials an agent holds cannot
-  call the plaintext path at all. That work is not done.
+  call the plaintext path at all. The `run:secret` scope exists and is
+  enforced by `POST /api/v1/internal/secret` (ciphertext delivery) and
+  `POST /api/v1/internal/exec` (still a 501 — the server-side exec path
+  is not implemented; the CLI does the equivalent locally).
 - **Root on the host wins**, as above.
 - **The age private key must be backed up.** Losing it makes that account's
   secrets unrecoverable, including by the operator.
