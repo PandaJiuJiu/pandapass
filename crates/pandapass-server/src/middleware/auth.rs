@@ -219,6 +219,22 @@ impl Auth {
             return Ok(None);
         };
 
+        // Idle timeout: a session that has been unused for longer than the
+        // configured window is expired. We do not delete it here — the
+        // periodic cleanup does that — but we refuse to authenticate with it.
+        if let Some(idle_secs) = state.config.session_idle_timeout_secs {
+            let idle = chrono::Utc::now() - session.last_seen_at;
+            if idle.num_seconds() > idle_secs {
+                return Err(ApiError::Unauthorized(
+                    "Session expired due to inactivity. Please log in again.".into(),
+                ));
+            }
+        }
+
+        // Bump last_seen_at so a long-lived session does not go stale while
+        // the user is actively working.
+        let _ = db::touch_session(&state.db, session.id).await;
+
         let user = db::get_user_by_id(&state.db, session.user_id)
             .await
             .map_err(ApiError::from)?;

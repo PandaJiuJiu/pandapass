@@ -1895,3 +1895,13 @@ pub async fn reset_login_failures(db: &Db, user_id: uuid::Uuid) -> Result<()> {
         .await?;
     Ok(())
 }
+
+/// Update a session's `last_seen_at` on activity.
+pub async fn touch_session(db: &Db, session_id: uuid::Uuid) -> Result<()> {
+    sqlx::query("UPDATE sessions SET last_seen_at = ?2 WHERE id = ?1")
+        .bind(session_id.to_string())
+        .bind(utc_now())
+        .execute(db)
+        .await?;
+    Ok(())
+}

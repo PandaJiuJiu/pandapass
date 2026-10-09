@@ -55,6 +55,10 @@ pub struct Config {
     pub public_url: String,
     pub db_url: String,
     pub session_ttl_days: i64,
+    /// Idle timeout for sessions in seconds. `None` means "no idle timeout";
+    /// only the absolute TTL applies. When set, a session that has been
+    /// unused for longer than this is refused on the next request.
+    pub session_idle_timeout_secs: Option<i64>,
     pub allowed_origins: Vec<String>,
     pub bootstrap_admin_email: Option<String>,
     /// Must be `1`/`true` for bootstrap to run even when
@@ -104,6 +108,9 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(30);
+        let session_idle_timeout_secs = std::env::var("PANDAPASS_SESSION_IDLE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok());
         let allowed_origins = std::env::var("PANDAPASS_ALLOWED_ORIGINS")
             .unwrap_or_default()
             .split(',')
@@ -182,6 +189,7 @@ impl Config {
             public_url,
             db_url,
             session_ttl_days,
+            session_idle_timeout_secs,
             allowed_origins,
             bootstrap_admin_email,
             bootstrap_enabled,

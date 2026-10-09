@@ -32,6 +32,7 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
         public_url: "http://localhost:8233".into(),
         db_url: format!("sqlite://{}?mode=rwc", db_path.display()),
         session_ttl_days: 30,
+            session_idle_timeout_secs: None,
         allowed_origins: vec![],
         bootstrap_admin_email: None,
             bootstrap_enabled: false,

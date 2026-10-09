@@ -70,6 +70,7 @@ impl Harness {
             public_url: "http://localhost:8233".into(),
             db_url: format!("sqlite://{}?mode=rwc", db_path.display()),
             session_ttl_days: 30,
+            session_idle_timeout_secs: None,
             allowed_origins: vec![],
             bootstrap_admin_email: None,
             bootstrap_enabled: false,
@@ -2397,6 +2398,7 @@ async fn harness_with_rate_limit(max: u32, window_secs: u64) -> Harness {
         public_url: "http://localhost:8233".into(),
         db_url: format!("sqlite://{}?mode=rwc", db_path.display()),
         session_ttl_days: 30,
+            session_idle_timeout_secs: None,
         allowed_origins: vec![],
         bootstrap_admin_email: None,
             bootstrap_enabled: false,
@@ -2916,5 +2918,67 @@ async fn web_client_does_not_receive_session_token() {
         res.body["session_token"].is_null(),
         "web login must not expose the session token in the body: {:?}",
         res.body
+    );
+}
+
+async fn harness_with_idle_timeout(idle_secs: i64) -> Harness {
+    let dir = std::env::temp_dir().join(format!("pandapass-idle-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db_path = dir.join("test.db");
+    let identity = AgeIdentity::generate();
+    let config = Config {
+        listen_addr: "127.0.0.1:0".into(),
+        public_url: "http://localhost:8233".into(),
+        db_url: format!("sqlite://{}?mode=rwc", db_path.display()),
+        session_ttl_days: 30,
+        session_idle_timeout_secs: Some(idle_secs),
+        allowed_origins: vec![],
+        bootstrap_admin_email: None,
+        bootstrap_enabled: false,
+        require_totp: false,
+        allow_registration: true,
+        max_concurrent_exec: 10,
+        command_timeout_secs: 120,
+        command_allowlist: vec![],
+        cookie_secure: false,
+        server_age_identity: Some(identity.as_str().to_string()),
+        auth_rate_limit_max: 100,
+        auth_rate_limit_window_secs: 60,
+        dynamic_proxy_listen: None,
+        dynamic_proxy_upstream: None,
+        trusted_proxy_cidrs: vec![],
+    };
+    let db = connect(&config.db_url).await.expect("connect");
+    migrate(&db).await.expect("migrate");
+    let chain_key = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(format!("pandapass-audit-chain:{}", identity.as_str()).as_bytes()).to_vec()
+    };
+    let audit_logger: Arc<dyn AuditLogger> =
+        Arc::new(DbAuditLogger::with_chain_key(db.clone(), chain_key.clone()));
+    let audit = AuditService::new(audit_logger);
+    let state = AppState::new(db.clone(), audit, config).with_audit_chain_key(chain_key);
+    Harness { router: build_router(state), db_path, db }
+}
+
+#[tokio::test]
+async fn idle_timeout_expires_inactive_session() {
+    let h = harness_with_idle_timeout(1).await; // 1 second idle
+    let admin = h.admin().await;
+
+    // Immediately works.
+    let me = h.get("/api/v1/auth/me", &admin).await;
+    assert_eq!(me.status, StatusCode::OK);
+
+    // Age the session by 2 seconds.
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Now refused.
+    let me2 = h.get("/api/v1/auth/me", &admin).await;
+    assert_eq!(
+        me2.status,
+        StatusCode::UNAUTHORIZED,
+        "idle session must be refused after the idle timeout: {:?}",
+        me2.body
     );
 }
