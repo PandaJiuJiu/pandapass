@@ -1,13 +1,19 @@
 # Build the server and CLI from source in a pinned toolchain, then ship only
-# the binaries on a distroless base. The runtime image carries no shell, no
+# the binaries on a minimal base. The runtime image carries no shell, no
 # compiler, and no package manager, so a compromised process has nothing to
 # escalate with.
 #
 # musl is targeted deliberately: a statically linked binary means the runtime
 # image needs no libc at all, which removes a whole class of shared-library
 # CVEs from the deployment surface.
+#
+# Multi-arch: pass --platform=linux/amd64,linux/arm64 at build time. The
+# current pin (rust 1.83) only ships linux/amd64 in the public registry; an
+# arm64 build needs a cross toolchain in the builder stage, which is
+# tracked in TODO.md (E3).
 
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/rust:1.83 AS builder
+FROM --platform=$BUILDPLATFORM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/rust:1.83 AS builder
+ARG TARGETARCH
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends musl-tools pkg-config libssl-dev \
@@ -41,8 +47,13 @@ RUN find crates -name "*.rs" -exec touch {} + \
       --bin pandapass-server --bin pandapass-cli
 
 # ── runtime ────────────────────────────────────────────────────────────────
-# `debian:bookworm-slim` replaces the original `distroless/cc-debian12:nonroot`
-# because this environment builds from a local mirror that carries debian but
+# The preferred runtime is `gcr.io/distroless/cc-debian12:nonroot` — a
+# debian userland with no shell, no apt, no package manager. A compromised
+# process has no escalation path. This Dockerfile falls back to
+# `debian:bookworm-slim` because the build environment does not carry the
+# gcr.io distroless image. Operators who can reach gcr.io should replace
+# the FROM line below; the user/permission setup is already distroless-
+# compatible. Tracked in TODO.md (E2).
 # not the gcr.io distroless image. A non-root user is created explicitly to
 # preserve the least-privilege property distroless gave us for free.
 FROM docker.io/library/debian:bookworm-slim
