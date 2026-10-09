@@ -40,6 +40,10 @@ struct Harness {
 struct Res {
     status: StatusCode,
     body: Value,
+    /// Raw body bytes. The `body` field is the JSON-parsed view; some
+    /// endpoints (e.g. /metrics) return text that is not valid JSON, so
+    /// callers reading raw text need this.
+    raw: Vec<u8>,
 }
 
 impl Res {
@@ -133,8 +137,9 @@ impl Harness {
             .expect("router should not fail");
         let status = res.status();
         let bytes = res.into_body().collect().await.expect("body").to_bytes();
+        let raw = bytes.to_vec();
         let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        Res { status, body }
+        Res { status, body, raw }
     }
 
     /// Like `send` but pretends the request arrived from `peer`. Required for
@@ -3033,4 +3038,36 @@ async fn audit_entries_include_ip_and_user_agent() {
     let create = create.expect("project_create audit entry");
     assert_eq!(create["user_agent"], "test-agent/1.0");
     assert!(!create["ip"].as_str().unwrap().is_empty(), "ip must not be empty");
+}
+
+/// The /metrics endpoint exposes Prometheus-style counters. After a
+/// successful login and a failed one, the counters advance and the
+/// exposition format is text/plain.
+#[tokio::test]
+async fn metrics_endpoint_exposes_counters() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    // One failed login to bump the counter.
+    let _ = h.send(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"email": "noone@example.com", "password": "wrong"}).to_string()))
+            .unwrap(),
+    ).await;
+
+    let r = h.send_raw(
+        Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    ).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let text = String::from_utf8_lossy(&r.raw).to_string();
+    assert!(text.contains("pandapass_auth_login_total"), "{text}");
+    assert!(text.contains("pandapass_auth_login_failures_total"), "{text}");
+    assert!(text.contains("pandapass_audit_log_size"), "{text}");
 }

@@ -102,6 +102,7 @@ pub async fn login(
             )));
         }
     }
+    state.metrics.inc_login_attempts();
 
     let user = db::get_user_by_email(&state.db, &login_req.email)
         .await?
@@ -127,6 +128,7 @@ pub async fn login(
 
     let valid = verify_password(&login_req.password, &user.password_hash)?;
     if !valid {
+        state.metrics.inc_login_failures();
         db::record_login_failure(&state.db, user.id, MAX_FAILURES, LOCKOUT_SECS).await?;
         return Err(ApiError::Unauthorized("Invalid credentials".into()));
     }

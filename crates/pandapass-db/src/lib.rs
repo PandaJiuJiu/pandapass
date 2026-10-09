@@ -1927,3 +1927,12 @@ fn row_to_session(r: &SqliteRow) -> Session {
         last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
     }
 }
+
+/// Count rows in the audit_log table. Used by the /metrics endpoint to
+/// expose the table's current size as a gauge.
+pub async fn count_audit_log(db: &Db) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(*) AS c FROM audit_log")
+        .fetch_one(db)
+        .await?;
+    Ok(row.get::<i64, _>("c"))
+}

@@ -414,3 +414,38 @@ pub async fn enable_user_admin(
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
+
+/// Prometheus-style metrics endpoint. Plain text, no dependency on the
+/// prometheus crate. Returns counters for the things a dashboard needs
+/// (request rate is approximated by the cumulative counters; the
+/// scraper is expected to compute deltas).
+pub async fn metrics(
+    State(state): State<AppState>,
+) -> Result<axum::response::Response, ApiError> {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let mut s = state.metrics.snapshot();
+    // audit_log_size is a gauge; query it at scrape time so it tracks
+    // the live table even if the snapshot was taken long ago.
+    s.audit_log_size = db::count_audit_log(&state.db).await.unwrap_or(-1);
+    writeln!(out, "# HELP pandapass_auth_login_total Total login attempts.").unwrap();
+    writeln!(out, "# TYPE pandapass_auth_login_total counter").unwrap();
+    writeln!(out, "pandapass_auth_login_total {{}} {}", s.login_attempts).unwrap();
+    writeln!(out, "# HELP pandapass_auth_login_failures_total Total failed login attempts.").unwrap();
+    writeln!(out, "# TYPE pandapass_auth_login_failures_total counter").unwrap();
+    writeln!(out, "pandapass_auth_login_failures_total {{}} {}", s.login_failures).unwrap();
+    writeln!(out, "# HELP pandapass_auth_account_lockouts Total accounts locked out.").unwrap();
+    writeln!(out, "# TYPE pandapass_auth_account_lockouts counter").unwrap();
+    writeln!(out, "pandapass_auth_account_lockouts {{}} {}", s.account_lockouts).unwrap();
+    writeln!(out, "# HELP pandapass_secret_reads_total Total secret reads.").unwrap();
+    writeln!(out, "# TYPE pandapass_secret_reads_total counter").unwrap();
+    writeln!(out, "pandapass_secret_reads_total {{}} {}", s.secret_reads).unwrap();
+    writeln!(out, "# HELP pandapass_audit_log_size Current audit log row count.").unwrap();
+    writeln!(out, "# TYPE pandapass_audit_log_size gauge").unwrap();
+    writeln!(out, "pandapass_audit_log_size {}", s.audit_log_size).unwrap();
+    Ok(axum::response::Response::builder()
+        .status(200)
+        .header("content-type", "text/plain; version=0.0.4")
+        .body(axum::body::Body::from(out))
+        .unwrap())
+}

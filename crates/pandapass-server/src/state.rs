@@ -20,6 +20,8 @@ pub struct AppState {
     /// HMAC key for the audit tamper-evidence chain. Derived from the
     /// server's age identity; empty means the chain is disabled (legacy).
     pub audit_chain_key: Arc<Vec<u8>>,
+    /// Runtime metrics surfaced at /metrics.
+    pub metrics: Arc<Metrics>,
 }
 
 impl AppState {
@@ -36,6 +38,7 @@ impl AppState {
                 config.auth_rate_limit_window_secs,
             )),
             audit_chain_key: Arc::new(Vec::new()),
+            metrics: Arc::new(Metrics::default()),
         }
     }
 
@@ -45,6 +48,21 @@ impl AppState {
     pub fn with_audit_chain_key(mut self, key: Vec<u8>) -> Self {
         self.audit_chain_key = Arc::new(key);
         self
+    }
+}
+
+impl Metrics {
+    /// Snapshot the current counter values for /metrics. audit_log_size
+    /// comes from the DB at scrape time and is not part of the atomic
+    /// counters.
+    pub fn snapshot(&self) -> MetricsSnapshot {
+        MetricsSnapshot {
+            login_attempts: self.login_attempts.load(std::sync::atomic::Ordering::Relaxed),
+            login_failures: self.login_failures.load(std::sync::atomic::Ordering::Relaxed),
+            account_lockouts: self.account_lockouts.load(std::sync::atomic::Ordering::Relaxed),
+            secret_reads: self.secret_reads.load(std::sync::atomic::Ordering::Relaxed),
+            audit_log_size: 0,
+        }
     }
 }
 
@@ -213,4 +231,62 @@ impl Config {
 pub struct StartupInfo {
     pub admin_bootstrapped: bool,
     pub user_count: i64,
+}
+
+/// Runtime metrics scraped at /metrics. Plain atomic counters; the
+/// Prometheus exposition format is rendered on the fly. A small struct
+/// keeps the cost negligible for the common case (most servers never
+/// get scraped at high QPS).
+pub struct Metrics {
+    pub login_attempts: std::sync::atomic::AtomicU64,
+    pub login_failures: std::sync::atomic::AtomicU64,
+    pub account_lockouts: std::sync::atomic::AtomicU64,
+    pub secret_reads: std::sync::atomic::AtomicU64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            login_attempts: std::sync::atomic::AtomicU64::new(0),
+            login_failures: std::sync::atomic::AtomicU64::new(0),
+            account_lockouts: std::sync::atomic::AtomicU64::new(0),
+            secret_reads: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+impl Metrics {
+    pub fn inc_login_attempts(&self) {
+        self.login_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn inc_login_failures(&self) {
+        self.login_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn inc_account_lockouts(&self) {
+        self.account_lockouts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn inc_secret_reads(&self) {
+        self.secret_reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct MetricsSnapshot {
+    pub login_attempts: u64,
+    pub login_failures: u64,
+    pub account_lockouts: u64,
+    pub secret_reads: u64,
+    pub audit_log_size: i64,
+}
+
+impl MetricsSnapshot {
+    pub fn new() -> Self {
+        Self {
+            login_attempts: 0,
+            login_failures: 0,
+            account_lockouts: 0,
+            secret_reads: 0,
+            audit_log_size: 0,
+        }
+    }
 }
