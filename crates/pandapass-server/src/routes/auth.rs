@@ -979,3 +979,97 @@ pub async fn recovery_code_redeem(
 
     Ok(Json(RecoveryCodeRedeemResponse { rotated: true }))
 }
+
+#[derive(Deserialize)]
+pub struct PasswordResetRequest {
+    pub email: String,
+    pub recovery_code: String,
+    pub new_password: String,
+}
+
+#[derive(Serialize)]
+pub struct PasswordResetResponse {
+    pub changed: bool,
+}
+
+/// Reset a password using a recovery code. No session is required: the
+/// recovery code is the proof that the caller controls the account.
+///
+/// This complements the recovery-code redemption endpoint (which
+/// rotates the MK and re-encrypts). Here the MK is left alone — only
+/// the password hash changes — because a forgotten password is
+/// independent of MK compromise.
+pub async fn password_reset(
+    State(state): State<AppState>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<PasswordResetResponse>, ApiError> {
+    let client_ip = req.extensions().get::<crate::middleware::auth::ClientIp>().map(|c| c.0);
+    if let Some(ip) = client_ip {
+        if let Err(retry_after) = state.rate_limiter.check(ip).await {
+            return Err(ApiError::TooManyRequests(format!(
+                "Too many password reset attempts. Try again in {retry_after} seconds."
+            )));
+        }
+    }
+    let (_parts, body) = req.into_parts();
+    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .map_err(|_| ApiError::BadRequest("Failed to read body".into()))?;
+    let req: PasswordResetRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|_| ApiError::BadRequest("Invalid JSON".into()))?;
+
+    if req.new_password.len() < 12 {
+        return Err(ApiError::BadRequest("Password must be at least 12 characters".into()));
+    }
+
+    let user = db::get_user_by_email(&state.db, &req.email)
+        .await?
+        .ok_or_else(|| ApiError::Unauthorized("Invalid code or email".into()))?;
+
+    // Match the recovery code.
+    let raw_hashes = user.recovery_codes_hash.clone();
+    let mut matched_idx: Option<usize> = None;
+    for (i, h) in raw_hashes.iter().enumerate() {
+        if h.is_empty() {
+            continue;
+        }
+        if pandapass_core::crypto::verify_password(&req.recovery_code, h).unwrap_or(false) {
+            matched_idx = Some(i);
+            break;
+        }
+    }
+    let Some(idx) = matched_idx else {
+        return Err(ApiError::Unauthorized("Invalid code or email".into()));
+    };
+
+    // Consume the matched code.
+    let mut new_hashes = raw_hashes;
+    new_hashes.remove(idx);
+    db::set_recovery_codes(&state.db, user.id, &new_hashes).await?;
+
+    // Update the password hash.
+    let new_hash = hash_password(&req.new_password)?;
+    sqlx::query("UPDATE users SET password_hash = ?2 WHERE id = ?1")
+        .bind(user.id.to_string())
+        .bind(new_hash)
+        .execute(&state.db)
+        .await?;
+
+    // Invalidate all sessions for safety.
+    db::delete_all_sessions(&state.db, user.id).await?;
+
+    let auth_ctx = AuthContext {
+        user: user.clone().into(),
+        session: None,
+        service_token: None,
+        project_role: None,
+        project_id: None,
+        env_id: None,
+    };
+    let mut audit = AuditContext::new(&auth_ctx, AuditAction::PasswordChange);
+    let meta = serde_json::json!({ "via": "recovery_code" });
+    audit = audit.with_meta(meta);
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(PasswordResetResponse { changed: true }))
+}

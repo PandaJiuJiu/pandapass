@@ -49,7 +49,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/health", get(tokens::health))
         .route("/api/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))
-        .route("/api/v1/auth/recovery-code/redeem", post(auth::recovery_code_redeem));
+        .route("/api/v1/auth/recovery-code/redeem", post(auth::recovery_code_redeem))
+        .route("/api/v1/auth/password/reset", post(auth::password_reset));
 
     // Protected routes (require auth)
     let protected_routes = Router::new()

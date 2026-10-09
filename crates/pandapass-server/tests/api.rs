@@ -2679,3 +2679,64 @@ async fn recovery_code_generation_and_redeem() {
     ).await;
     assert_eq!(r3.status, StatusCode::UNAUTHORIZED);
 }
+
+/// Password reset via recovery code. No session is required; the
+/// recovery code is the proof of control. The reset consumes the code
+/// and invalidates all existing sessions.
+#[tokio::test]
+async fn password_reset_via_recovery_code() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    let gen = h.send(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/recovery-codes")
+            .header("authorization", format!("Bearer {admin}"))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap(),
+    ).await;
+    let codes: Vec<String> = gen.body["codes"]
+        .as_array().unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+
+    let r = h.send(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/password/reset")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "email": "admin@example.com",
+                    "recovery_code": codes[0],
+                    "new_password": "new-secret-password-1",
+                }).to_string(),
+            ))
+            .unwrap(),
+    ).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+
+    // The old session token is now invalid.
+    let me = h.get("/api/v1/auth/me", &admin).await;
+    assert_eq!(me.status, StatusCode::UNAUTHORIZED);
+
+    // A short password is rejected.
+    let r2 = h.send(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/password/reset")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "email": "admin@example.com",
+                    "recovery_code": codes[1],
+                    "new_password": "short",
+                }).to_string(),
+            ))
+            .unwrap(),
+    ).await;
+    assert_eq!(r2.status, StatusCode::BAD_REQUEST);
+}
