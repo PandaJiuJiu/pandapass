@@ -24,6 +24,16 @@ pub struct CliConfig {
     pub default_env: Option<String>,
     /// Path to the age identity file holding this user's master-key unwrap key.
     pub age_identity_file: Option<PathBuf>,
+    /// Allowlist of programs permitted as `pandapass run`'s `command[0]`.
+    /// Empty means no restriction (the historical default); set to a
+    /// comma-separated list of absolute paths to lock `run` down.
+    #[serde(default)]
+    pub command_allowlist: Vec<String>,
+    /// Wall-clock timeout (seconds) for `pandapass run` children. A hanging
+    /// child will be killed after this many seconds. `None` falls back to
+    /// the default (120s).
+    #[serde(default)]
+    pub command_timeout_secs: Option<u64>,
 }
 
 impl Default for CliConfig {
@@ -34,6 +44,8 @@ impl Default for CliConfig {
             default_project: None,
             default_env: None,
             age_identity_file: None,
+            command_allowlist: Vec::new(),
+            command_timeout_secs: None,
         }
     }
 }

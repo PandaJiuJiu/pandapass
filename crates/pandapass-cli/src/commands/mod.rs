@@ -303,39 +303,45 @@ pub enum ConfigCmd {
     SetAgeIdentity { path: PathBuf },
     SetDefaultProject { project: Option<String> },
     SetDefaultEnv { env: Option<String> },
+    /// Set the `pandapass run` allowlist. Comma-separated absolute paths; pass
+    /// the empty string to clear it. An empty allowlist means no restriction.
+    SetCommandAllowlist { paths: String },
+    /// Set the `pandapass run` wall-clock timeout in seconds. The default is
+    /// 120s when unset.
+    SetCommandTimeout { seconds: u64 },
 }
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// Project slug
     #[arg(long)]
-    project: String,
+    pub project: String,
     /// Environment slug
     #[arg(long)]
-    env: String,
+    pub env: String,
     /// Only inject specific keys (comma-separated). A key named here must
     /// exist, or the command is not run.
     #[arg(long)]
-    only: Option<String>,
+    pub only: Option<String>,
     /// Command to run
     #[arg(trailing_var_arg = true)]
-    command: Vec<String>,
+    pub command: Vec<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct InjectArgs {
     /// Input template file
     #[arg(short, long)]
-    input: PathBuf,
+    pub input: PathBuf,
     /// Output file
     #[arg(short, long)]
-    output: PathBuf,
+    pub output: PathBuf,
     /// Project slug
     #[arg(long)]
-    project: String,
+    pub project: String,
     /// Environment slug
     #[arg(long)]
-    env: String,
+    pub env: String,
 }
 
 #[derive(Args, Debug)]
@@ -904,6 +910,18 @@ async fn run_config(config: &mut crate::client::CliConfig, cmd: ConfigCmd) -> Re
             println!("Default project: {:?}", config.default_project);
             println!("Default env: {:?}", config.default_env);
             println!("Age identity: {:?}", config.age_identity_file);
+            println!(
+                "Command allowlist: {:?}",
+                if config.command_allowlist.is_empty() {
+                    vec!["<unrestricted>".to_string()]
+                } else {
+                    config.command_allowlist.clone()
+                }
+            );
+            println!(
+                "Command timeout: {}s",
+                config.command_timeout_secs.unwrap_or(120)
+            );
         }
         ConfigCmd::SetServer { url } => {
             config.server_url = url;
@@ -920,6 +938,21 @@ async fn run_config(config: &mut crate::client::CliConfig, cmd: ConfigCmd) -> Re
         ConfigCmd::SetDefaultEnv { env } => {
             config.default_env = env;
             println!("Default env updated");
+        }
+        ConfigCmd::SetCommandAllowlist { paths } => {
+            config.command_allowlist = paths
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            println!(
+                "Command allowlist set ({} entries). Empty = no restriction.",
+                config.command_allowlist.len()
+            );
+        }
+        ConfigCmd::SetCommandTimeout { seconds } => {
+            config.command_timeout_secs = Some(seconds.max(1));
+            println!("Command timeout set to {}s", seconds.max(1));
         }
     }
     Ok(())
@@ -938,10 +971,30 @@ async fn run_config(config: &mut crate::client::CliConfig, cmd: ConfigCmd) -> Re
 ///
 /// Decryption happens server-side (the age private key never leaves the
 /// operator's machine), so a plain `pandapass login` session is enough.
-async fn run_run(api: &ApiClient, _config: &crate::client::CliConfig, args: RunArgs) -> Result<()> {
+async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunArgs) -> Result<()> {
     if args.command.is_empty() {
         anyhow::bail!("No command specified. Usage: pandapass run --project P --env E -- cmd args...");
     }
+
+    // Enforce the allowlist before doing anything else. Without this, a leaked
+    // `read:secret` token could use `pandapass run` to spawn any child process
+    // (the agent-safety story does not stop a child from being `bash -c ...`).
+    if !config.command_allowlist.is_empty() {
+        let program = &args.command[0];
+        if !config.command_allowlist.iter().any(|p| p == program) {
+            anyhow::bail!(
+                "Refusing to run `{}`: not in the command allowlist. Allowed: {:?}. \
+                 Configure `command_allowlist` in ~/.pandapass/config.json to add it.",
+                program,
+                config.command_allowlist
+            );
+        }
+    }
+
+    // Wall-clock timeout. A hanging child holds the agent's session open
+    // forever otherwise; 120s is the historical default if the user did not
+    // override it.
+    let timeout_secs = config.command_timeout_secs.unwrap_or(120).max(1);
 
     let metas = api.list_secrets(&args.project, &args.env).await?;
     let available: Vec<String> = metas.items.iter().map(|m| m.key.clone()).collect();
@@ -1006,14 +1059,28 @@ async fn run_run(api: &ApiClient, _config: &crate::client::CliConfig, args: RunA
     // directly: no `sh -c`, so nothing in a key name or value is ever parsed
     // as shell syntax.
     let program = &args.command[0];
-    let status = tokio::process::Command::new(program)
+    let mut child = tokio::process::Command::new(program)
         .args(&args.command[1..])
         .envs(envs.iter().map(|(k, v)| (k, v)))
-        .status()
-        .await
+        .spawn()
         .map_err(|e| {
             anyhow::anyhow!("failed to run `{}`: {}", program, e)
         })?;
+
+    // Bound how long a child can hold the parent. The default is 120s; the
+    // user can tighten or relax it in `~/.pandapass/config.json`.
+    let status = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        child.wait(),
+    ).await {
+        Ok(result) => result.map_err(|e| anyhow::anyhow!("waiting for `{}` failed: {}", program, e))?,
+        Err(_) => {
+            // Best-effort: send SIGKILL, then reap.
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            anyhow::bail!("`{}` exceeded the {}s command timeout and was killed", program, timeout_secs);
+        }
+    };
 
     // Drop the values before doing anything else that could log or panic.
     for (_, v) in &mut envs {

@@ -83,6 +83,8 @@ async fn make_cli(base_url: &str, token: &str, age_identity_path: &PathBuf) -> (
         default_project: None,
         default_env: None,
         age_identity_file: Some(age_identity_path.clone()),
+        command_allowlist: vec![],
+        command_timeout_secs: None,
     };
     (api, config)
 }
@@ -276,4 +278,68 @@ async fn gitops_pull_requires_age_identity() {
     .await;
 
     assert!(result.is_err(), "pull without age identity must fail");
+}
+/// `pandapass run` must refuse to spawn a child when the program name is not
+/// in the configured allowlist. Without this guard, a `read:secret` token
+/// could chain into arbitrary command execution via the CLI.
+#[tokio::test]
+async fn run_refuses_command_not_in_allowlist() {
+    use pandapass_cli::commands::{Command, RunArgs};
+
+    let (base_url, _handle) = start_server().await;
+    let (api, mut config) = make_cli(&base_url, "no-such-token", &PathBuf::from("/nonexistent/age.key")).await;
+    // The auth token won't reach the server in this test, but allowlist
+    // checking happens before any HTTP call, so we never need it to.
+    config.command_allowlist = vec!["/usr/bin/true".to_string()];
+
+    let res = run_command(
+        &api,
+        &mut config,
+        Command::Run(RunArgs {
+            project: "anything".into(),
+            env: "any".into(),
+            only: None,
+            command: vec!["/bin/sh".to_string(), "-c".to_string(), "echo".to_string()],
+        }),
+    )
+    .await;
+
+    let err = res.expect_err("allowlist must reject /bin/sh");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("allowlist"),
+        "error should mention the allowlist, got: {msg}"
+    );
+}
+
+/// Empty allowlist means no restriction. The historical behaviour: the
+/// operator chose what to run.
+#[tokio::test]
+async fn run_with_empty_allowlist_does_not_block() {
+    use pandapass_cli::commands::{Command, RunArgs};
+
+    let (base_url, _handle) = start_server().await;
+    let (api, mut config) = make_cli(&base_url, "no-such-token", &PathBuf::from("/nonexistent/age.key")).await;
+    config.command_allowlist = vec![];
+
+    let res = run_command(
+        &api,
+        &mut config,
+        Command::Run(RunArgs {
+            project: "no-such-project".into(), // bails before spawn
+            env: "no".into(),
+            only: None,
+            command: vec!["/bin/echo".to_string(), "hi".to_string()],
+        }),
+    )
+    .await;
+
+    // With an empty allowlist the request must pass the allowlist gate and
+    // then fail downstream (auth, project not found, …). The point of the test
+    // is that it does *not* fail with "not in the command allowlist".
+    let msg = format!("{res:?}");
+    assert!(
+        !msg.contains("not in the command allowlist"),
+        "empty allowlist should not block, got: {msg}"
+    );
 }
