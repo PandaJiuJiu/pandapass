@@ -98,7 +98,8 @@ impl ApiClient {
 
         let mut req = self.client
             .request(method, &url)
-            .header(CONTENT_TYPE, "application/json");
+            .header(CONTENT_TYPE, "application/json")
+            .header("x-pandapass-agent", "cli");
 
         if let Some(t) = token {
             req = req.header(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {t}"))?);

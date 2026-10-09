@@ -72,7 +72,7 @@ pub struct LoginRequest {
 #[derive(Serialize)]
 pub struct LoginResponse {
     pub user: UserPublic,
-    pub session_token: String,
+    pub session_token: Option<String>,
     pub requires_totp: bool,
     /// Whether this account has a sealed master-key envelope. False means the
     /// user must enrol an age key before they can store or read secrets.
@@ -191,7 +191,7 @@ pub async fn login(
         jar,
         Json(LoginResponse {
             user: user.into(),
-            session_token,
+            session_token: is_cli_request(&parts.headers).then_some(session_token),
             requires_totp: false,
             key_enrolled,
         }),
@@ -340,7 +340,7 @@ pub async fn register(
         jar,
         Json(LoginResponse {
             user: user.into(),
-            session_token,
+            session_token: is_cli_request(&_parts.headers).then_some(session_token),
             requires_totp: false,
             key_enrolled: enrolled,
         }),
@@ -1127,4 +1127,18 @@ pub async fn password_reset(
     state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(PasswordResetResponse { changed: true }))
+}
+
+/// True when the request carries the `x-pandapass-agent: cli` header that
+/// the PandaPass CLI sets. The CLI needs the session token in the JSON
+/// response body to store it locally; the browser never should, because
+/// an XSS that can read the body then gets a usable session token that
+/// HttpOnly was supposed to protect. Web sessions rely on the cookie and
+/// receive no token.
+fn is_cli_request(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get("x-pandapass-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("cli"))
+        .unwrap_or(false)
 }

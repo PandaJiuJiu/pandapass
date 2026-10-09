@@ -112,7 +112,18 @@ impl Harness {
         }
     }
 
-    async fn send(&self, req: Request<Body>) -> Res {
+    async fn send(&self, mut req: Request<Body>) -> Res {
+        // All integration tests behave like the CLI: they need the session
+        // token in the response body. The web client never sends this
+        // header and therefore gets no token back — there is a dedicated
+        // test for that below (web_client_does_not_receive_session_token).
+        req.headers_mut()
+            .insert("x-pandapass-agent", "cli".parse().unwrap());
+        self.send_raw(req).await
+    }
+
+    /// Send a request with NO added headers (a pure web client).
+    async fn send_raw(&self, req: Request<Body>) -> Res {
         let res = self
             .router
             .clone()
@@ -2880,4 +2891,30 @@ async fn totp_setup_works_without_enrolled_key() {
     let setup = h.get("/api/v1/auth/totp/setup", &token).await;
     assert_eq!(setup.status, StatusCode::OK, "{:?}", setup.body);
     assert!(setup.body["secret"].as_str().unwrap().len() > 0);
+}
+
+/// The web client sends no `x-pandapass-agent` header. Its login response
+/// must NOT contain a session token in the body — the token only lives in
+/// the HttpOnly cookie. This is what keeps an XSS from reading a usable
+/// session credential out of a fetch response.
+#[tokio::test]
+async fn web_client_does_not_receive_session_token() {
+    let h = Harness::start().await;
+    let res = h.send_raw(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/register")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({
+                "email": "web@example.com",
+                "password": "web-password-123",
+            }).to_string()))
+            .unwrap(),
+    ).await;
+    assert_eq!(res.status, StatusCode::OK);
+    assert!(
+        res.body["session_token"].is_null(),
+        "web login must not expose the session token in the body: {:?}",
+        res.body
+    );
 }
