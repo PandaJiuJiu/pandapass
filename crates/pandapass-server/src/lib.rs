@@ -122,6 +122,7 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(axum::middleware::from_fn_with_state(state.clone(), internal_auth_middleware))
         )
         .layer(axum::middleware::from_fn_with_state(state.clone(), client_ip_middleware))
+        .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
@@ -155,6 +156,27 @@ async fn client_ip_middleware(
         req.extensions_mut().insert(crate::middleware::auth::ClientIp(ip));
     }
     Ok(next.run(req).await)
+}
+
+/// Per-request id middleware. Echoes the incoming `x-request-id` header
+/// (when present) or generates a fresh one; the id is set on the response
+/// header and stashed in the request extensions so handlers can read it.
+async fn request_id_middleware(
+    mut req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::http::Response<axum::body::Body> {
+    let id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| pandapass_core::crypto::generate_token(16));
+    req.extensions_mut().insert(id.clone());
+    let mut resp = next.run(req).await;
+    if let Ok(v) = axum::http::HeaderValue::from_str(&id) {
+        resp.headers_mut().insert("x-request-id", v);
+    }
+    resp
 }
 
 /// Auth middleware for regular routes
@@ -237,6 +259,7 @@ async fn internal_auth_middleware(
         env_id: svc_env_id,
         client_ip: None,
         user_agent: None,
+            request_id: None,
     });
 
     req.extensions_mut().insert(auth);

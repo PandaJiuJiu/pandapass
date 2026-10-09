@@ -120,6 +120,10 @@ pub struct AuditContext<'a> {
     pub secret_key: Option<String>,
     pub ip: Option<String>,
     pub user_agent: Option<String>,
+    /// Per-request id, copied from the AuthContext if the request-id
+    /// middleware set one. Allows log correlation across audit /
+    /// structured logs / client-side traces.
+    pub request_id: Option<String>,
     pub outcome: crate::models::AuditOutcome,
     pub meta: Option<serde_json::Value>,
 }
@@ -137,6 +141,9 @@ impl<'a> AuditContext<'a> {
             secret_key: None,
             ip: auth.client_ip.clone(),
             user_agent: auth.user_agent.clone(),
+            // Pre-seed request_id so handlers do not have to remember to
+            // call `with_request_id` for the common case.
+            request_id: auth.request_id.clone(),
             outcome: crate::models::AuditOutcome::Success,
             meta: None,
         }
@@ -174,6 +181,11 @@ impl<'a> AuditContext<'a> {
 
     pub fn with_meta(mut self, meta: serde_json::Value) -> Self {
         self.meta = Some(meta);
+        self
+    }
+
+    pub fn with_request_id(mut self, id: String) -> Self {
+        self.request_id = Some(id);
         self
     }
 
@@ -225,6 +237,7 @@ mod tests {
             env_id: None,
             client_ip: None,
             user_agent: None,
+            request_id: None,
         }
     }
 

@@ -208,6 +208,7 @@ impl Auth {
             env_id: None,
             client_ip: None,
             user_agent: None,
+            request_id: None,
         }))
     }
 
@@ -253,6 +254,7 @@ impl Auth {
             env_id: None,
             client_ip: None,
             user_agent: None,
+            request_id: None,
         }))
     }
 }
@@ -280,6 +282,10 @@ where
             .get(http::header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
+        ctx.request_id = parts
+            .extensions
+            .get::<String>()
+            .cloned();
         Ok(Auth(ctx))
     }
 }

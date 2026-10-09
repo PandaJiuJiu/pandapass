@@ -183,6 +183,7 @@ pub async fn login(
         env_id: None,
             client_ip: None,
             user_agent: None,
+            request_id: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::Login);
     let (ip, ua) = client_ip_and_ua(&parts.headers);
@@ -336,6 +337,7 @@ pub async fn register(
         env_id: None,
             client_ip: None,
             user_agent: None,
+            request_id: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::Register);
     let (ip, ua) = client_ip_and_ua(&_parts.headers);
@@ -1037,6 +1039,7 @@ pub async fn recovery_code_redeem(
         env_id: None,
             client_ip: None,
             user_agent: None,
+            request_id: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::Register);
     let meta = serde_json::json!({ "recovery_code_redeemed": true });
@@ -1132,6 +1135,7 @@ pub async fn password_reset(
         env_id: None,
             client_ip: None,
             user_agent: None,
+            request_id: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::PasswordChange);
     let meta = serde_json::json!({ "via": "recovery_code" });

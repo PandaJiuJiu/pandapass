@@ -476,6 +476,10 @@ pub struct AuthContext {
     /// through the request.
     pub client_ip: Option<String>,
     pub user_agent: Option<String>,
+    /// Per-request id, generated or echoed by the request-id middleware.
+    /// Surfaced in the response header and copied into every audit entry
+    /// written by this request so the operator can correlate logs.
+    pub request_id: Option<String>,
 }
 
 impl AuthContext {

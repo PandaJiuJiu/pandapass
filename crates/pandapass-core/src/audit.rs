@@ -52,6 +52,24 @@ impl AuditService {
 
     /// Log an audit event from context
     pub async fn log(&self, ctx: &AuditContext<'_>) -> Result<()> {
+        // Fold the request id into the meta blob when one is set, so
+        // a downstream log shipper that only reads `meta` still has
+        // the correlation handle. We can't move out of `ctx.meta` here
+        // because the parameter is `&`, so clone and combine.
+        let meta = if let Some(rid) = ctx.request_id.as_ref() {
+            match ctx.meta.as_ref() {
+                Some(m) => {
+                    let mut combined = m.clone();
+                    if let Some(obj) = combined.as_object_mut() {
+                        obj.insert("request_id".to_string(), serde_json::Value::String(rid.clone()));
+                    }
+                    Some(combined)
+                }
+                None => Some(serde_json::json!({ "request_id": rid })),
+            }
+        } else {
+            ctx.meta.clone()
+        };
         let entry = AuditLog {
             id: Uuid::now_v7(),
             ts: Utc::now(),
@@ -63,7 +81,7 @@ impl AuditService {
             ip: ctx.ip.clone(),
             user_agent: ctx.user_agent.clone(),
             outcome: ctx.outcome,
-            meta: ctx.meta.clone(),
+            meta,
             prev_hash: String::new(),
             entry_hash: String::new(),
         };
@@ -221,6 +239,7 @@ mod tests {
             env_id: None,
             client_ip: None,
             user_agent: None,
+            request_id: None,
         }
     }
 
