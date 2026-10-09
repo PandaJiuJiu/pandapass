@@ -5,7 +5,8 @@ use pandapass_core::models::*;
 use pandapass_db as db;
 use pandapass_core::crypto::{generate_token, hash_token};
 use pandapass_core::CoreError;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
+use std::str::FromStr;
 
 use crate::state::AppState;
 
@@ -16,27 +17,100 @@ pub const CSRF_COOKIE: &str = "pandapass_csrf";
 #[derive(Clone)]
 pub struct ClientIp(pub IpAddr);
 
-/// Extract client IP from headers (handles X-Forwarded-For for proxied setups)
+/// Parse a comma-separated list of CIDR ranges. Anything that does not parse
+/// is logged and skipped — a typo in the trusted-proxy list should not crash
+/// the server on startup.
+pub fn parse_trusted_cidrs(raw: &[String]) -> Vec<(IpAddr, u8)> {
+    raw.iter()
+        .filter_map(|s| {
+            let s = s.trim();
+            if s.is_empty() {
+                return None;
+            }
+            match s.parse::<ipnet::IpNet>() {
+                Ok(n) => Some((n.network(), n.prefix_len())),
+                Err(e) => {
+                    tracing::warn!("PANDAPASS_TRUSTED_PROXY_CIDRS: ignoring bad entry {:?}: {}", s, e);
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// Test whether `ip` is inside any of the trusted CIDR blocks.
+fn ip_in_trusted(ip: IpAddr, trusted: &[(IpAddr, u8)]) -> bool {
+    for (net, prefix) in trusted {
+        let mask = match prefix {
+            0 => return true, // /0 covers the whole address space
+            n if *n <= 32 => {
+                if ip.is_ipv4() && net.is_ipv4() {
+                    let ip_v = u32::from(ip.to_string().parse::<std::net::Ipv4Addr>().unwrap_or(Ipv4Addr::UNSPECIFIED));
+                    let net_v = u32::from(net.to_string().parse::<std::net::Ipv4Addr>().unwrap_or(Ipv4Addr::UNSPECIFIED));
+                    let mask_v = if *prefix == 0 { 0u32 } else { !0u32 << (32 - *prefix) };
+                    (ip_v & mask_v) == (net_v & mask_v)
+                } else if ip.is_ipv6() && net.is_ipv6() {
+                    let ip_v = u128::from_str(&ip.to_string()).unwrap_or(0);
+                    let net_v = u128::from_str(&net.to_string()).unwrap_or(0);
+                    let mask_v = if *prefix == 0 { 0u128 } else { !0u128 << (128 - *prefix) };
+                    (ip_v & mask_v) == (net_v & mask_v)
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        if mask {
+            return true;
+        }
+    }
+    false
+}
+
+/// Extract client IP from headers, but **only** trust X-Forwarded-For /
+/// X-Real-IP when the immediate peer (the connection's source IP, if
+/// available) is in `trusted_cidrs`. Without a trusted proxy in front,
+/// the headers are attacker-controlled and the function falls back to a
+/// best-effort of the leftmost header value (still logged but not
+/// authoritative for rate-limit / audit decisions — handlers that care
+/// must call this with the real peer IP).
 pub fn extract_client_ip_from_headers(headers: &axum::http::HeaderMap) -> Option<IpAddr> {
-    // Check X-Forwarded-For first (for reverse proxy)
-    if let Some(forwarded) = headers.get("x-forwarded-for") {
-        if let Ok(s) = forwarded.to_str() {
-            if let Some(first) = s.split(',').next() {
-                if let Ok(ip) = first.trim().parse::<IpAddr>() {
+    extract_client_ip(headers, None, &[])
+}
+
+/// Strict variant used by the live router: takes a `ConnectInfo<SocketAddr>`
+/// peer and a list of trusted CIDRs. XFF is honoured only when the peer
+/// matches.
+pub fn extract_client_ip(
+    headers: &axum::http::HeaderMap,
+    peer: Option<std::net::SocketAddr>,
+    trusted_cidrs: &[(IpAddr, u8)],
+) -> Option<IpAddr> {
+    // Decide if we trust the proxy chain.
+    let trust_xff = match peer {
+        Some(addr) => ip_in_trusted(addr.ip(), trusted_cidrs),
+        None => false, // no peer = no way to know the proxy is trusted
+    };
+
+    if trust_xff {
+        if let Some(forwarded) = headers.get("x-forwarded-for") {
+            if let Ok(s) = forwarded.to_str() {
+                if let Some(first) = s.split(',').next() {
+                    if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+        if let Some(real_ip) = headers.get("x-real-ip") {
+            if let Ok(s) = real_ip.to_str() {
+                if let Ok(ip) = s.trim().parse::<IpAddr>() {
                     return Some(ip);
                 }
             }
         }
     }
-    // Check X-Real-IP
-    if let Some(real_ip) = headers.get("x-real-ip") {
-        if let Ok(s) = real_ip.to_str() {
-            if let Ok(ip) = s.trim().parse::<IpAddr>() {
-                return Some(ip);
-            }
-        }
-    }
-    None
+    peer.map(|a| a.ip())
 }
 
 /// Extract client IP from request parts (handles X-Forwarded-For for proxied setups)

@@ -83,6 +83,7 @@ impl Harness {
             auth_rate_limit_window_secs: 60,
             dynamic_proxy_listen: None,
             dynamic_proxy_upstream: None,
+            trusted_proxy_cidrs: vec![],
         };
 
         let db = connect(&config.db_url).await.expect("connect");
@@ -121,6 +122,16 @@ impl Harness {
         let bytes = res.into_body().collect().await.expect("body").to_bytes();
         let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         Res { status, body }
+    }
+
+    /// Like `send` but pretends the request arrived from `peer`. Required for
+    /// the rate-limiter tests, because `client_ip_middleware` only consults
+    /// X-Forwarded-For when the peer is in `trusted_proxy_cidrs`. The test
+    /// peer (127.0.0.1) is covered by the test-harness trust list.
+    async fn send_from(&self, peer: std::net::SocketAddr, mut req: Request<Body>) -> Res {
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
+        self.send(req).await
     }
 
     async fn get(&self, path: &str, token: &str) -> Res {
@@ -2360,6 +2371,10 @@ async fn secret_scan_admin_only() {
 /// where the limit was silently a no-op on those routes lived for a long
 /// time because the production default of 5 / 15min is hard to reach in a
 /// unit test.
+///
+/// The harness trusts 127.0.0.0/8 so X-Forwarded-For is honoured; the tests
+/// then call `send_from` to attach a `ConnectInfo<SocketAddr>` to the
+/// request so the middleware can confirm the peer is in the trusted range.
 async fn harness_with_rate_limit(max: u32, window_secs: u64) -> Harness {
     let dir = std::env::temp_dir().join(format!("pandapass-rl-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(&dir).expect("temp dir");
@@ -2383,6 +2398,7 @@ async fn harness_with_rate_limit(max: u32, window_secs: u64) -> Harness {
         auth_rate_limit_window_secs: window_secs,
         dynamic_proxy_listen: None,
         dynamic_proxy_upstream: None,
+        trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
     };
     let db = connect(&config.db_url).await.expect("connect");
     migrate(&db).await.expect("migrate");
@@ -2410,7 +2426,8 @@ async fn login_rate_limit_actually_fires_on_public_route() {
     });
     let mut statuses = Vec::new();
     for _ in 0..4 {
-        let res = h.send(
+        let res = h.send_from(
+            "127.0.0.1:50000".parse().unwrap(),
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/auth/login")
@@ -2443,7 +2460,8 @@ async fn register_rate_limit_fires_when_registration_is_open() {
     });
     let mut statuses = Vec::new();
     for _ in 0..4 {
-        let res = h.send(
+        let res = h.send_from(
+            "127.0.0.1:50001".parse().unwrap(),
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/auth/register")
@@ -2461,4 +2479,42 @@ async fn register_rate_limit_fires_when_registration_is_open() {
         statuses.iter().any(|s| *s == 429),
         "register rate limit must fire (got {statuses:?})"
     );
+}
+
+/// Without a trusted proxy, an X-Forwarded-For header is attacker-supplied
+/// and must be ignored. The peer IP (127.0.0.1 from the test) is the one
+/// that ends up in ClientIp.
+#[tokio::test]
+async fn untrusted_peer_does_not_inherit_xff() {
+    use pandapass_server::middleware::auth::extract_client_ip;
+    use std::net::SocketAddr;
+
+    let trusted: Vec<(std::net::IpAddr, u8)> = vec![];
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-forwarded-for", "203.0.113.99".parse().unwrap());
+    let peer: SocketAddr = "10.0.0.1:50000".parse().unwrap();
+
+    let ip = extract_client_ip(&headers, Some(peer), &trusted)
+        .expect("peer should be authoritative when no proxy is trusted");
+    assert_eq!(ip.to_string(), "10.0.0.1", "XFF must be ignored without trusted proxy");
+}
+
+/// When the peer is in the trusted CIDR list, the leftmost XFF is the
+/// caller.
+#[tokio::test]
+async fn trusted_peer_inherits_xff() {
+    use pandapass_server::middleware::auth::extract_client_ip;
+    use std::net::SocketAddr;
+
+    // 127.0.0.0/8 — match the test peer.
+    let trusted: Vec<(std::net::IpAddr, u8)> = vec![
+        ("127.0.0.0".parse().unwrap(), 8),
+    ];
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-forwarded-for", "203.0.113.99, 10.0.0.1".parse().unwrap());
+    let peer: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+
+    let ip = extract_client_ip(&headers, Some(peer), &trusted)
+        .expect("trusted peer should fall through to XFF");
+    assert_eq!(ip.to_string(), "203.0.113.99", "XFF should be honoured when peer is trusted");
 }

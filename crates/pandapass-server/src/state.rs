@@ -77,6 +77,11 @@ pub struct Config {
     pub dynamic_proxy_listen: Option<String>,
     /// Upstream PostgreSQL address the dynamic-credential proxy forwards to.
     pub dynamic_proxy_upstream: Option<String>,
+    /// Comma-separated CIDR ranges of trusted reverse proxies. X-Forwarded-For
+    /// and X-Real-IP are only honoured when the immediate peer is in this list.
+    /// Empty (the default) means XFF is ignored and only the socket peer is
+    /// trusted — which is what you want in a deployment without a proxy.
+    pub trusted_proxy_cidrs: Vec<String>,
 }
 
 impl Config {
@@ -154,6 +159,13 @@ impl Config {
             .ok()
             .filter(|s| !s.trim().is_empty());
 
+        let trusted_proxy_cidrs = std::env::var("PANDAPASS_TRUSTED_PROXY_CIDRS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         Self {
             listen_addr,
             public_url,
@@ -172,6 +184,7 @@ impl Config {
             auth_rate_limit_window_secs,
             dynamic_proxy_listen,
             dynamic_proxy_upstream,
+            trusted_proxy_cidrs,
         }
     }
 }

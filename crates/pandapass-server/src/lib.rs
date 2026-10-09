@@ -121,12 +121,24 @@ pub fn build_router(state: AppState) -> Router {
 /// **every** route (public included) so that the per-IP rate limiter on
 /// `/auth/login` and `/auth/register` actually sees an IP — without this
 /// the rate limiter silently no-ops for the credential-exchange endpoints.
+///
+/// The peer IP comes from `ConnectInfo<SocketAddr>` (axum provides it when
+/// `serve` is configured with `into_make_service_with_connect_info::<SocketAddr>()`).
+/// When the peer is in `PANDAPASS_TRUSTED_PROXY_CIDRS`, the leftmost
+/// X-Forwarded-For is honoured; otherwise the headers are ignored.
 async fn client_ip_middleware(
+    State(state): State<AppState>,
     mut req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Result<axum::http::Response<axum::body::Body>, ApiError> {
-    let headers = req.headers().clone();
-    if let Some(ip) = crate::middleware::auth::extract_client_ip_from_headers(&headers) {
+    let peer: Option<std::net::SocketAddr> = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0);
+    let trusted = crate::middleware::auth::parse_trusted_cidrs(
+        &state.config.trusted_proxy_cidrs,
+    );
+    if let Some(ip) = crate::middleware::auth::extract_client_ip(req.headers(), peer, &trusted) {
         req.extensions_mut().insert(crate::middleware::auth::ClientIp(ip));
     }
     Ok(next.run(req).await)

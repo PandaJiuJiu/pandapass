@@ -45,6 +45,7 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
         auth_rate_limit_window_secs: 60,
         dynamic_proxy_listen: None,
         dynamic_proxy_upstream: None,
+        trusted_proxy_cidrs: vec![],
     };
 
     let db = connect(&config.db_url).await.expect("connect");
