@@ -379,14 +379,20 @@ pub async fn logout(
 pub async fn logout_all(
     Auth(auth): Auth,
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+    jar: CookieJar,
+) -> Result<(CookieJar, Json<serde_json::Value>), ApiError> {
     db::delete_all_sessions(&state.db, auth.user.id).await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::Logout)
         .with_meta(serde_json::json!({ "all_devices": true }));
     state.audit.log_success(&mut audit).await.ok();
 
-    Ok(Json(serde_json::json!({ "success": true })))
+    // The server-side session row is gone, but the browser still holds
+    // the cookie. Return a cleared-cookie jar so the response drops it.
+    let jar = jar
+        .remove(Cookie::build(SESSION_COOKIE).path("/").build())
+        .remove(Cookie::build(CSRF_COOKIE).path("/").build());
+    Ok((jar, Json(serde_json::json!({ "success": true }))))
 }
 
 #[derive(Serialize)]
