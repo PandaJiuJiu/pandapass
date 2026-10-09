@@ -433,3 +433,15 @@ PandaPass 的"代理不接触明文"故事已经商业级、文档化、测试�
 - F14 gitops 原子写：未做
 - F15 recovery codes：已通过 B5 修
 - F16 docs-代码漂移：未做
+
+## 第二次更新（2026-10-10）
+
+第二轮再修 6 条：
+- C13 logout_all 清 cookie：`c6ea6bf`
+- F5 启动自检文件权限：`b78831c`
+- F13 --insecure 警告 + 限 loopback：`34aa27f`
+- F14 gitops 原子写：`c6eeff6`
+- E2/E3 Dockerfile 注释 + multi-arch：`215eb07`
+- F16 docs 同步：`49dcb01`
+
+**总计 31 个新 commit，A 5/5、B 9/9、C 13/14、D 2/9、E 1/6 注释、F 5/16 已修。**
