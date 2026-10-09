@@ -1,6 +1,6 @@
 use crate::error::{CoreError, Result};
 use age::secrecy::{ExposeSecret, SecretString, SecretBox};
-use age::{Encryptor, Decryptor, x25519};
+use age::{Encryptor, x25519};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use chacha20poly1305::aead::{Aead, KeyInit, OsRng};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
@@ -128,6 +128,77 @@ pub struct SealOptions {
     pub server: Option<AgePublicKey>,
 }
 
+/// Trait for the server-side envelope unwrap backend.
+///
+/// The historical implementation reads a plaintext age identity from a file
+/// on disk (`PANDAPASS_SERVER_AGE_IDENTITY_FILE`). That puts the key in the
+/// same blast radius as the database — a host compromise is a full
+/// compromise. The [`EnvelopeBackend`] seam lets a deployment swap in a
+/// remote-attested implementation (AWS KMS, GCP KMS, HashiCorp Vault
+/// Transit, PKCS#11 / HSM) without touching the rest of the codebase.
+///
+/// `unwrap_envelope` returns the 32-byte master key the envelope is
+/// sealed to. Backends must be safe to call concurrently from many
+/// request handlers.
+pub trait EnvelopeBackend: Send + Sync {
+    /// Unwrap the envelope ciphertext and return the master key plaintext.
+    fn unwrap_envelope<'a>(
+        &'a self,
+        envelope_ciphertext: &'a str,
+    ) -> Result<Vec<u8>>;
+}
+
+/// File-based envelope backend: parses the bech32 age identity at
+/// construction time and unwraps envelopes in-memory. The identity never
+/// leaves the process, but it sits next to the database on disk — see
+/// [`EnvelopeBackend`] for the rationale.
+pub struct FileAgeBackend {
+    identity: x25519::Identity,
+}
+
+impl FileAgeBackend {
+    /// Parse the bech32 `AGE-SECRET-KEY-1...` form. Returns an error if
+    /// the input is empty or malformed.
+    pub fn new(identity_str: &str) -> Result<Self> {
+        let trimmed = identity_str.trim();
+        if trimmed.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "server age identity is empty".into(),
+            ));
+        }
+        let identity: x25519::Identity = trimmed
+            .parse()
+            .map_err(|e| CoreError::InvalidInput(format!("Invalid age identity: {e}")))?;
+        Ok(Self { identity })
+    }
+}
+
+impl EnvelopeBackend for FileAgeBackend {
+    fn unwrap_envelope<'a>(
+        &'a self,
+        envelope_ciphertext: &'a str,
+    ) -> Result<Vec<u8>> {
+        let encrypted = general_purpose::STANDARD.decode(envelope_ciphertext)?;
+        let decryptor = age::Decryptor::new_buffered(std::io::Cursor::new(&encrypted))
+            .map_err(|e| CoreError::Internal(format!("Decryptor error: {e}")))?;
+
+        let mut decrypted = vec![];
+        use std::io::Read;
+        decryptor
+            .decrypt(std::iter::once(&self.identity as &dyn age::Identity))
+            .map_err(|e| CoreError::Internal(format!("Decrypt error: {e}")))?
+            .read_to_end(&mut decrypted)
+            .map_err(|e| CoreError::Internal(format!("Read error: {e}")))?;
+
+        if decrypted.len() != 32 {
+            return Err(CoreError::InvalidInput(
+                "Decrypted master key has invalid length".into(),
+            ));
+        }
+        Ok(decrypted)
+    }
+}
+
 impl Envelope {
     /// Create a new envelope for a user, addressed to `recipient` and — when
     /// `opts.server` is set — to the server as well.
@@ -164,25 +235,24 @@ impl Envelope {
         })
     }
 
-    /// Decrypt the envelope using an age identity string (bech32 `AGE-SECRET-KEY-...`)
-    pub fn decrypt(&self, age_identity_str: &str) -> Result<MasterKey> {
-        let encrypted = general_purpose::STANDARD.decode(&self.ciphertext)?;
-        let decryptor = Decryptor::new_buffered(std::io::Cursor::new(&encrypted))
-            .map_err(|e| CoreError::Internal(format!("Decryptor error: {}", e)))?;
-
-        let age_identity: x25519::Identity = age_identity_str.parse()
-            .map_err(|e| CoreError::Internal(format!("Identity parse error: {}", e)))?;
-
-        let mut decrypted = vec![];
-        use std::io::Read;
-        decryptor.decrypt(std::iter::once(&age_identity as &dyn age::Identity))
-            .map_err(|e| CoreError::Internal(format!("Decrypt error: {}", e)))?
-            .read_to_end(&mut decrypted)
-            .map_err(|e| CoreError::Internal(format!("Read error: {}", e)))?;
-        if decrypted.len() != 32 {
-            return Err(CoreError::InvalidInput("Decrypted master key has invalid length".into()));
-        }
+    /// Decrypt the envelope using an [`EnvelopeBackend`]. The same backend
+    /// is used by the server to unwrap every envelope, regardless of the
+    /// underlying key material (file on disk today, KMS or HSM in a
+    /// future deployment).
+    pub fn decrypt_with_backend(&self, backend: &dyn EnvelopeBackend) -> Result<MasterKey> {
+        let decrypted = backend.unwrap_envelope(&self.ciphertext)?;
         Ok(MasterKey::from_bytes(decrypted))
+    }
+
+    /// Decrypt the envelope using an age identity string (bech32 `AGE-SECRET-KEY-...`).
+    ///
+    /// This is a thin convenience over `decrypt_with_backend` for callers
+    /// that already hold an age identity. The server-side code path uses
+    /// the backend version so it can be swapped for a KMS without
+    /// touching the rest of the codebase.
+    pub fn decrypt(&self, age_identity_str: &str) -> Result<MasterKey> {
+        let backend = FileAgeBackend::new(age_identity_str)?;
+        self.decrypt_with_backend(&backend)
     }
 }
 
@@ -572,5 +642,75 @@ mod tests {
         let code = totp.generate_current();
         assert!(verify_totp(&secret, &code.to_string()));
         assert!(!verify_totp(&secret, "000000"));
+    }
+}
+
+#[cfg(test)]
+mod envelope_backend_tests {
+    use super::*;
+
+    /// `decrypt_with_backend` and the convenience `decrypt` must produce the
+    /// same master key bytes for the same ciphertext. The seam is the
+    /// abstraction KMS implementations plug into; if the two paths diverge
+    /// every existing envelope would need a re-seal.
+    #[test]
+    fn backend_and_convenience_decrypt_agree() {
+        let member = AgeIdentity::generate();
+        let server = AgeIdentity::generate();
+        let mk = MasterKey::generate();
+        let env = Envelope::create(
+            uuid::Uuid::now_v7(),
+            &mk,
+            &member.public_key().unwrap(),
+            &SealOptions { server: Some(server.public_key().unwrap()) },
+        )
+        .unwrap();
+
+        let backend = FileAgeBackend::new(server.as_str()).unwrap();
+        let via_backend = env.decrypt_with_backend(&backend).unwrap();
+        let via_convenience = env.decrypt(server.as_str()).unwrap();
+
+        assert_eq!(via_backend.as_bytes(), via_convenience.as_bytes());
+        assert_eq!(via_backend.as_bytes(), mk.as_bytes());
+    }
+
+    #[test]
+    fn file_backend_rejects_malformed_identity() {
+        assert!(FileAgeBackend::new("").is_err());
+        assert!(FileAgeBackend::new("not an age identity").is_err());
+    }
+
+    /// A custom backend can replace the file-based one without changing the
+    /// envelope code. We verify the seam with a recording stub that
+    /// pretends to be a remote KMS.
+    struct RecordingBackend;
+
+    impl EnvelopeBackend for RecordingBackend {
+        fn unwrap_envelope<'a>(&'a self, _ciphertext: &'a str) -> Result<Vec<u8>> {
+            // A real KMS would call Decrypt here. For the test, we just
+            // return a well-formed 32-byte buffer so the rest of the path
+            // runs.
+            Ok(vec![0u8; 32])
+        }
+    }
+
+    #[test]
+    fn envelope_accepts_a_custom_backend() {
+        let member = AgeIdentity::generate();
+        let mk = MasterKey::generate();
+        let env = Envelope::create(
+            uuid::Uuid::now_v7(),
+            &mk,
+            &member.public_key().unwrap(),
+            &SealOptions::default(),
+        )
+        .unwrap();
+
+        let mk_via_backend = env.decrypt_with_backend(&RecordingBackend).unwrap();
+        // We cannot compare to the real key because the recording backend
+        // does not actually decrypt — but we can prove the call routes
+        // through the trait by verifying the API is callable and returns
+        // 32 bytes (the master-key length check).
+        assert_eq!(mk_via_backend.as_bytes().len(), 32);
     }
 }
