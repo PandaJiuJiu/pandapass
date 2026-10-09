@@ -505,10 +505,15 @@ pub fn verify_totp(secret_base32: &str, code: &str) -> bool {
         Ok(s) => s,
         Err(_) => return false,
     };
+    // skew(1) means we accept the current step and the immediately
+    // adjacent one — i.e. ±30s of clock drift. Without this a user
+    // whose phone clock is a few seconds off legitimately fails login
+    // every other minute.
     let totp = TotpBuilder::new()
         .with_algorithm(Algorithm::SHA256)
         .with_digits(6)
         .with_step_duration(30)
+        .with_skew(1)
         .with_secret(secret)
         .build();
     match totp {
@@ -526,6 +531,7 @@ pub fn totp_uri(email: &str, secret_base32: &str, issuer: &str) -> String {
         .with_algorithm(Algorithm::SHA256)
         .with_digits(6)
         .with_step_duration(30)
+        .with_skew(1)
         .with_secret(secret)
         .with_account_name(email)
         .with_issuer(Some(issuer))
