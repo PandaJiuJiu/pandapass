@@ -2,8 +2,8 @@
 #
 # PandaPass local development launcher.
 #
-# Manages the Rust server (port 8233) and the Vite web dev server (port
-# 5173) in the background, bound to 0.0.0.0 so a browser on another
+# Manages the Rust server (port 18233) and the Vite web dev server (port
+# 15173) in the background, bound to 0.0.0.0 so a browser on another
 # machine on the LAN can reach them. State lives under .run/ (pid files,
 # logs, data dir).
 #
@@ -20,8 +20,8 @@
 # Both processes log to .run/{server,vite}.log. Pids live in .run/{server,vite}.pid.
 #
 # Environment overrides:
-#   PANDAPASS_PORT=NNNN         server listen port (default 8233)
-#   PANDAPASS_VITE_PORT=NNNN    vite dev port (default 5173)
+#   PANDAPASS_PORT=NNNN         server listen port (default 18233)
+#   PANDAPASS_VITE_PORT=NNNN    vite dev port (default 15173)
 #   PANDAPASS_BIND=127.0.0.1    bind loopback only (default 0.0.0.0)
 #
 # Note: ports must be <= 65535 (TCP u16 limit). The server's health-check
@@ -39,8 +39,8 @@ SERVER_LOG="$RUN_DIR/server.log"
 VITE_LOG="$RUN_DIR/vite.log"
 SERVER_BIN="$ROOT/target/debug/pandapass-server"
 SERVER_AGE_FILE="$DATA_DIR/server.age"
-SERVER_PORT="${PANDAPASS_PORT:-8233}"
-VITE_PORT="${PANDAPASS_VITE_PORT:-5173}"
+SERVER_PORT="${PANDAPASS_PORT:-18233}"
+VITE_PORT="${PANDAPASS_VITE_PORT:-15173}"
 # Bind address. 0.0.0.0 makes the services reachable from the LAN. Override
 # with PANDAPASS_BIND=127.0.0.1 to keep things loopback-only.
 BIND_ADDR="${PANDAPASS_BIND:-0.0.0.0}"
