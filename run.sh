@@ -2,8 +2,10 @@
 #
 # PandaPass local development launcher.
 #
-# Manages the Rust server (port 8233) and the Vite web dev server (port 5173)
-# in the background. State lives under .run/ (pid files, logs, data dir).
+# Manages the Rust server (port 8233) and the Vite web dev server (port
+# 5173) in the background, bound to 0.0.0.0 so a browser on another
+# machine on the LAN can reach them. State lives under .run/ (pid files,
+# logs, data dir).
 #
 # Usage:
 #   ./run.sh start    — start server + vite (initialises data on first run)
@@ -16,6 +18,15 @@
 #   ./run.sh clean    — remove .run/ entirely (deletes server identity + db)
 #
 # Both processes log to .run/{server,vite}.log. Pids live in .run/{server,vite}.pid.
+#
+# Environment overrides:
+#   PANDAPASS_PORT=NNNN         server listen port (default 8233)
+#   PANDAPASS_VITE_PORT=NNNN    vite dev port (default 5173)
+#   PANDAPASS_BIND=127.0.0.1    bind loopback only (default 0.0.0.0)
+#
+# Note: ports must be <= 65535 (TCP u16 limit). The server's health-check
+# uses u16::from_str on the configured port, so values like 88233 (>65535)
+# are rejected at startup.
 
 set -euo pipefail
 
@@ -30,6 +41,9 @@ SERVER_BIN="$ROOT/target/debug/pandapass-server"
 SERVER_AGE_FILE="$DATA_DIR/server.age"
 SERVER_PORT="${PANDAPASS_PORT:-8233}"
 VITE_PORT="${PANDAPASS_VITE_PORT:-5173}"
+# Bind address. 0.0.0.0 makes the services reachable from the LAN. Override
+# with PANDAPASS_BIND=127.0.0.1 to keep things loopback-only.
+BIND_ADDR="${PANDAPASS_BIND:-0.0.0.0}"
 
 # Colours for status output (disabled when not a tty).
 if [ -t 1 ]; then
@@ -135,6 +149,16 @@ ensure_web_deps() {
   fi
 }
 
+# Pick the first non-loopback IPv4 we can find. Used to set PUBLIC_URL so that
+# cookies / redirects behave when the browser connects from another machine on
+# the LAN rather than localhost.
+detect_lan_ip() {
+  ip -4 -o addr show scope global 2>/dev/null \
+    | awk '{print $4}' | cut -d/ -f1 \
+    | grep -v '^127\.' | grep -v '^10\.' | grep -v '^172\.' \
+    | head -n1
+}
+
 # ── commands ─────────────────────────────────────────────────────────────────
 
 cmd_start() {
@@ -143,18 +167,25 @@ cmd_start() {
   ensure_run_dir
   init_storage
 
+  local lan_ip
+  lan_ip="$(detect_lan_ip)"
+  local public_url="http://localhost:$VITE_PORT"
+  if [ -n "$lan_ip" ] && [ "$BIND_ADDR" != "127.0.0.1" ]; then
+    public_url="http://$lan_ip:$VITE_PORT"
+  fi
+
   # Server.
   if alive "$SERVER_PID"; then
     log "server already running (pid=$(cat "$SERVER_PID"))"
   else
-    log "starting server on :$SERVER_PORT (log → $SERVER_LOG)"
+    log "starting server on ${BIND_ADDR}:${SERVER_PORT} (public=${public_url}, log → $SERVER_LOG)"
     : > "$SERVER_LOG"
     (
       cd "$ROOT"
-      PANDAPASS_LISTEN="127.0.0.1:$SERVER_PORT" \
+      PANDAPASS_LISTEN="${BIND_ADDR}:${SERVER_PORT}" \
       PANDAPASS_DB_URL="sqlite://$DATA_DIR/pandapass.db?mode=rwc" \
       PANDAPASS_SERVER_AGE_IDENTITY_FILE="$SERVER_AGE_FILE" \
-      PANDAPASS_PUBLIC_URL="http://localhost:$VITE_PORT" \
+      PANDAPASS_PUBLIC_URL="$public_url" \
       RUST_LOG="${RUST_LOG:-pandapass_server=info,tower_http=info}" \
       nohup "$SERVER_BIN" >>"$SERVER_LOG" 2>&1 &
       echo $! > "$SERVER_PID"
@@ -165,12 +196,12 @@ cmd_start() {
   if alive "$VITE_PID"; then
     log "vite already running (pid=$(cat "$VITE_PID"))"
   else
-    log "starting vite dev server on :$VITE_PORT (log → $VITE_LOG)"
+    log "starting vite dev server on ${BIND_ADDR}:${VITE_PORT} (log → $VITE_LOG)"
     : > "$VITE_LOG"
     (
       cd "$ROOT/web"
       nohup npm run dev -- --port "$VITE_PORT" --strictPort \
-        >>"$VITE_LOG" 2>&1 &
+        --host "$BIND_ADDR" >>"$VITE_LOG" 2>&1 &
       echo $! > "$VITE_PID"
     )
   fi
