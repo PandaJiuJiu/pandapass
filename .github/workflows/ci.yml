@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --locked -- -D warnings
+      - name: Build
+        run: cargo build --workspace --locked --release
+      - name: Test
+        run: cargo test --workspace --locked --release
+
+  docker:
+    needs: build-test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build server image
+        run: |
+          docker build -f docker/Dockerfile.server -t pandapass/server:test .
+      - name: Smoke test
+        run: |
+          docker run --rm -d \
+            -e PANDAPASS_DB_URL=sqlite:///data/pp.db?mode=rwc \
+            -e PANDAPASS_SERVER_AGE_IDENTITY_FILE=/data/key \
+            -v /tmp/pp-smoke:/data \
+            --name pp-test \
+            pandapass/server:test --init
+          sleep 3
+          docker exec pp-test pandapass-server --health-check
+          docker stop pp-test
