@@ -47,6 +47,7 @@ pub fn build_router(state: AppState) -> Router {
     // enforcement — `SameSite=Lax` is a second line of defence, not the only one.
     let public_routes = Router::new()
         .route("/api/v1/health", get(tokens::health))
+        .route("/api/v1/setup/status", get(auth::setup_status))
         .route("/api/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/recovery-code/redeem", post(auth::recovery_code_redeem))
@@ -97,7 +98,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/audit", get(tokens::list_audit))
         .route("/api/v1/audit/verify", get(tokens::verify_audit))
         .route("/api/v1/admin/server-age", get(tokens::server_age_show))
-        .route("/api/v1/admin/users", get(tokens::list_users_admin))
+        .route("/api/v1/admin/users", get(tokens::list_users_admin).post(tokens::create_user_admin))
         .route("/api/v1/admin/users/{user_id}/disable", post(tokens::disable_user_admin))
         .route("/api/v1/admin/users/{user_id}/enable", post(tokens::enable_user_admin))
         .route("/api/v1/scan", post(scan::trigger_scan))

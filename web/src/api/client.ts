@@ -97,6 +97,7 @@ export interface User {
   totp_enabled: boolean
   created_at: string
   last_login_at: string | null
+  disabled_at: string | null
 }
 
 export interface Project {
@@ -290,6 +291,7 @@ export interface LoginResponse {
   user: User
   session_token: string
   requires_totp: boolean
+  key_enrolled: boolean
 }
 
 export const api = {
@@ -309,6 +311,18 @@ export const api = {
 
   logout: () => post<void>('/auth/logout'),
   me: () => get<User>('/auth/me'),
+
+  // ── setup & admin user management ──
+
+  /** True on a fresh vault: no users exist, so the login page becomes a
+   *  "create administrator" form. */
+  setupStatus: () => get<{ needs_setup: boolean }>('/setup/status'),
+
+  adminListUsers: () => get<{ users: User[] }>('/admin/users'),
+  adminCreateUser: (email: string, password: string) =>
+    post<{ user: User }>('/admin/users', { email, password }),
+  adminDisableUser: (id: string) => post<{ success: boolean }>(`/admin/users/${id}/disable`),
+  adminEnableUser: (id: string) => post<{ success: boolean }>(`/admin/users/${id}/enable`),
 
   enrollKey: (agePublicKey: string, rotate: boolean) =>
     post<{ ok: boolean }>('/auth/key/enroll', {

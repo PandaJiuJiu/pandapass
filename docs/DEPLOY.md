@@ -38,27 +38,22 @@ unwrapped by anyone — not by you, not by a future operator. Losing the databas
 *and* the key together loses everything; losing only the key makes the vault
 permanently unreadable for writes.
 
-## Register the first account
+## Create the first account
 
-Registration is closed by default. Open it for exactly as long as it takes:
+A fresh vault has no users. Open the web UI at http://localhost:8080 and the
+login page turns into a **"Create administrator account"** form — the first
+visitor becomes admin. No setup token; on a brand-new installation whoever
+reaches the page first owns the vault, so do this immediately after starting
+the container.
 
-```bash
-# Temporarily, in .env:
-PANDAPASS_ALLOW_REGISTRATION=true
-docker compose up -d pandapass
-
-# Create the account in a browser at http://localhost:8080
-#   — or headless:
-docker compose exec pandapass pandapass register \
-  --email you@example.com --password-stdin
-
-# Then close it again. This is not optional.
-PANDAPASS_ALLOW_REGISTRATION=false
-docker compose up -d pandapass
-```
+There is no `pandapass register` command. The HTTP registration endpoint is
+only used by this first-run form (and, if you explicitly open it, by
+`PANDAPASS_ALLOW_REGISTRATION`).
 
 The first account bootstraps as admin. After that, registration is refused
-regardless of the flag.
+unless `PANDAPASS_ALLOW_REGISTRATION=true` is set.
+
+The admin creates additional team accounts from the web UI (`Users` page).
 
 An account created here has no age key, so it cannot store secrets. Enrol one
 from the CLI on the same machine:
@@ -95,7 +90,7 @@ All server settings are environment variables. The ones that matter:
 | `PANDAPASS_PUBLIC_URL` | derived from listen | Set to your `https://` URL; sets the Secure cookie flag. |
 | `PANDAPASS_ALLOWED_ORIGINS` | empty | Comma-separated. Empty means same-origin only. |
 | `PANDAPASS_SERVER_AGE_IDENTITY_FILE` | — | Path to the server's age private key. |
-| `PANDAPASS_ALLOW_REGISTRATION` | `false` | Leave off. |
+| `PANDAPASS_ALLOW_REGISTRATION` | `false` | Leave off. The first-run web setup creates the admin without it; this only opens later self-service signups. |
 | `PANDAPASS_REQUIRE_TOTP` | `false` | Turn on for real deployments. |
 | `PANDAPASS_COMMAND_ALLOWLIST` | empty | Comma-separated. Bounds what `pandapass run` can spawn. |
 | `PANDAPASS_SESSION_TTL_DAYS` | `30` | |
@@ -162,7 +157,7 @@ Test the restore. A backup that has never been restored is a hypothesis.
       age key file's directory metadata, and an unencrypted disk is a free copy.
 - [ ] `docker/data` mode 700.
 - [ ] `PANDAPASS_REQUIRE_TOTP=true`.
-- [ ] `PANDAPASS_ALLOW_REGISTRATION` unset.
+- [ ] `PANDAPASS_ALLOW_REGISTRATION` unset (first-run web setup needs no flag).
 - [ ] Firewall: 8233 and 8080 bound to loopback; reachable only over the VPN.
 - [ ] TLS terminated in front. `PANDAPASS_COOKIE_SECURE` then follows
       `PANDAPASS_PUBLIC_URL` automatically.

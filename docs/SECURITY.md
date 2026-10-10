@@ -148,9 +148,17 @@ injecting everything — hands a subprocess credentials it never asked for.
 
 ## Access control
 
-Registration is closed by default (`PANDAPASS_ALLOW_REGISTRATION`). The first
-account bootstraps as admin; after that, signups are refused. A secrets
-vault should not hand accounts to whoever finds the URL.
+A fresh vault has no users; the web UI shows a **"Create administrator
+account"** form to the first visitor, and that first account bootstraps as
+admin. There is deliberately no setup token — on a brand-new installation
+whoever reaches the page first owns the vault. After the first account exists,
+the web UI only offers sign-in.
+
+Registration is closed by default (`PANDAPASS_ALLOW_REGISTRATION`). After the
+first account exists, self-service signups are refused unless the flag is
+explicitly set. New accounts are created by an admin from the web UI (`Users`
+page); they start as plain members and can never be minted as admins through that
+endpoint. A secrets vault should not hand accounts to whoever finds the URL.
 
 CSRF protection is applied by middleware to every route that touches an
 existing session. `SameSite=Lax` is a second line of defence, not the only

@@ -35,10 +35,11 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for full deployment instructions.
 
 ```bash
 docker compose up -d
-
-docker compose exec pandapass pandapass register \
-  --email you@example.com --password-stdin
 ```
+
+Then open the web UI at http://localhost:8080 — the **first** visitor is
+prompted to create the administrator account (email + password). No setup
+token: on a fresh vault, whoever reaches the page first becomes admin.
 
 Then point the CLI at it and store something:
 

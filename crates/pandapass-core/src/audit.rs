@@ -231,6 +231,7 @@ mod tests {
                 totp_enabled: false,
                 created_at: Utc::now(),
                 last_login_at: None,
+                disabled_at: None,
             },
             session: None,
             service_token: None,

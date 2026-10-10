@@ -3074,3 +3074,78 @@ async fn metrics_endpoint_exposes_counters() {
     assert!(text.contains("pandapass_auth_login_failures_total"), "{text}");
     assert!(text.contains("pandapass_audit_log_size"), "{text}");
 }
+
+/// A fresh vault reports `needs_setup: true` so the web UI can offer the
+/// "create administrator" form; once a user exists it reports `false`.
+#[tokio::test]
+async fn setup_status_reports_needs_setup_when_no_users() {
+    let h = Harness::start().await;
+
+    // No users yet — needs_setup is true.
+    let r = h.send(
+        Request::builder()
+            .method("GET")
+            .uri("/api/v1/setup/status")
+            .body(Body::empty())
+            .unwrap(),
+    ).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["needs_setup"], json!(true), "{:?}", r.body);
+
+    // Register the first account (becomes admin).
+    let admin = h.admin().await;
+    assert!(!admin.is_empty());
+
+    // Now needs_setup flips to false.
+    let r2 = h.send(
+        Request::builder()
+            .method("GET")
+            .uri("/api/v1/setup/status")
+            .body(Body::empty())
+            .unwrap(),
+    ).await;
+    assert_eq!(r2.status, StatusCode::OK, "{:?}", r2.body);
+    assert_eq!(r2.body["needs_setup"], json!(false), "{:?}", r2.body);
+}
+
+/// Admin can create a plain user via `POST /api/v1/admin/users`. The new
+/// account is a normal member (not admin), can log in, and the endpoint
+/// is denied to a non-admin session.
+#[tokio::test]
+async fn admin_can_create_user() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    let res = h.post(
+        "/api/v1/admin/users",
+        &admin,
+        json!({"email": "bob@example.com", "password": "bob-password-123"}),
+    ).await;
+    assert_eq!(res.status, StatusCode::OK, "{:?}", res.body);
+    assert_eq!(res.body["user"]["email"], "bob@example.com");
+    assert_eq!(res.body["user"]["global_role"], "user");
+
+    // The new user can log in.
+    let login = h.post(
+        "/api/v1/auth/login",
+        "",
+        json!({"email": "bob@example.com", "password": "bob-password-123"}),
+    ).await;
+    assert_eq!(login.status, StatusCode::OK, "{:?}", login.body);
+
+    // A non-admin session is denied.
+    let editor = h.post(
+        "/api/v1/auth/register",
+        "",
+        json!({"email": "editor@example.com", "password": "hunter2hunter2"}),
+    ).await;
+    assert!(editor.status.is_success());
+    let editor_token = editor.body["session_token"].as_str().unwrap().to_string();
+
+    let denied = h.post(
+        "/api/v1/admin/users",
+        &editor_token,
+        json!({"email": "eve@example.com", "password": "eve-password-123"}),
+    ).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+}

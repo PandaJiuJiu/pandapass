@@ -24,24 +24,6 @@ pub struct LoginArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct RegisterArgs {
-    /// Email address. Prompted for when omitted.
-    #[arg(long)]
-    email: Option<String>,
-    /// Password. Prefer --password-stdin: an argument is visible in `ps` and
-    /// in shell history.
-    #[arg(long)]
-    password: Option<String>,
-    /// Read the password from stdin (one line). For scripts and agents.
-    #[arg(long)]
-    password_stdin: bool,
-    /// Path to the age identity whose public key seals this account's master
-    /// key. Without it the account is created but cannot store secrets.
-    #[arg(long)]
-    age_identity: Option<PathBuf>,
-}
-
-#[derive(Args, Debug)]
 pub struct KeygenArgs {
     /// Where to write the age identity. Defaults to ~/.pandapass/age.key
     #[arg(long, default_value = None)]
@@ -429,7 +411,6 @@ pub enum GitOpsCmd {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     Login(LoginArgs),
-    Register(RegisterArgs),
     Keygen(KeygenArgs),
     Logout,
     Me,
@@ -469,7 +450,6 @@ pub async fn run_command(
 ) -> Result<()> {
     match cmd {
         Command::Login(args) => run_login(api, config, args).await,
-        Command::Register(args) => run_register(api, config, args).await,
         Command::Keygen(args) => keygen(&args),
         Command::Logout => run_logout(api, config).await,
         Command::Me => run_me(api).await,
@@ -561,79 +541,8 @@ async fn run_login(api: &ApiClient, config: &mut crate::client::CliConfig, args:
         // single secret — worth saying before they wonder why writes 403.
         println!("Logged in as {}", resp.user.email);
         println!(
-            "Note: no master key enrolled. Run `pandapass keygen`, then register \
-             again or POST /api/v1/auth/key/enroll to become able to use secrets."
-        );
-    }
-    Ok(())
-}
-
-async fn run_register(api: &ApiClient, config: &mut crate::client::CliConfig, args: RegisterArgs) -> Result<()> {
-    use rpassword::read_password;
-    use std::io::{stdout, Write};
-
-    let email = match args.email {
-        Some(e) => e,
-        None => {
-            print!("Email: ");
-            stdout().flush()?;
-            let mut e = String::new();
-            std::io::stdin().read_line(&mut e)?;
-            e.trim().to_string()
-        }
-    };
-
-    let interactive = args.password.is_none() && !args.password_stdin;
-    let password = match (&args.password, args.password_stdin) {
-        (Some(p), _) => p.clone(),
-        (_, true) => {
-            let mut p = String::new();
-            std::io::stdin().read_line(&mut p)?;
-            p.trim_end_matches(['\n', '\r']).to_string()
-        }
-        (None, false) => {
-            print!("Password: ");
-            stdout().flush()?;
-            let p = read_password()?;
-            println!();
-            print!("Confirm password: ");
-            stdout().flush()?;
-            let confirm = read_password()?;
-            println!();
-            if p != confirm {
-                anyhow::bail!("Passwords do not match");
-            }
-            p
-        }
-    };
-    let _ = interactive;
-
-    // Seal the account's master key to this user's age key, if one is
-    // available. Without it the account exists but cannot store a single
-    // secret, which is a confusing state to be handed silently.
-    let age_public_key = match &args.age_identity {
-        Some(path) => {
-            let raw = std::fs::read_to_string(path)
-                .map_err(|e| anyhow::anyhow!("cannot read age identity {}: {}", path.display(), e))?;
-            let identity = pandapass_core::crypto::AgeIdentity::parse(&raw)
-                .map_err(|e| anyhow::anyhow!("invalid age identity in {}: {}", path.display(), e))?;
-            Some(identity.public_key()?.as_str().to_string())
-        }
-        None => None,
-    };
-
-    let resp = api.register(&email, &password, age_public_key.as_deref()).await?;
-    let session_token = resp.session_token.ok_or_else(|| anyhow::anyhow!("No session token returned"))?;
-    config.auth_token = Some(session_token.clone());
-    api.set_auth_token(Some(session_token)).await;
-
-    if resp.key_enrolled {
-        println!("Registered and logged in as {}", resp.user.email);
-    } else {
-        println!("Registered and logged in as {}", resp.user.email);
-        println!(
-            "This account has no master key yet, so it cannot store or read secrets.\n\
-             Run `pandapass keygen` and re-run with --age-identity <path>."
+            "Note: no master key enrolled. Run `pandapass keygen`, then \
+             POST /api/v1/auth/key/enroll to become able to use secrets."
         );
     }
     Ok(())

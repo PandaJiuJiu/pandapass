@@ -36,8 +36,8 @@ services:
       PANDAPASS_PUBLIC_URL: ${PANDAPASS_PUBLIC_URL:-http://localhost:8080}
 
       # Off by default and kept off: a vault that hands accounts to whoever
-      # finds the URL is not a vault. Register the first admin by hand, then
-      # leave this unset.
+      # finds the URL is not a vault. The first-run web setup creates the admin
+      # without this flag; it only opens self-service signups later.
       PANDAPASS_ALLOW_REGISTRATION: ${PANDAPASS_ALLOW_REGISTRATION:-false}
 
       # Comma-separated. Empty means same-origin only, which is right behind a

@@ -12,8 +12,8 @@
 - 审计：写 SQLite，**永不记录 secret 值**（有测试断言）
 - 审计链：HMAC-SHA256 链式防篡改，key 从 `server_age_identity` 派生；CLI/端点 `audit verify`
 - 项目/环境/密钥 CRUD、版本历史、软删除
-- CLI：`login register keygen logout me project env secret member token config audit cred policy pki run inject`，`audit verify`，`ssh sign`
-- Web（Vue3 + Vite，无组件库，纯 CSS 变量）：Login / Dashboard / Project / Tokens / Audit / Policies / PKI / DynamicCreds
+- CLI：`login keygen logout me project env secret member token config audit cred policy pki run inject`，`audit verify`，`ssh sign`
+- Web（Vue3 + Vite，无组件库，纯 CSS 变量）：Login（含首次运行创建管理员）/ Dashboard / Project / Tokens / Audit / Policies / PKI / DynamicCreds / Users
 - 部署：distroless 镜像 + 内置 `--health-check` / `--init`（镜像里没有 shell，所以健康检查必须是二进制自己）
 - 文档：`docs/SECURITY.md` `docs/DEPLOY.md` `docs/AGENT-INTEGRATION.md`
 - 后台清理任务：过期 session + 过期动态凭证，60s 一轮

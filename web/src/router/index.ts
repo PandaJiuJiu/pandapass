@@ -10,6 +10,7 @@ import DynamicCredsView from '@/views/DynamicCredsView.vue'
 import PoliciesView from '@/views/PoliciesView.vue'
 import PkiView from '@/views/PkiView.vue'
 import ScanView from '@/views/ScanView.vue'
+import UsersView from '@/views/UsersView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -24,6 +25,7 @@ export const router = createRouter({
     { path: '/policies', component: PoliciesView },
     { path: '/pki', component: PkiView },
     { path: '/scan', component: ScanView },
+    { path: '/users', component: UsersView, meta: { admin: true } },
   ],
 })
 
@@ -48,5 +50,11 @@ router.beforeEach(async (to) => {
   }
 
   if (!auth.user) return { path: '/login' }
+
+  // Admin-only routes: a plain member is redirected to the project list.
+  if (to.meta.admin && auth.user.global_role !== 'admin') {
+    return { path: '/projects' }
+  }
+
   return true
 })

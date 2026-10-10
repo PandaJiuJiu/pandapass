@@ -70,6 +70,23 @@ pub struct LoginRequest {
 }
 
 #[derive(Serialize)]
+pub struct SetupStatusResponse {
+    /// True while the vault has no users at all — the web UI shows the
+    /// "create administrator" form instead of the login form.
+    pub needs_setup: bool,
+}
+
+/// Public bootstrap probe: tells the web UI whether this is a fresh
+/// installation. It deliberately exposes no user data — only whether the
+/// users table is empty.
+pub async fn setup_status(
+    State(state): State<AppState>,
+) -> Result<Json<SetupStatusResponse>, ApiError> {
+    let user_count = db::count_users(&state.db).await?;
+    Ok(Json(SetupStatusResponse { needs_setup: user_count == 0 }))
+}
+
+#[derive(Serialize)]
 pub struct LoginResponse {
     pub user: UserPublic,
     pub session_token: Option<String>,

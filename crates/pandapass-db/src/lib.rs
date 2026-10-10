@@ -461,6 +461,7 @@ pub async fn list_members(db: &Db, project_id: uuid::Uuid) -> Result<Vec<Project
                 totp_enabled: r.get::<i64, _>("totp_enabled") != 0,
                 created_at: parse_ts(&r.get::<String, _>("user_created_at")),
                 last_login_at: parse_opt_ts(r.get("last_login_at")),
+                disabled_at: parse_opt_ts(r.get("disabled_at")),
             },
         })
         .collect())

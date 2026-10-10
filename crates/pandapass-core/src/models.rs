@@ -84,6 +84,9 @@ pub struct UserPublic {
     pub totp_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
+    /// Set when an admin has disabled the account. Surfaced so the admin
+    /// users UI can tell "active" from "disabled" without a second call.
+    pub disabled_at: Option<DateTime<Utc>>,
 }
 
 impl From<User> for UserPublic {
@@ -95,6 +98,7 @@ impl From<User> for UserPublic {
             totp_enabled: u.totp_enabled,
             created_at: u.created_at,
             last_login_at: u.last_login_at,
+            disabled_at: u.disabled_at,
         }
     }
 }
@@ -308,6 +312,7 @@ pub enum AuditAction {
     McpListSecrets,
     McpRunCommand,
     // Admin
+    UserCreate,
     UserDisable,
     UserEnable,
     MkRotate,
@@ -364,6 +369,7 @@ impl AuditAction {
             McpGetSecret => "mcp_get_secret",
             McpListSecrets => "mcp_list_secrets",
             McpRunCommand => "mcp_run_command",
+            UserCreate => "user_create",
             UserDisable => "user_disable",
             UserEnable => "user_enable",
             MkRotate => "mk_rotate",
@@ -415,6 +421,7 @@ impl AuditAction {
             "mcp_get_secret" => McpGetSecret,
             "mcp_list_secrets" => McpListSecrets,
             "mcp_run_command" => McpRunCommand,
+            "user_create" => UserCreate,
             "user_disable" => UserDisable,
             "user_enable" => UserEnable,
             "mk_rotate" => MkRotate,

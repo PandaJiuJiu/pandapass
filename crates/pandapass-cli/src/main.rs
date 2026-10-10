@@ -34,8 +34,6 @@ struct Cli {
 enum Commands {
     /// Authenticate with the server
     Login(commands::LoginArgs),
-    /// Register a new account
-    Register(commands::RegisterArgs),
     /// Generate an age keypair for sealing your master key
     Keygen(commands::KeygenArgs),
     /// Logout and clear local session
@@ -100,7 +98,6 @@ impl From<Commands> for commands::Command {
         use commands::Command as C;
         match c {
             Commands::Login(a) => C::Login(a),
-            Commands::Register(a) => C::Register(a),
             Commands::Keygen(a) => C::Keygen(a),
             Commands::Logout => C::Logout,
             Commands::Me => C::Me,
@@ -203,7 +200,7 @@ async fn main() -> Result<()> {
     let result = run_command(&api, &mut config, cli.command.into()).await;
 
     // Persist the session before reporting the command's outcome. A failed
-    // `register` or `login` may still have minted a usable token, and losing
+    // `login` may still have minted a usable token, and losing
     // it to a write error would strand the user logged-out with no
     // diagnostic. Write via a temp file and rename, so an interrupted write
     // cannot leave a truncated config that silently resets to defaults.

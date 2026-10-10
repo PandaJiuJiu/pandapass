@@ -1,6 +1,6 @@
 use axum::{extract::{Path, Query, State}, Json};
 use pandapass_core::audit::{AuditAction, AuditContext};
-use pandapass_core::crypto::{generate_token, hash_token};
+use pandapass_core::crypto::{generate_token, hash_password, hash_token, validate_password_policy};
 use pandapass_core::models::*;
 use pandapass_core::policy::{PolicyDecision, PolicyInput};
 use pandapass_db as db;
@@ -368,6 +368,38 @@ pub async fn list_users_admin(
     }
     let users: Vec<UserPublic> = db::list_users(&state.db).await?.into_iter().map(Into::into).collect();
     Ok(Json(AdminListUsersResponse { users }))
+}
+
+#[derive(Deserialize)]
+pub struct AdminCreateUserRequest {
+    pub email: String,
+    pub password: String,
+}
+
+/// Admin: create a user account. The new account is always a plain
+/// `GlobalRole::User` — an admin cannot be minted through this endpoint, so
+/// a compromised admin session cannot silently create a second administrator.
+/// The account is created without an age key envelope; the user enrolls one
+/// later via `POST /api/v1/auth/key/enroll`.
+pub async fn create_user_admin(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Json(req): Json<AdminCreateUserRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !auth.can(Permission::ManageUsers) {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
+    validate_password_policy(&req.password)?;
+    let password_hash = hash_password(&req.password)?;
+    let user = db::create_user(&state.db, &req.email, &password_hash, GlobalRole::User).await?;
+
+    let mut audit = AuditContext::new(&auth, AuditAction::UserCreate)
+        .with_meta(serde_json::json!({ "target_user_id": user.id.to_string() }));
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(serde_json::json!({
+        "user": UserPublic::from(user),
+    })))
 }
 
 /// Admin: disable a user. A disabled account cannot log in, and every
