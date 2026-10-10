@@ -7,12 +7,10 @@
 # image needs no libc at all, which removes a whole class of shared-library
 # CVEs from the deployment surface.
 #
-# Multi-arch: pass --platform=linux/amd64,linux/arm64 at build time. The
-# current pin (rust 1.83) only ships linux/amd64 in the public registry; an
-# arm64 build needs a cross toolchain in the builder stage, which is
-# tracked in TODO.md (E3).
+# Multi-arch: pass --platform=linux/amd64,linux/arm64 at build time.
+# rust:1.88-slim provides amd64/arm64; cross-compilation works out of the box.
 
-FROM --platform=$BUILDPLATFORM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/rust:1.83 AS builder
+FROM --platform=$BUILDPLATFORM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/rust:1.88-slim AS builder
 ARG TARGETARCH
 
 RUN apt-get update \
@@ -54,8 +52,6 @@ RUN find crates -name "*.rs" -exec touch {} + \
 # gcr.io distroless image. Operators who can reach gcr.io should replace
 # the FROM line below; the user/permission setup is already distroless-
 # compatible. Tracked in TODO.md (E2).
-# not the gcr.io distroless image. A non-root user is created explicitly to
-# preserve the least-privilege property distroless gave us for free.
 FROM docker.io/library/debian:bookworm-slim
 
 RUN groupadd --gid 65532 nonroot \
