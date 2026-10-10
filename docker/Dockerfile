@@ -7,7 +7,7 @@
 # node builder, and only the artifacts are copied into the release image.
 #
 # Build:
-#   docker build -f docker/Dockerfile.allinone -t ghcr.io/pandajiujiu/pandapass:0.0.1 .
+#   docker build -f docker/Dockerfile -t ghcr.io/pandajiujiu/pandapass:0.0.1 .
 #   docker compose build   # equivalent via docker-compose.yml
 #
 # Run:
@@ -40,7 +40,6 @@ RUN mkdir -p crates/pandapass-core/src crates/pandapass-db/src \
  && echo "fn main() {}" > crates/pandapass-cli/src/main.rs \
  && cargo build --release --locked 2>/dev/null || true
 
-COPY migrations ./migrations
 COPY crates ./crates
 
 RUN find crates -name "*.rs" -exec touch {} + \

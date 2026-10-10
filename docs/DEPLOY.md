@@ -123,7 +123,7 @@ The database and the age key must be backed up together, from the same moment.
 A backup of one without the other is not a backup.
 
 The image ships `sqlite3` (installed in the runtime stage of
-`docker/Dockerfile.allinone`), so the backup runs entirely inside the container.
+`docker/Dockerfile`), so the backup runs entirely inside the container.
 
 ```bash
 #!/bin/bash

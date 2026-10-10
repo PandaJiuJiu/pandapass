@@ -185,6 +185,6 @@ otherwise have had no CSRF check at all.
   this control.
 - **The web UI was historically unbuilt.** `npm install` and `npm run build`
   were long unverified — the registry was unreachable from the sandbox. The
-  all-in-one Docker build (`docker/Dockerfile.allinone`) now builds it as part
+  all-in-one Docker build (`docker/Dockerfile`) now builds it as part
   of the image, and the type-check runs during `npm run build`, so a broken
   build fails the image rather than shipping.

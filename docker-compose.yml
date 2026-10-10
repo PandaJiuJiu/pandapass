@@ -13,7 +13,7 @@ services:
   pandapass:
     build:
       context: .
-      dockerfile: docker/Dockerfile.allinone
+      dockerfile: docker/Dockerfile
     image: ghcr.io/pandajiujiu/pandapass:0.0.1
     restart: unless-stopped
 
