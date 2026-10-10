@@ -33,6 +33,8 @@ export default {
     expired: 'Expired',
     revoked: 'Revoked',
     noItems: 'No items.',
+    roleAdmin: 'admin',
+    roleMember: 'member',
   },
   nav: {
     workspace: 'Workspace',

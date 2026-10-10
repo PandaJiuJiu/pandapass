@@ -35,6 +35,8 @@ export default {
     expired: '已过期',
     revoked: '已吊销',
     noItems: '暂无数据。',
+    roleAdmin: '管理员',
+    roleMember: '成员',
   },
   nav: {
     workspace: '工作区',
