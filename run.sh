@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+#
+# PandaPass local development launcher.
+#
+# Manages the Rust server (port 8233) and the Vite web dev server (port 5173)
+# in the background. State lives under .run/ (pid files, logs, data dir).
+#
+# Usage:
+#   ./run.sh start    — start server + vite (initialises data on first run)
+#   ./run.sh stop     — stop both
+#   ./run.sh restart  — stop, then start
+#   ./run.sh status   — print whether each is up and the pid
+#   ./run.sh logs     — tail both logs (Ctrl-C to exit)
+#   ./run.sh health   — probe /api/v1/health
+#   ./run.sh init     — generate server age identity + empty db, then exit
+#   ./run.sh clean    — remove .run/ entirely (deletes server identity + db)
+#
+# Both processes log to .run/{server,vite}.log. Pids live in .run/{server,vite}.pid.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+RUN_DIR="$ROOT/.run"
+DATA_DIR="$RUN_DIR/data"
+SERVER_PID="$RUN_DIR/server.pid"
+VITE_PID="$RUN_DIR/vite.pid"
+SERVER_LOG="$RUN_DIR/server.log"
+VITE_LOG="$RUN_DIR/vite.log"
+SERVER_BIN="$ROOT/target/debug/pandapass-server"
+SERVER_AGE_FILE="$DATA_DIR/server.age"
+SERVER_PORT="${PANDAPASS_PORT:-8233}"
+VITE_PORT="${PANDAPASS_VITE_PORT:-5173}"
+
+# Colours for status output (disabled when not a tty).
+if [ -t 1 ]; then
+  C_OK='\033[0;32m'; C_ERR='\033[0;31m'; C_DIM='\033[2m'; C_OFF='\033[0m'
+else
+  C_OK=''; C_ERR=''; C_DIM=''; C_OFF=''
+fi
+
+log() { printf "${C_DIM}[run.sh]${C_OFF} %s\n" "$*"; }
+err() { printf "${C_ERR}[run.sh]${C_OFF} %s\n" "$*" >&2; }
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+alive() {
+  # $1 = pid file path. Returns 0 if the recorded pid is a running process
+  # owned by us and matching our binary / node command.
+  local f="$1"
+  [ -f "$f" ] || return 1
+  local pid; pid="$(cat "$f")"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  return 0
+}
+
+stop_pidfile() {
+  local name="$1" f="$2" sig="${3:-TERM}"
+  if alive "$f"; then
+    local pid; pid="$(cat "$f")"
+    log "stopping $name (pid=$pid, signal=$sig)"
+    kill "-$sig" "$pid" 2>/dev/null || true
+    # Give it a moment, then force-kill if still up.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.2
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      log "$name still alive after SIGTERM, sending SIGKILL"
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  else
+    log "$name not running (stale pid file removed)"
+  fi
+  rm -f "$f"
+}
+
+# ── init ─────────────────────────────────────────────────────────────────────
+
+ensure_run_dir() {
+  mkdir -p "$RUN_DIR" "$DATA_DIR"
+}
+
+init_storage() {
+  ensure_run_dir
+  if [ -f "$SERVER_AGE_FILE" ]; then
+    log "server age identity already present"
+    chmod 600 "$SERVER_AGE_FILE" 2>/dev/null || true
+    return 0
+  fi
+
+  # `pandapass-server --init` writes the identity file then continues
+  # through the rest of main() (DB connect, bind, etc.) — it does not exit.
+  # We give it a valid DB URL so it gets past init_storage, wait briefly
+  # for the file to appear, then kill the process.
+  log "generating server age identity at $SERVER_AGE_FILE"
+  (
+    cd "$ROOT"
+    PANDAPASS_LISTEN="127.0.0.1:$SERVER_PORT" \
+    PANDAPASS_DB_URL="sqlite://$DATA_DIR/pandapass.db?mode=rwc" \
+    PANDAPASS_SERVER_AGE_IDENTITY_FILE="$SERVER_AGE_FILE" \
+    PANDAPASS_PUBLIC_URL="http://localhost:$VITE_PORT" \
+    "$SERVER_BIN" --init
+  ) &
+  local init_pid=$!
+  local elapsed=0
+  while [ ! -f "$SERVER_AGE_FILE" ] && [ $elapsed -lt 30 ]; do
+    sleep 0.2
+    elapsed=$((elapsed + 1))
+  done
+  # init_storage is synchronous and writes the file before any blocking IO,
+  # so the wait is conservative. Kill regardless.
+  kill "$init_pid" 2>/dev/null || true
+  # Reap so it does not become a zombie.
+  wait "$init_pid" 2>/dev/null || true
+  if [ ! -f "$SERVER_AGE_FILE" ]; then
+    err "server age identity was not written within 6s; check server logs"
+    return 1
+  fi
+  chmod 600 "$SERVER_AGE_FILE" 2>/dev/null || true
+}
+
+ensure_built() {
+  if [ ! -x "$SERVER_BIN" ]; then
+    err "binary missing: $SERVER_BIN"
+    err "run: cargo build -p pandapass-server"
+    exit 1
+  fi
+}
+
+ensure_web_deps() {
+  if [ ! -d "$ROOT/web/node_modules" ]; then
+    log "installing web deps (npm install)"
+    (cd "$ROOT/web" && npm install) >/dev/null
+  fi
+}
+
+# ── commands ─────────────────────────────────────────────────────────────────
+
+cmd_start() {
+  ensure_built
+  ensure_web_deps
+  ensure_run_dir
+  init_storage
+
+  # Server.
+  if alive "$SERVER_PID"; then
+    log "server already running (pid=$(cat "$SERVER_PID"))"
+  else
+    log "starting server on :$SERVER_PORT (log → $SERVER_LOG)"
+    : > "$SERVER_LOG"
+    (
+      cd "$ROOT"
+      PANDAPASS_LISTEN="127.0.0.1:$SERVER_PORT" \
+      PANDAPASS_DB_URL="sqlite://$DATA_DIR/pandapass.db?mode=rwc" \
+      PANDAPASS_SERVER_AGE_IDENTITY_FILE="$SERVER_AGE_FILE" \
+      PANDAPASS_PUBLIC_URL="http://localhost:$VITE_PORT" \
+      RUST_LOG="${RUST_LOG:-pandapass_server=info,tower_http=info}" \
+      nohup "$SERVER_BIN" >>"$SERVER_LOG" 2>&1 &
+      echo $! > "$SERVER_PID"
+    )
+  fi
+
+  # Vite dev server.
+  if alive "$VITE_PID"; then
+    log "vite already running (pid=$(cat "$VITE_PID"))"
+  else
+    log "starting vite dev server on :$VITE_PORT (log → $VITE_LOG)"
+    : > "$VITE_LOG"
+    (
+      cd "$ROOT/web"
+      nohup npm run dev -- --port "$VITE_PORT" --strictPort \
+        >>"$VITE_LOG" 2>&1 &
+      echo $! > "$VITE_PID"
+    )
+  fi
+
+  # Wait briefly for the server to bind so callers know when to hit it.
+  log "waiting for server health on :$SERVER_PORT…"
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if curl -sf "http://127.0.0.1:$SERVER_PORT/api/v1/health" >/dev/null 2>&1; then
+      printf "${C_OK}ready${C_OFF}\n"
+      cmd_status
+      return 0
+    fi
+    sleep 0.5
+  done
+  err "server did not become healthy within 7.5s; tail $SERVER_LOG"
+  return 1
+}
+
+cmd_stop() {
+  stop_pidfile vite    "$VITE_PID"
+  stop_pidfile server  "$SERVER_PID"
+  log "stopped"
+}
+
+cmd_restart() {
+  cmd_stop || true
+  cmd_start
+}
+
+cmd_status() {
+  local any=0
+  for entry in "server:$SERVER_PID:http://127.0.0.1:$SERVER_PORT/api/v1/health" \
+               "vite:$VITE_PID:http://127.0.0.1:$VITE_PORT/"; do
+    IFS=: read -r name pidfile health <<<"$entry"
+    if alive "$pidfile"; then
+      printf "${C_OK}●${C_OFF} %-7s up   pid=%-6s health=%s\n" \
+        "$name" "$(cat "$pidfile")" "$health"
+      any=1
+    else
+      printf "${C_DIM}○${C_OFF} %-7s down (no live pid at %s)\n" "$name" "$pidfile"
+    fi
+  done
+  # Exit 0 only if both are up; otherwise exit 1 so callers can branch.
+  [ "$any" -eq 1 ] || exit 1
+}
+
+cmd_logs() {
+  if [ ! -f "$SERVER_LOG" ] && [ ! -f "$VITE_LOG" ]; then
+    err "no logs yet; run start first"
+    exit 1
+  fi
+  # Tail both. exit code reflects the first to die.
+  tail -n +1 -F "$SERVER_LOG" "$VITE_LOG"
+}
+
+cmd_health() {
+  local url="http://127.0.0.1:$SERVER_PORT/api/v1/health"
+  log "GET $url"
+  if curl -fsS "$url"; then
+    log "${C_OK}healthy${C_OFF}"
+  else
+    err "${C_ERR}unhealthy${C_OFF}"
+    return 1
+  fi
+}
+
+cmd_init() {
+  ensure_built
+  ensure_run_dir
+  init_storage
+  log "data dir: $DATA_DIR"
+}
+
+cmd_clean() {
+  err "this will delete $RUN_DIR (server identity + db). press enter to confirm or ctrl-c"
+  read -r _
+  cmd_stop || true
+  rm -rf "$RUN_DIR"
+  log "cleaned $RUN_DIR"
+}
+
+cmd_help() {
+  sed -n '2,17p' "$0"
+}
+
+# ── entry ────────────────────────────────────────────────────────────────────
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  start)   cmd_start ;;
+  stop)    cmd_stop ;;
+  restart) cmd_restart ;;
+  status)  cmd_status ;;
+  logs)    cmd_logs ;;
+  health)  cmd_health ;;
+  init)    cmd_init ;;
+  clean)   cmd_clean ;;
+  help|-h|--help) cmd_help ;;
+  *) err "unknown command: $cmd"; cmd_help; exit 2 ;;
+esac

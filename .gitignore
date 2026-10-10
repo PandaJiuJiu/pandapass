@@ -18,6 +18,9 @@ Thumbs.db
 # PandaPass local data
 /data
 *.db
+
+# Local development launcher state (pids, logs, sqlite, age identity)
+/.run/
 *.db-wal
 *.db-shm
 *.age
