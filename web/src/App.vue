@@ -2,6 +2,7 @@
 import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import logoUrl from '@/assets/logo.svg?url'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -19,7 +20,10 @@ onMounted(() => {
 <template>
   <div>
     <header class="spread" style="margin-bottom: 24px">
-      <strong style="font-size: 16px">🐼 PandaPass</strong>
+      <strong class="brand">
+        <img :src="logoUrl" alt="" class="brand-logo" />
+        PandaPass
+      </strong>
       <nav class="row" style="gap: 16px">
         <router-link to="/projects">Projects</router-link>
         <router-link to="/tokens">Tokens</router-link>
@@ -49,6 +53,17 @@ main {
 }
 header {
   max-width: 1100px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+}
+.brand-logo {
+  width: 22px;
+  height: 22px;
+  display: block;
 }
 nav a {
   text-decoration: none;

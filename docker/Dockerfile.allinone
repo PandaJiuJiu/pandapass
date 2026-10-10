@@ -57,6 +57,7 @@ RUN npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund
 
 COPY web/tsconfig.json web/vite.config.ts web/index.html ./
 COPY web/src ./src
+COPY web/public ./public
 
 RUN npm run build
 

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="PandaPass logo">
+  <!-- Shield / vault: protection -->
+  <path
+    d="M32 4 54 11v18c0 14.2-9 24.4-22 31C19 53.4 10 43.2 10 29V11L32 4Z"
+    fill="#171a21"
+    stroke="#f0a868"
+    stroke-width="4"
+    stroke-linejoin="round"
+  />
+  <!-- Keyhole: lock + the "P" of PandaPass -->
+  <path
+    d="M32 22a7 7 0 0 0-7 7c0 3 1.9 5.6 4.6 6.6L28 44h8l-1.6-8.4A7 7 0 0 0 39 29a7 7 0 0 0-7-7Z"
+    fill="#f0a868"
+  />
+  <!-- Floor line: vault / strongroom -->
+  <path d="M22 51h20" stroke="#f0a868" stroke-width="3" stroke-linecap="round" />
+</svg>

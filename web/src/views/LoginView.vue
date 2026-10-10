@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { ApiError } from '@/api/client'
+import logoUrl from '@/assets/logo.svg?url'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -38,7 +39,10 @@ async function submit(): Promise<void> {
 <template>
   <div style="max-width: 380px; margin: 12vh auto">
     <div class="card">
-      <h1 style="margin: 0 0 4px; font-size: 20px">🐼 PandaPass</h1>
+      <h1 style="margin: 0 0 4px; font-size: 20px; display: inline-flex; align-items: center; gap: 8px">
+        <img :src="logoUrl" alt="" style="width: 24px; height: 24px" />
+        PandaPass
+      </h1>
       <p class="dim" style="margin: 0 0 20px; font-size: 13px">
         {{ mode === 'login' ? 'Sign in to your vault' : 'Create an account' }}
       </p>
