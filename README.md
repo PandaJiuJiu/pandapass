@@ -122,4 +122,4 @@ proxy that enforces credential TTL and revocation at the handshake. M3's policy
 engine evaluates secrets routes (admin-only CRUD, regorus-backed), and M4's CA
 can sign both X.509 CSRs and SSH user certificates. Still open: policy
 coverage beyond secrets, GitOps sync, secret scanning, and parts of the PKI web
-UI. See `HANDOFF.md` for the current state.
+UI.

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
@@ -11,7 +11,16 @@ import UiCard from '@/components/ui/UiCard.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
-const { t } = useI18n()
+const { t, tm } = useI18n()
+
+/**
+ * `tm()` returns `unknown` without typed messages. `login.brandFeatures` is a
+ * readonly string array in the dictionary; assert the shape once and recompute
+ * on locale change so the brand panel reflects the active language.
+ */
+const features = computed<readonly string[]>(
+  () => tm('login.brandFeatures') as readonly string[],
+)
 
 const isSetup = ref(false)
 const setupChecked = ref(false)
@@ -81,7 +90,7 @@ async function submit(): Promise<void> {
         </div>
         <p class="tagline">{{ t('login.brandTagline') }}</p>
         <ul class="features">
-          <li v-for="f in t('login.brandFeatures')" :key="f">{{ f }}</li>
+          <li v-for="f in features" :key="f">{{ f }}</li>
         </ul>
       </div>
     </div>

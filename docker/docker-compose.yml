@@ -12,7 +12,7 @@
 services:
   pandapass:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
     image: ghcr.io/pandajiujiu/pandapass:0.0.1
     restart: unless-stopped
