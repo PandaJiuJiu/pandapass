@@ -14,7 +14,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.allinone
-    image: pandapass/allinone:latest
+    image: ghcr.io/pandajiujiu/pandapass:0.0.1
     restart: unless-stopped
 
     # Web UI on 8080, API on 8233, dynamic PostgreSQL proxy on 5433.

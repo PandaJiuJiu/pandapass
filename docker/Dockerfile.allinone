@@ -7,14 +7,14 @@
 # node builder, and only the artifacts are copied into the release image.
 #
 # Build:
-#   docker build -f docker/Dockerfile.allinone -t pandapass/allinone:latest .
+#   docker build -f docker/Dockerfile.allinone -t ghcr.io/pandajiujiu/pandapass:0.0.1 .
 #   docker compose build   # equivalent via docker-compose.yml
 #
 # Run:
 #   docker run -d -p 8080:8080 -p 8233:8233 \
 #     -v pandapass-data:/data \
 #     -e PANDAPASS_PUBLIC_URL=https://vault.example.com \
-#     pandapass/allinone:latest
+#     ghcr.io/pandajiujiu/pandapass:0.0.1
 
 # ── builder: server + cli ────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/rust:1.88-slim AS server-builder

@@ -2554,7 +2554,7 @@ dependencies = [
 
 [[package]]
 name = "pandapass-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "age",
  "anyhow",
@@ -2583,7 +2583,7 @@ dependencies = [
 
 [[package]]
 name = "pandapass-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "aes-gcm",
  "age",
@@ -2621,7 +2621,7 @@ dependencies = [
 
 [[package]]
 name = "pandapass-db"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "pandapass-server"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
