@@ -182,7 +182,7 @@ async fn request_id_middleware(
 /// Auth middleware for regular routes
 async fn auth_middleware(
     State(state): State<AppState>,
-    mut req: axum::http::Request<axum::body::Body>,
+    req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Result<axum::http::Response<axum::body::Body>, ApiError> {
     // Bearer-token requests skip CSRF entirely; cookie sessions must prove they

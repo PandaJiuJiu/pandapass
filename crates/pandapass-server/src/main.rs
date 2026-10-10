@@ -100,7 +100,6 @@ async fn run() -> anyhow::Result<()> {
     //   3. None — chain is disabled.
     let (audit_logger, chain_key): (Arc<dyn pandapass_core::AuditLogger>, Vec<u8>) =
         if let Some(path) = &config.audit_chain_key_file {
-            use sha2::Digest;
             let hex_str = std::fs::read_to_string(path)
                 .map_err(|e| anyhow::anyhow!("audit chain key file {path:?}: {e}"))?;
             let bytes = hex::decode(hex_str.trim())
