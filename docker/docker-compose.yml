@@ -28,6 +28,7 @@ services:
       - "127.0.0.1:5433:5433"
 
     environment:
+      # ── core ──────────────────────────────────────────────────────────────
       # Three slashes is correct. `sqlite://data/...` is a *relative* path, and
       # the server would then write inside the container instead of the volume,
       # losing every secret on each recreate.
@@ -35,47 +36,107 @@ services:
       PANDAPASS_LISTEN: 0.0.0.0:8233
       PANDAPASS_PUBLIC_URL: ${PANDAPASS_PUBLIC_URL:-http://localhost:8080}
 
+      # ── server age key ────────────────────────────────────────────────────
+      # Read from a file so the private key never appears in the process
+      # environment, where `docker inspect` would show it. Generated on first
+      # boot by `pandapass-server --init` (inside the image's s6 run script)
+      # into /data/server-age.key.
+      PANDAPASS_SERVER_AGE_IDENTITY_FILE: /data/server-age.key
+
+      # ── audit chain key ───────────────────────────────────────────────────
+      # Independent 32-byte hex key. Lives on the same volume as the DB so the
+      # two back up together; the chain key is independent of the age identity
+      # so rotating one does not invalidate the other.
+      PANDAPASS_AUDIT_CHAIN_KEY_FILE: /data/audit-chain.key
+
+      # ── auth & sessions ───────────────────────────────────────────────────
       # Off by default and kept off: a vault that hands accounts to whoever
       # finds the URL is not a vault. The first-run web setup creates the admin
       # without this flag; it only opens self-service signups later.
       PANDAPASS_ALLOW_REGISTRATION: ${PANDAPASS_ALLOW_REGISTRATION:-false}
 
-      # Comma-separated. Empty means same-origin only, which is right behind a
-      # proxy serving the web UI from the same host.
-      PANDAPASS_ALLOWED_ORIGINS: ${PANDAPASS_ALLOWED_ORIGINS:-}
-
-      # Cookies get the Secure flag automatically when PUBLIC_URL is https.
-      PANDAPASS_COOKIE_SECURE: ${PANDAPASS_COOKIE_SECURE:-}
-
       # Force TOTP on every account. Worth turning on for any real deployment.
       PANDAPASS_REQUIRE_TOTP: ${PANDAPASS_REQUIRE_TOTP:-false}
+
+      # Absolute session lifetime (days) and idle timeout (seconds). Idle is
+      # 0 (unset) by default: only the absolute TTL applies. Set both in
+      # production.
       PANDAPASS_SESSION_TTL_DAYS: ${PANDAPASS_SESSION_TTL_DAYS:-30}
+      PANDAPASS_SESSION_IDLE_TIMEOUT_SECS: ${PANDAPASS_SESSION_IDLE_TIMEOUT_SECS:-}
 
-      # Set when a command allowlist is configured: `pandapass run` refuses to
-      # spawn anything not named here, which bounds what an agent can do even
-      # with a valid token.
-      PANDAPASS_COMMAND_ALLOWLIST: ${PANDAPASS_COMMAND_ALLOWLIST:-}
-      PANDAPASS_COMMAND_TIMEOUT_SECS: ${PANDAPASS_COMMAND_TIMEOUT_SECS:-120}
+      # Login rate limit per IP. The defaults (5 attempts / 15 minutes) are
+      # tuned for single-user; loosen for a busy shared host.
+      PANDAPASS_AUTH_RATE_LIMIT_MAX: ${PANDAPASS_AUTH_RATE_LIMIT_MAX:-5}
+      PANDAPASS_AUTH_RATE_LIMIT_WINDOW_SECS: ${PANDAPASS_AUTH_RATE_LIMIT_WINDOW_SECS:-900}
 
-      # The server's age private key is read from a file so it never appears in
-      # the process environment, where `docker inspect` would show it. It is
-      # generated on first boot by `pandapass-server --init` (inside the image's
-      # s6 run script) into /data/server-age.key.
-      PANDAPASS_SERVER_AGE_IDENTITY_FILE: /data/server-age.key
+      # ── cookies ───────────────────────────────────────────────────────────
+      # Cookies get the Secure flag automatically when PUBLIC_URL is https.
+      # Force-override when the public URL doesn't say https but a TLS proxy
+      # is in front (common with reverse proxies on a private port).
+      PANDAPASS_COOKIE_SECURE: ${PANDAPASS_COOKIE_SECURE:-}
 
-      # M2 dynamic credential proxy. Leave UPSTREAM empty to keep the proxy
-      # disabled (the default). When set, the proxy listens on 5433 and
-      # forwards PostgreSQL wire traffic to the configured upstream.
+      # ── CORS ──────────────────────────────────────────────────────────────
+      # Comma-separated. Empty means same-origin only, which is right behind
+      # nginx serving the web UI from the same host.
+      PANDAPASS_ALLOWED_ORIGINS: ${PANDAPASS_ALLOWED_ORIGINS:-}
+
+      # ── trusted reverse proxies ───────────────────────────────────────────
+      # nginx sits in front of the server in this image; without this list the
+      # server treats every request as coming from 127.0.0.1 and never reads
+      # X-Forwarded-For. Comma-separated CIDRs.
+      PANDAPASS_TRUSTED_PROXY_CIDRS: ${PANDAPASS_TRUSTED_PROXY_CIDRS:-127.0.0.1/32,::1/128}
+
+      # ── dynamic credential proxy (M2) ────────────────────────────────────
+      # Leave UPSTREAM empty to keep the proxy disabled (the default). When
+      # set, the proxy listens on 5433 and forwards PostgreSQL wire traffic
+      # to the configured upstream.
       PANDAPASS_DYNAMIC_PROXY_LISTEN: ${PANDAPASS_DYNAMIC_PROXY_LISTEN:-}
       PANDAPASS_DYNAMIC_PROXY_UPSTREAM: ${PANDAPASS_DYNAMIC_PROXY_UPSTREAM:-}
 
+      # ── agent command runner ─────────────────────────────────────────────
+      # `pandapass run` refuses to spawn anything not named here, which bounds
+      # what an agent can do even with a valid token. Empty = the runner is
+      # effectively disabled (every call is rejected).
+      PANDAPASS_COMMAND_ALLOWLIST: ${PANDAPASS_COMMAND_ALLOWLIST:-}
+      PANDAPASS_COMMAND_TIMEOUT_SECS: ${PANDAPASS_COMMAND_TIMEOUT_SECS:-120}
+
+      # Concurrency cap for the command runner above.
+      PANDAPASS_MAX_CONCURRENT_EXEC: ${PANDAPASS_MAX_CONCURRENT_EXEC:-16}
+
+      # ── admin bootstrap (optional, first run only) ────────────────────────
+      # With PANDAPASS_BOOTSTRAP=true and PANDAPASS_ADMIN_EMAIL set, the
+      # server creates that admin account from PANDAPASS_ADMIN_PASSWORD on
+      # first boot (failing if either is missing or already used). The
+      # password *does* enter the process environment, which means it shows
+      # up in `docker inspect` — only enable this on a host you trust.
+      # Otherwise, leave BOOTSTRAP unset and use the web UI's first-run
+      # screen, which never touches the process environment.
+      PANDAPASS_BOOTSTRAP: ${PANDAPASS_BOOTSTRAP:-}
+      PANDAPASS_ADMIN_EMAIL: ${PANDAPASS_ADMIN_EMAIL:-}
+      PANDAPASS_ADMIN_PASSWORD: ${PANDAPASS_ADMIN_PASSWORD:-}
+
+      # ── logs ──────────────────────────────────────────────────────────────
       # Structured logs. These carry request metadata only — never secret values.
       RUST_LOG: ${RUST_LOG:-info}
 
+    # ── secrets (mounted as files) ────────────────────────────────────────
+    # The audit chain key never enters the process environment; the server
+    # reads it from this file path. Drop it in via `docker secret create
+    # audit_chain_key <some-32-byte-hex>` and uncomment the bottom-level
+    # `secrets:` block. If you don't define the secret, leave the env set
+    # to the default path and the chain falls back to the server's age
+    # identity (one-time, irreversible choice).
+    secrets:
+      - source: audit_chain_key
+        target: /data/audit-chain.key
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+
     volumes:
-      # The database and the age identity. This volume is the vault: losing it
-      # loses every secret, and losing only the age identity makes every
-      # envelope sealed to the server unopenable.
+      # The database, server age key, and audit chain key. This volume is the
+      # vault: losing it loses every secret, and losing only the age identity
+      # makes every envelope sealed to the server unopenable.
       - pandapass-data:/data
 
     # `--init` is handled inside the image's s6 run script, so no `command:`
@@ -96,3 +157,17 @@ services:
 
 volumes:
   pandapass-data:
+
+# ── compose-managed secrets ──────────────────────────────────────────────
+# Define `audit_chain_key` in an external secrets manager (e.g. `docker
+# secret create`) or via a `secrets:` file. It never appears in the
+# container's process environment.
+#
+# Minimum:
+#   echo -n "some-32-byte-hex" | docker secret create audit_chain_key -
+#
+# Then uncomment the top-level `secrets:` block below.
+#
+# secrets:
+#   audit_chain_key:
+#     external: true
