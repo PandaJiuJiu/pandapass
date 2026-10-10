@@ -2,23 +2,24 @@
 
 ## The shape of it
 
-One host, two containers, one volume. The server holds an age private key that
-can unwrap every user's master key, so **do not put this on the public
-internet**. Run it on a machine you control, reachable over Tailscale or a VPN,
-behind a TLS-terminating proxy.
+One host, one container, one volume. nginx and the server run side by side
+under s6-overlay inside a single all-in-one container. The container holds an
+age private key that can unwrap every user's master key, so **do not put this
+on the public internet**. Run it on a machine you control, reachable over
+Tailscale or a VPN, behind a TLS-terminating proxy.
 
 ```
-                    ┌──────────────┐
-   browser ────────▶│  web (nginx) │  127.0.0.1:8080
-                    └──────┬───────┘
-                           │ /api → pandapass:8233
-                    ┌──────▼───────┐
-                    │   server     │  0.0.0.0:8233 (internal only)
-                    └──────┬───────┘
-                           │
-                    ┌──────▼───────┐
-                    │  /data       │  pandapass.db + server-age.key
-                    └──────────────┘
+                      ┌──────────────────────────┐
+ browser ────────────▶│   container: pandapass   │
+                      │  ┌────────┐    ┌───────┐ │
+                      │  │ nginx  │───▶│server │ │
+                      │  │ :8080   │    │:8233  │ │
+                      │  └────────┘    └───┬───┘ │
+                      │                     │     │
+                      │            ┌────────▼────┐│
+                      │            │   /data     ││  pandapass.db + server-age.key
+                      │            └─────────────┘│
+                      └──────────────────────────┘
 ```
 
 ## Start it
@@ -63,10 +64,11 @@ An account created here has no age key, so it cannot store secrets. Enrol one
 from the CLI on the same machine:
 
 ```bash
-docker compose exec pandapass pandapass keygen
-# it writes to ~/.pandapass/age.key inside the container; copy it out:
-docker compose cp pandapass:/root/.pandapass/age.key ./alice-age.key
+# The container runs as nonroot with no HOME, so pass --out explicitly:
+docker compose exec pandapass pandapass keygen --out /tmp/alice-age.key
+docker compose cp pandapass:/tmp/alice-age.key ./alice-age.key
 chmod 600 alice-age.key
+docker compose exec pandapass rm -f /tmp/alice-age.key
 ```
 
 Keep that file off the server. It is what lets a member read secrets without the
@@ -124,6 +126,9 @@ your PostgreSQL and the proxy starts on boot.
 
 The database and the age key must be backed up together, from the same moment.
 A backup of one without the other is not a backup.
+
+The image ships `sqlite3` (installed in the runtime stage of
+`docker/Dockerfile.allinone`), so the backup runs entirely inside the container.
 
 ```bash
 #!/bin/bash

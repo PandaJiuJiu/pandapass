@@ -29,6 +29,10 @@ the one thing MCP could not: spawn a child and inject into its `environ`.
 
 ## Quick start
 
+Docker deployment is a single all-in-one container: nginx serves the web UI on
+:8080 and proxies `/api/` to the server on :8233, both supervised by s6-overlay.
+See [docs/DEPLOY.md](docs/DEPLOY.md) for full deployment instructions.
+
 ```bash
 docker compose up -d
 

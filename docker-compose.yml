@@ -1,5 +1,9 @@
 # PandaPass — single-host deployment.
 #
+# All-in-one container: nginx (web UI on :8080) and pandapass-server (:8233)
+# run side by side in one image, supervised by s6-overlay. nginx proxies
+# /api/ to the local server, so the browser only ever talks to one origin.
+#
 # The design assumption is that this runs on a machine you control, reachable
 # over Tailscale or a VPN. Do not expose port 8233 to the public internet: the
 # server holds an age private key that can unwrap every envelope, so an
@@ -9,17 +13,18 @@ services:
   pandapass:
     build:
       context: .
-      dockerfile: docker/Dockerfile.server
-    image: pandapass/server:latest
+      dockerfile: docker/Dockerfile.allinone
+    image: pandapass/allinone:latest
     restart: unless-stopped
 
-    # Bind to loopback by default. Put a TLS-terminating reverse proxy in front
-    # (or set PANDAPASS_PUBLIC_URL and expose deliberately) rather than
-    # publishing 8233 on all interfaces.
+    # Web UI on 8080, API on 8233, dynamic PostgreSQL proxy on 5433.
+    # All loopback-only; clients reach them over the same VPN as the API. Put
+    # a TLS-terminating reverse proxy in front (or set PANDAPASS_PUBLIC_URL and
+    # expose deliberately) rather than publishing 8233 on all interfaces.
     ports:
+      - "127.0.0.1:8080:8080"
       - "127.0.0.1:8233:8233"
-      # Dynamic credential proxy (M2): PostgreSQL wire protocol. Also
-      # loopback-only; clients reach it over the same VPN as the API.
+      # Dynamic credential proxy (M2): PostgreSQL wire protocol.
       - "127.0.0.1:5433:5433"
 
     environment:
@@ -28,7 +33,7 @@ services:
       # losing every secret on each recreate.
       PANDAPASS_DB_URL: sqlite:///data/pandapass.db?mode=rwc
       PANDAPASS_LISTEN: 0.0.0.0:8233
-      PANDAPASS_PUBLIC_URL: ${PANDAPASS_PUBLIC_URL:-http://localhost:8233}
+      PANDAPASS_PUBLIC_URL: ${PANDAPASS_PUBLIC_URL:-http://localhost:8080}
 
       # Off by default and kept off: a vault that hands accounts to whoever
       # finds the URL is not a vault. Register the first admin by hand, then
@@ -53,7 +58,9 @@ services:
       PANDAPASS_COMMAND_TIMEOUT_SECS: ${PANDAPASS_COMMAND_TIMEOUT_SECS:-120}
 
       # The server's age private key is read from a file so it never appears in
-      # the process environment, where `docker inspect` would show it.
+      # the process environment, where `docker inspect` would show it. It is
+      # generated on first boot by `pandapass-server --init` (inside the image's
+      # s6 run script) into /data/server-age.key.
       PANDAPASS_SERVER_AGE_IDENTITY_FILE: /data/server-age.key
 
       # M2 dynamic credential proxy. Leave UPSTREAM empty to keep the proxy
@@ -71,45 +78,13 @@ services:
       # envelope sealed to the server unopenable.
       - pandapass-data:/data
 
-    # The server generates its own age identity on first boot. This has to be in
-    # the binary rather than an entrypoint script because the runtime image is
-    # distroless — there is no /bin/sh to run one, which is the whole reason
-    # the image is worth having.
-    command: ["--init"]
-
-    # `read_only` is safe here: the only writable path is the /data volume, and
-    # the age key is written there.
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  web:
-    build:
-      context: ./web
-      dockerfile: ../docker/Dockerfile.web
-    image: pandapass/web:latest
-    restart: unless-stopped
-
-    ports:
-      - "127.0.0.1:8080:80"
-
-    depends_on:
-      pandapass:
-        condition: service_healthy
-
-    cap_drop:
-      - ALL
+    # `--init` is handled inside the image's s6 run script, so no `command:`
+    # override is needed here.
+    #
+    # read_only and cap_drop ALL are intentionally NOT set: s6-overlay writes
+    # /run, nginx needs writable cache dirs and /tmp, and s6-setuidgid needs
+    # CAP_SETUID/CAP_SETGID (and fix-perms needs CAP_CHOWN) to drop privileges
+    # to nonroot. no-new-privileges is kept.
     security_opt:
       - no-new-privileges:true
 
