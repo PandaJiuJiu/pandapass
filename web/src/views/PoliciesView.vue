@@ -1,6 +1,18 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api, type Policy, type PolicyBinding } from '@/api/client'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiTextarea from '@/components/ui/UiTextarea.vue'
+import UiSelect from '@/components/ui/UiSelect.vue'
+import UiTable from '@/components/ui/UiTable.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiModal from '@/components/ui/UiModal.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
+
+const { t } = useI18n()
 
 const loading = ref(false)
 const policies = ref<Policy[]>([])
@@ -51,11 +63,11 @@ async function loadBindings() {
 async function handleCreatePolicy() {
   policyFormError.value = ''
   if (!policyForm.value.name.trim()) {
-    policyFormError.value = 'Policy name is required'
+    policyFormError.value = t('policies.policyNameRequired')
     return
   }
   if (!policyForm.value.rego_source.trim()) {
-    policyFormError.value = 'Rego source is required'
+    policyFormError.value = t('policies.regoSourceRequired')
     return
   }
 
@@ -66,7 +78,7 @@ async function handleCreatePolicy() {
     policyForm.value = { name: '', rego_source: '' }
     await loadPolicies()
   } catch (e: any) {
-    policyFormError.value = e.message ?? 'Failed to create policy'
+    policyFormError.value = e.message ?? t('policies.createFailed')
   } finally {
     creating.value = false
   }
@@ -75,7 +87,7 @@ async function handleCreatePolicy() {
 async function handleBindPolicy() {
   bindFormError.value = ''
   if (!bindForm.value.policy_id) {
-    bindFormError.value = 'Select a policy'
+    bindFormError.value = t('policies.selectPolicyRequired')
     return
   }
 
@@ -90,14 +102,14 @@ async function handleBindPolicy() {
     bindForm.value = { policy_id: '', project_id: '', env_id: '' }
     await loadBindings()
   } catch (e: any) {
-    bindFormError.value = e.message ?? 'Failed to bind policy'
+    bindFormError.value = e.message ?? t('policies.bindFailed')
   } finally {
     binding.value = false
   }
 }
 
 async function handleUnbind(id: string) {
-  if (!confirm('Unbind this policy?')) return
+  if (!confirm(t('policies.unbindConfirm'))) return
   try {
     await api.unbindPolicy(id)
     await loadBindings()
@@ -107,7 +119,7 @@ async function handleUnbind(id: string) {
 }
 
 async function handleDeletePolicy(id: string) {
-  if (!confirm('Delete this policy? This cannot be undone.')) return
+  if (!confirm(t('policies.deleteConfirm'))) return
   try {
     await api.deletePolicy(id)
     await loadPolicies()
@@ -136,184 +148,162 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="policies-view">
-    <div class="spread" style="margin-bottom: 16px">
-      <h2 style="margin: 0">Policies (OPA)</h2>
-      <div class="row">
-        <button class="primary" @click="showCreatePolicyModal = true">Create Policy</button>
-        <button @click="showBindModal = true">Bind Policy</button>
-      </div>
-    </div>
+  <div>
+    <UiPageHeader :title="t('policies.title')">
+      <template #actions>
+        <UiButton variant="primary" size="sm" @click="showCreatePolicyModal = true">
+          {{ t('policies.createPolicy') }}
+        </UiButton>
+        <UiButton variant="secondary" size="sm" @click="showBindModal = true">
+          {{ t('policies.bindPolicy') }}
+        </UiButton>
+      </template>
+    </UiPageHeader>
 
-    <div class="card" style="padding: 0">
-      <div class="section-title">Policies</div>
-      <table v-if="!loading">
-        <thead>
+    <!-- Policies table -->
+    <UiCard variant="outlined" padding>
+      <h2 class="section-title">{{ t('policies.policies') }}</h2>
+      <UiTable :loading="loading" :empty="!policies.length" :empty-text="t('policies.noPolicies')" :colspan="6">
+        <template #head>
           <tr>
-            <th style="width: 200px">Name</th>
-            <th style="width: 100px">Status</th>
-            <th style="width: 180px">Created</th>
-            <th style="width: 180px">Updated</th>
-            <th>Rego Source</th>
-            <th style="width: 150px">Actions</th>
+            <th style="width: 180px">{{ t('policies.name') }}</th>
+            <th style="width: 90px">{{ t('policies.status') }}</th>
+            <th style="width: 170px">{{ t('policies.created') }}</th>
+            <th style="width: 170px">{{ t('policies.updated') }}</th>
+            <th>{{ t('policies.regoSource') }}</th>
+            <th style="width: 150px">{{ t('policies.actions') }}</th>
           </tr>
-        </thead>
-        <tbody>
-          <tr v-for="p in policies" :key="p.id">
-            <td><strong>{{ p.name }}</strong></td>
-            <td>
-              <span :class="p.enabled ? 'ok' : 'dim'">
-                {{ p.enabled ? 'Enabled' : 'Disabled' }}
-              </span>
-            </td>
-            <td class="dim mono" style="font-size: 12px">{{ formatDate(p.created_at) }}</td>
-            <td class="dim mono" style="font-size: 12px">{{ formatDate(p.updated_at) }}</td>
-            <td class="mono dim" style="font-size: 11px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-              {{ p.rego_source }}
-            </td>
-            <td>
-              <div class="row" style="gap: 8px">
-                <button
-                  class="primary"
-                  size="small"
-                  @click="handleTogglePolicy(p)"
-                >
-                  {{ p.enabled ? 'Disable' : 'Enable' }}
-                </button>
-                <button class="danger" @click="handleDeletePolicy(p.id)">Delete</button>
-              </div>
-            </td>
-          </tr>
-          <tr v-if="!policies.length">
-            <td colspan="6" class="dim">No policies yet.</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else class="dim" style="text-align: center; padding: 20px">Loading…</p>
-    </div>
+        </template>
 
-    <div class="card" style="padding: 0; margin-top: 16px">
-      <div class="section-title">Policy Bindings</div>
-      <table v-if="!loading">
-        <thead>
+        <tr v-for="p in policies" :key="p.id">
+          <td><strong>{{ p.name }}</strong></td>
+          <td>
+            <UiBadge :variant="p.enabled ? 'ok' : 'dim'" :dot="true">
+              {{ p.enabled ? t('policies.enabled') : t('policies.disabled') }}
+            </UiBadge>
+          </td>
+          <td class="dim mono small">{{ formatDate(p.created_at) }}</td>
+          <td class="dim mono small">{{ formatDate(p.updated_at) }}</td>
+          <td class="mono dim rego-cell">{{ p.rego_source }}</td>
+          <td>
+            <div class="row actions">
+              <UiButton size="sm" :variant="p.enabled ? 'secondary' : 'primary'" @click="handleTogglePolicy(p)">
+                {{ p.enabled ? t('policies.toggleDisable') : t('policies.toggleEnable') }}
+              </UiButton>
+              <UiButton size="sm" variant="danger" @click="handleDeletePolicy(p.id)">
+                {{ t('policies.delete') }}
+              </UiButton>
+            </div>
+          </td>
+        </tr>
+      </UiTable>
+    </UiCard>
+
+    <!-- Policy bindings -->
+    <UiCard variant="outlined" padding class="bindings-card">
+      <h2 class="section-title">{{ t('policies.policyBindings') }}</h2>
+      <UiTable :loading="loading" :empty="!bindings.length" :empty-text="t('policies.noBindings')" :colspan="5">
+        <template #head>
           <tr>
-            <th style="width: 200px">Policy</th>
-            <th style="width: 200px">Project</th>
-            <th style="width: 200px">Environment</th>
-            <th style="width: 180px">Created</th>
-            <th style="width: 100px">Actions</th>
+            <th style="width: 180px">{{ t('policies.policy') }}</th>
+            <th style="width: 180px">{{ t('policies.project') }}</th>
+            <th style="width: 180px">{{ t('policies.environment') }}</th>
+            <th style="width: 170px">{{ t('policies.createdCol') }}</th>
+            <th style="width: 100px">{{ t('policies.actions') }}</th>
           </tr>
-        </thead>
-        <tbody>
-          <tr v-for="b in bindings" :key="b.id">
-            <td class="mono" style="font-size: 12px">
-              {{ policies.find(x => x.id === b.policy_id)?.name ?? b.policy_id }}
-            </td>
-            <td class="mono dim" style="font-size: 12px">{{ b.project_id || '(global)' }}</td>
-            <td class="mono dim" style="font-size: 12px">{{ b.env_id || '(all)' }}</td>
-            <td class="dim mono" style="font-size: 12px">{{ formatDate(b.created_at) }}</td>
-            <td>
-              <button class="danger" @click="handleUnbind(b.id)">Unbind</button>
-            </td>
-          </tr>
-          <tr v-if="!bindings.length">
-            <td colspan="5" class="dim">No bindings yet.</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else class="dim" style="text-align: center; padding: 20px">Loading…</p>
-    </div>
+        </template>
+
+        <tr v-for="b in bindings" :key="b.id">
+          <td class="mono small">
+            {{ policies.find(x => x.id === b.policy_id)?.name ?? b.policy_id }}
+          </td>
+          <td class="mono dim small">{{ b.project_id || t('policies.global') }}</td>
+          <td class="mono dim small">{{ b.env_id || t('policies.all') }}</td>
+          <td class="dim mono small">{{ formatDate(b.created_at) }}</td>
+          <td>
+            <UiButton size="sm" variant="danger" @click="handleUnbind(b.id)">
+              {{ t('policies.unbind') }}
+            </UiButton>
+          </td>
+        </tr>
+      </UiTable>
+    </UiCard>
 
     <!-- Create Policy Modal -->
-    <div v-if="showCreatePolicyModal" class="modal-overlay" @click.self="showCreatePolicyModal = false">
-      <div class="modal" style="width: 700px">
-        <h3>Create Policy</h3>
-        <div class="card">
-          <label>
-            Name
-            <input v-model="policyForm.name" placeholder="e.g., deny-prod-read-for-editors" />
-          </label>
-          <label>
-            Rego Source
-            <textarea
-              v-model="policyForm.rego_source"
-              :placeholder="regoPlaceholder"
-              rows="12"
-              style="font-family: var(--mono); font-size: 13px; width: 100%"
-            />
-          </label>
-        </div>
-        <p v-if="policyFormError" class="error">{{ policyFormError }}</p>
-        <div class="spread" style="margin-top: 16px; justify-content: flex-end">
-          <button @click="showCreatePolicyModal = false">Cancel</button>
-          <button class="primary" @click="handleCreatePolicy" :disabled="creating">
-            {{ creating ? 'Creating…' : 'Create' }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <UiModal :open="showCreatePolicyModal" :title="t('policies.createTitle')" size="lg" @close="showCreatePolicyModal = false">
+      <UiInput
+        v-model="policyForm.name"
+        :label="t('policies.policyName')"
+        :placeholder="t('policies.policyNamePlaceholder')"
+      />
+      <UiTextarea
+        v-model="policyForm.rego_source"
+        :label="t('policies.regoSourceLabel')"
+        :placeholder="regoPlaceholder"
+        :rows="12"
+        mono
+      />
+      <p v-if="policyFormError" class="error">{{ policyFormError }}</p>
+      <template #footer>
+        <UiButton variant="secondary" @click="showCreatePolicyModal = false">
+          {{ t('policies.cancel') }}
+        </UiButton>
+        <UiButton variant="primary" :loading="creating" :disabled="creating" @click="handleCreatePolicy">
+          {{ creating ? t('policies.creating') : t('policies.create') }}
+        </UiButton>
+      </template>
+    </UiModal>
 
     <!-- Bind Policy Modal -->
-    <div v-if="showBindModal" class="modal-overlay" @click.self="showBindModal = false">
-      <div class="modal" style="width: 500px">
-        <h3>Bind Policy to Project/Environment</h3>
-        <div class="card">
-          <label>
-            Policy
-            <select v-model="bindForm.policy_id">
-              <option value="" disabled>Select a policy</option>
-              <option v-for="p in policies" :key="p.id" :value="p.id">{{ p.name }}</option>
-            </select>
-          </label>
-          <label>
-            Project ID (optional)
-            <input v-model="bindForm.project_id" placeholder="UUID or leave empty for global" />
-          </label>
-          <label>
-            Environment ID (optional)
-            <input v-model="bindForm.env_id" placeholder="UUID or leave empty for all" />
-          </label>
-        </div>
-        <p v-if="bindFormError" class="error">{{ bindFormError }}</p>
-        <div class="spread" style="margin-top: 16px; justify-content: flex-end">
-          <button @click="showBindModal = false">Cancel</button>
-          <button class="primary" @click="handleBindPolicy" :disabled="binding">
-            {{ binding ? 'Binding…' : 'Bind' }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <UiModal :open="showBindModal" :title="t('policies.bindTitle')" size="md" @close="showBindModal = false">
+      <UiSelect v-model="bindForm.policy_id" :label="t('policies.policy')" :placeholder="t('policies.selectPolicy')">
+        <option v-for="p in policies" :key="p.id" :value="p.id">{{ p.name }}</option>
+      </UiSelect>
+      <UiInput
+        v-model="bindForm.project_id"
+        mono
+        :label="t('policies.projectId')"
+        :placeholder="t('policies.projectIdPlaceholder')"
+      />
+      <UiInput
+        v-model="bindForm.env_id"
+        mono
+        :label="t('policies.envId')"
+        :placeholder="t('policies.envIdPlaceholder')"
+      />
+      <p v-if="bindFormError" class="error">{{ bindFormError }}</p>
+      <template #footer>
+        <UiButton variant="secondary" @click="showBindModal = false">
+          {{ t('policies.cancel') }}
+        </UiButton>
+        <UiButton variant="primary" :loading="binding" :disabled="binding" @click="handleBindPolicy">
+          {{ binding ? t('policies.binding') : t('policies.bind') }}
+        </UiButton>
+      </template>
+    </UiModal>
   </div>
 </template>
 
 <style scoped>
-.policies-view {
-  padding: 16px;
-}
 .section-title {
+  margin: 0 0 var(--space-3);
+  font-size: 15px;
   font-weight: 600;
-  margin-bottom: 12px;
-  font-size: 14px;
-  color: var(--text-dim);
 }
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
+
+.bindings-card {
+  margin-top: var(--space-4);
 }
-.modal {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 24px;
-  max-height: 80vh;
-  overflow: auto;
+
+.rego-cell {
+  font-size: 11px;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.modal h3 {
-  margin: 0 0 16px;
+
+.actions {
+  gap: var(--space-2);
 }
 </style>

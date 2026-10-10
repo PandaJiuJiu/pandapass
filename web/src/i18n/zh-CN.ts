@@ -42,6 +42,8 @@ export default {
     saveFailed: '保存失败',
     deleteFailed: '删除失败',
     revokeFailed: '吊销失败',
+    updateFailed: '更新失败',
+    scanFailed: '扫描失败',
   },
   nav: {
     workspace: '工作区',
@@ -342,5 +344,6 @@ export default {
     ttlTooShort: 'TTL 必须至少为 60 秒',
     createFailed: '创建凭据失败',
     revokeConfirm: '确定吊销此凭据吗？任何使用它的服务都会立即失效。',
+    revoke: '吊销',
   },
 } satisfies typeof en

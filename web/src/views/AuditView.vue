@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api, ApiError, type AuditEntry } from '@/api/client'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
+import UiTable from '@/components/ui/UiTable.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
+import UiPagination from '@/components/ui/UiPagination.vue'
 
+const { t } = useI18n()
 const entries = ref<AuditEntry[]>([])
 const loading = ref(true)
 const error = ref('')
@@ -27,6 +35,20 @@ function outcomeColour(o: AuditEntry['outcome']): string {
   }
 }
 
+function outcomeBadge(o: AuditEntry['outcome']): 'ok' | 'danger' | 'warn' | 'dim' {
+  switch (o) {
+    case 'success':
+      return 'ok'
+    case 'denied':
+      return 'danger'
+    case 'failure':
+    case 'error':
+      return 'warn'
+    default:
+      return 'dim'
+  }
+}
+
 async function refresh(): Promise<void> {
   loading.value = true
   error.value = ''
@@ -38,24 +60,15 @@ async function refresh(): Promise<void> {
     error.value =
       e instanceof ApiError
         ? e.message
-        : 'Could not load the audit log. Reading it needs the read:audit scope or admin.'
+        : t('common.loadFailed')
   } finally {
     loading.value = false
   }
 }
 
-function next(): void {
-  if (page.value * perPage < total.value) {
-    page.value += 1
-    refresh()
-  }
-}
-
-function prev(): void {
-  if (page.value > 1) {
-    page.value -= 1
-    refresh()
-  }
+function goToPage(p: number): void {
+  page.value = p
+  refresh()
 }
 
 onMounted(refresh)
@@ -63,57 +76,71 @@ onMounted(refresh)
 
 <template>
   <div>
-    <div class="spread" style="margin-bottom: 16px">
-      <h1 style="font-size: 20px; margin: 0">Audit log</h1>
-      <button @click="refresh">Refresh</button>
-    </div>
+    <UiPageHeader :title="t('audit.title')" :description="t('audit.subtitle')">
+      <template #actions>
+        <UiButton variant="ghost" size="sm" @click="refresh">
+          {{ t('audit.refresh') }}
+        </UiButton>
+      </template>
+    </UiPageHeader>
 
-    <p class="dim" style="font-size: 13px">
-      Every read, write, and denial. Secret <em>values</em> are never recorded —
-      only the key names and the outcome.
-    </p>
+    <UiAlert v-if="error" variant="error" class="page-alert">{{ error }}</UiAlert>
 
-    <p v-if="error" class="error">{{ error }}</p>
-    <p v-if="loading" class="dim">Loading…</p>
-
-    <div v-else class="card" style="padding: 0">
-      <table>
-        <thead>
+    <UiCard variant="outlined" padding>
+      <UiTable
+        :loading="loading"
+        :empty="!entries.length"
+        :empty-text="t('audit.noEntries')"
+        :colspan="5"
+      >
+        <template #head>
           <tr>
-            <th style="width: 18%">When</th>
-            <th style="width: 20%">Action</th>
-            <th style="width: 20%">Key</th>
-            <th style="width: 14%">Outcome</th>
-            <th style="width: 28%">Detail</th>
+            <th style="width: 18%">{{ t('audit.when') }}</th>
+            <th style="width: 20%">{{ t('audit.action') }}</th>
+            <th style="width: 20%">{{ t('audit.key') }}</th>
+            <th style="width: 14%">{{ t('audit.outcome') }}</th>
+            <th style="width: 28%">{{ t('audit.detail') }}</th>
           </tr>
-        </thead>
-        <tbody>
-          <tr v-for="e in entries" :key="e.id">
-            <td class="dim mono" style="font-size: 12px">
-              {{ new Date(e.ts).toLocaleString() }}
-            </td>
-            <td class="mono" style="font-size: 12px">{{ e.action }}</td>
-            <td class="mono" style="font-size: 12px">{{ e.secret_key ?? '—' }}</td>
-            <td :style="{ color: outcomeColour(e.outcome), fontSize: '12px' }">
-              {{ e.outcome }}
-            </td>
-            <td class="dim" style="font-size: 12px; overflow-wrap: anywhere">
-              {{ e.meta ? JSON.stringify(e.meta) : '' }}
-            </td>
-          </tr>
-          <tr v-if="!entries.length">
-            <td colspan="5" class="dim">No entries.</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+        </template>
 
-    <div v-if="total > perPage" class="row" style="justify-content: center; margin-top: 12px">
-      <button :disabled="page === 1" @click="prev">Newer</button>
-      <span class="dim mono">
-        page {{ page }} of {{ Math.ceil(total / perPage) }} · {{ total }} entries
-      </span>
-      <button :disabled="page * perPage >= total" @click="next">Older</button>
-    </div>
+        <tr v-for="e in entries" :key="e.id">
+          <td class="dim mono small">
+            {{ new Date(e.ts).toLocaleString() }}
+          </td>
+          <td class="mono small">{{ e.action }}</td>
+          <td class="mono small">{{ e.secret_key ?? '—' }}</td>
+          <td :style="{ color: outcomeColour(e.outcome) }" class="small">
+            <UiBadge :variant="outcomeBadge(e.outcome)">
+              {{ e.outcome }}
+            </UiBadge>
+          </td>
+          <td class="dim small" style="overflow-wrap: anywhere">
+            {{ e.meta ? JSON.stringify(e.meta) : '' }}
+          </td>
+        </tr>
+      </UiTable>
+
+      <UiPagination
+        :page="page"
+        :total="total"
+        :per-page="perPage"
+        :newer-label="t('audit.newer')"
+        :older-label="t('audit.older')"
+        :page-label="t('audit.page')"
+        :of-label="t('audit.of')"
+        :entries-label="t('audit.entries')"
+        @change="goToPage"
+      />
+    </UiCard>
   </div>
 </template>
+
+<style scoped>
+.page-alert {
+  margin-bottom: var(--space-4);
+}
+
+.small {
+  font-size: 12px;
+}
+</style>

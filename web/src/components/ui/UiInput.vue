@@ -2,7 +2,7 @@
 withDefaults(
   defineProps<{
     label?: string
-    modelValue: string
+    modelValue: string | number
     type?: string
     placeholder?: string
     hint?: string
@@ -15,7 +15,7 @@ withDefaults(
   { type: 'text', spellcheck: false, mono: false },
 )
 
-defineEmits<{ (e: 'update:modelValue', value: string): void }>()
+defineEmits<{ (e: 'update:modelValue', value: string | number): void }>()
 </script>
 
 <template>

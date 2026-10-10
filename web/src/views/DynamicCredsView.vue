@@ -1,9 +1,19 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { api, type DynamicCred, type CreateDynamicCredRequest } from '@/api/client'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiSelect from '@/components/ui/UiSelect.vue'
+import UiTable from '@/components/ui/UiTable.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiModal from '@/components/ui/UiModal.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 
 const route = useRoute()
+const { t } = useI18n()
 
 const loading = ref(false)
 const creds = ref<DynamicCred[]>([])
@@ -35,11 +45,11 @@ async function loadCreds() {
 async function handleCreate() {
   formError.value = ''
   if (!form.value.username.trim()) {
-    formError.value = 'Username is required'
+    formError.value = t('dynamicCreds.usernameRequired')
     return
   }
   if (form.value.ttl_seconds < 60) {
-    formError.value = 'TTL must be at least 60 seconds'
+    formError.value = t('dynamicCreds.ttlTooShort')
     return
   }
 
@@ -52,14 +62,14 @@ async function handleCreate() {
     form.value = { kind: 'postgres', username: '', ttl_seconds: 3600 }
     await loadCreds()
   } catch (e: any) {
-    formError.value = e.message ?? 'Failed to create credential'
+    formError.value = e.message ?? t('dynamicCreds.createFailed')
   } finally {
     creating.value = false
   }
 }
 
 async function handleRevoke(id: string) {
-  if (!confirm('Revoke this credential? Anything using it stops working immediately.')) return
+  if (!confirm(t('dynamicCreds.revokeConfirm'))) return
   try {
     const projectSlug = route.params.slug as string
     const envSlug = 'prod'
@@ -82,126 +92,115 @@ function isRevoked(revokedAt: string | null) {
   return revokedAt !== null
 }
 
+function credStatus(c: DynamicCred): 'ok' | 'danger' | 'warn' {
+  if (isRevoked(c.revoked_at)) return 'danger'
+  if (isExpired(c.expires_at)) return 'warn'
+  return 'ok'
+}
+
 onMounted(() => loadCreds())
 watch(() => route.params.slug, loadCreds)
 </script>
 
 <template>
-  <div class="dynamic-creds-view">
-    <div class="spread" style="margin-bottom: 16px">
-      <h2 style="margin: 0">Dynamic Credentials</h2>
-      <button class="primary" @click="showCreateModal = true" :disabled="!route.params.slug">
-        Issue Credential
-      </button>
-    </div>
+  <div>
+    <UiPageHeader :title="t('dynamicCreds.title')">
+      <template #actions>
+        <UiButton variant="primary" size="sm" :disabled="!route.params.slug" @click="showCreateModal = true">
+          {{ t('dynamicCreds.issueCredential') }}
+        </UiButton>
+      </template>
+    </UiPageHeader>
 
-    <div class="card" style="padding: 0">
-      <table v-if="!loading">
-        <thead>
+    <UiCard variant="outlined" padding>
+      <UiTable :loading="loading" :empty="!creds.length" :empty-text="t('dynamicCreds.noCreds')" :colspan="8">
+        <template #head>
           <tr>
-            <th style="width: 100px">Kind</th>
-            <th style="width: 150px">Username</th>
-            <th style="width: 80px">TTL</th>
-            <th style="width: 180px">Issued</th>
-            <th style="width: 180px">Expires</th>
-            <th style="width: 100px">Status</th>
-            <th style="width: 150px">Created By</th>
-            <th style="width: 100px">Actions</th>
+            <th style="width: 90px">{{ t('dynamicCreds.kind') }}</th>
+            <th style="width: 140px">{{ t('dynamicCreds.username') }}</th>
+            <th style="width: 70px">{{ t('dynamicCreds.ttl') }}</th>
+            <th style="width: 170px">{{ t('dynamicCreds.issued') }}</th>
+            <th style="width: 170px">{{ t('dynamicCreds.expires') }}</th>
+            <th style="width: 90px">{{ t('dynamicCreds.status') }}</th>
+            <th style="width: 140px">{{ t('dynamicCreds.createdBy') }}</th>
+            <th style="width: 90px">{{ t('dynamicCreds.actions') }}</th>
           </tr>
-        </thead>
-        <tbody>
-          <tr v-for="c in creds" :key="c.id" :style="{ opacity: isRevoked(c.revoked_at) || isExpired(c.expires_at) ? 0.45 : 1 }">
-            <td>
-              <span class="mono" :class="{ 'dim': isRevoked(c.revoked_at) || isExpired(c.expires_at) }">
-                {{ c.kind.toUpperCase() }}
-              </span>
-            </td>
-            <td class="mono">{{ c.username }}</td>
-            <td class="mono">{{ Math.floor(c.ttl_seconds / 60) }}m</td>
-            <td class="dim mono" style="font-size: 12px">{{ formatDate(c.issued_at) }}</td>
-            <td :class="{ 'dim': !isExpired(c.expires_at), 'error': isExpired(c.expires_at) }" class="mono" style="font-size: 12px">
-              {{ formatDate(c.expires_at) }}
-              <span v-if="isExpired(c.expires_at)" style="margin-left: 8px; font-size: 11px">(expired)</span>
-            </td>
-            <td>
-              <span v-if="isRevoked(c.revoked_at)" class="error">Revoked</span>
-              <span v-else-if="isExpired(c.expires_at)" class="warn">Expired</span>
-              <span v-else class="ok">Active</span>
-            </td>
-            <td class="dim mono" style="font-size: 12px">{{ c.created_by }}</td>
-            <td>
-              <button
-                v-if="!isRevoked(c.revoked_at) && !isExpired(c.expires_at)"
-                class="danger"
-                @click="handleRevoke(c.id)"
-              >
-                Revoke
-              </button>
-            </td>
-          </tr>
-          <tr v-if="!creds.length">
-            <td colspan="8" class="dim">No dynamic credentials issued yet.</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else class="dim" style="text-align: center; padding: 20px">Loading…</p>
-    </div>
+        </template>
+
+        <tr v-for="c in creds" :key="c.id" :class="{ faded: isRevoked(c.revoked_at) || isExpired(c.expires_at) }">
+          <td>
+            <span class="mono" :class="{ dim: isRevoked(c.revoked_at) || isExpired(c.expires_at) }">
+              {{ c.kind.toUpperCase() }}
+            </span>
+          </td>
+          <td class="mono">{{ c.username }}</td>
+          <td class="mono">{{ Math.floor(c.ttl_seconds / 60) }}m</td>
+          <td class="dim mono small">{{ formatDate(c.issued_at) }}</td>
+          <td :class="{ 'dim': !isExpired(c.expires_at), 'warn': isExpired(c.expires_at) }" class="mono small">
+            {{ formatDate(c.expires_at) }}
+            <span v-if="isExpired(c.expires_at)" class="expired-tag">({{ t('dynamicCreds.expired') }})</span>
+          </td>
+          <td>
+            <UiBadge :variant="credStatus(c)" :dot="true">
+              {{ isRevoked(c.revoked_at) ? t('dynamicCreds.revoked') : isExpired(c.expires_at) ? t('dynamicCreds.expired') : t('dynamicCreds.active') }}
+            </UiBadge>
+          </td>
+          <td class="dim mono small">{{ c.created_by }}</td>
+          <td>
+            <UiButton
+              v-if="!isRevoked(c.revoked_at) && !isExpired(c.expires_at)"
+              size="sm"
+              variant="danger"
+              @click="handleRevoke(c.id)"
+            >
+              {{ t('dynamicCreds.revoke') }}
+            </UiButton>
+          </td>
+        </tr>
+      </UiTable>
+    </UiCard>
 
     <!-- Create Modal -->
-    <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
-      <div class="modal">
-        <h3>Issue Dynamic Credential</h3>
-        <div class="card">
-          <label>
-            Type
-            <select v-model="form.kind">
-              <option v-for="k in kindOptions" :key="k" :value="k">{{ k.toUpperCase() }}</option>
-            </select>
-          </label>
-          <label>
-            Username
-            <input v-model="form.username" placeholder="Database username" />
-          </label>
-          <label>
-            TTL (seconds)
-            <input v-model.number="form.ttl_seconds" type="number" placeholder="3600" min="60" />
-          </label>
-        </div>
-        <p v-if="formError" class="error">{{ formError }}</p>
-        <div class="spread" style="margin-top: 16px; justify-content: flex-end">
-          <button @click="showCreateModal = false">Cancel</button>
-          <button class="primary" @click="handleCreate" :disabled="creating">
-            {{ creating ? 'Issuing…' : 'Issue' }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <UiModal :open="showCreateModal" :title="t('dynamicCreds.issueTitle')" size="md" @close="showCreateModal = false">
+      <UiSelect v-model="form.kind" :label="t('dynamicCreds.type')">
+        <option v-for="k in kindOptions" :key="k" :value="k">{{ k.toUpperCase() }}</option>
+      </UiSelect>
+      <UiInput
+        v-model="form.username"
+        :label="t('dynamicCreds.usernameLabel')"
+        :placeholder="t('dynamicCreds.usernamePlaceholder')"
+      />
+      <UiInput
+        v-model.number="form.ttl_seconds"
+        type="number"
+        min="60"
+        :label="t('dynamicCreds.ttlSeconds')"
+        :placeholder="t('dynamicCreds.ttlPlaceholder')"
+      />
+      <p v-if="formError" class="error">{{ formError }}</p>
+      <template #footer>
+        <UiButton variant="secondary" @click="showCreateModal = false">
+          {{ t('dynamicCreds.cancel') }}
+        </UiButton>
+        <UiButton variant="primary" :loading="creating" :disabled="creating" @click="handleCreate">
+          {{ creating ? t('dynamicCreds.issuing') : t('dynamicCreds.issue') }}
+        </UiButton>
+      </template>
+    </UiModal>
   </div>
 </template>
 
 <style scoped>
-.dynamic-creds-view {
-  padding: 16px;
+.faded {
+  opacity: 0.45;
 }
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
+
+.small {
+  font-size: 12px;
 }
-.modal {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 24px;
-  width: 480px;
-  max-height: 80vh;
-  overflow: auto;
-}
-.modal h3 {
-  margin: 0 0 16px;
+
+.expired-tag {
+  margin-left: 6px;
+  font-size: 11px;
 }
 </style>

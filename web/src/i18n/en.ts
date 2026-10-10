@@ -40,6 +40,8 @@ export default {
     saveFailed: 'Could not save',
     deleteFailed: 'Could not delete',
     revokeFailed: 'Could not revoke',
+    updateFailed: 'Could not update',
+    scanFailed: 'Scan failed',
   },
   nav: {
     workspace: 'Workspace',
@@ -340,5 +342,6 @@ export default {
     ttlTooShort: 'TTL must be at least 60 seconds',
     createFailed: 'Failed to create credential',
     revokeConfirm: 'Revoke this credential? Anything using it stops working immediately.',
+    revoke: 'Revoke',
   },
 }
