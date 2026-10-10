@@ -150,6 +150,13 @@ export default {
     noTokens: 'No tokens yet.',
     revokedTag: 'revoked',
     revokeConfirm: (name: string) => `Revoke "${name}"? Anything using it stops working immediately.`,
+    scopeDescriptions: {
+      readSecret: 'Read secret values',
+      listSecret: 'List secret names',
+      writeSecret: 'Create, replace, and delete secrets',
+      readAudit: 'Read the audit log',
+      manageProject: 'Manage projects and members',
+    },
   },
   audit: {
     title: 'Audit log',

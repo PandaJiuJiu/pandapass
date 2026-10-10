@@ -152,6 +152,13 @@ export default {
     noTokens: '还没有令牌。',
     revokedTag: '已吊销',
     revokeConfirm: (name: string) => `确定吊销「${name}」吗？任何使用它的服务都会立即失效。`,
+    scopeDescriptions: {
+      readSecret: '读取秘密值',
+      listSecret: '列出秘密名称',
+      writeSecret: '创建、替换和删除秘密',
+      readAudit: '读取审计日志',
+      manageProject: '管理项目与成员',
+    },
   },
   audit: {
     title: '审计日志',

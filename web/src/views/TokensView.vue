@@ -31,13 +31,20 @@ const issued = ref('')
  * can rotate a production credential, and that is not what a CI job usually
  * needs.
  */
-const SCOPES = [
-  ['read:secret', 'Read secret values'],
-  ['list:secret', 'List secret names'],
-  ['write:secret', 'Create, replace, and delete secrets'],
-  ['read:audit', 'Read the audit log'],
-  ['manage:project', 'Manage projects and members'],
-] as const
+type ScopeKey =
+  | 'readSecret'
+  | 'listSecret'
+  | 'writeSecret'
+  | 'readAudit'
+  | 'manageProject'
+
+const SCOPES: ReadonlyArray<readonly [string, ScopeKey]> = [
+  ['read:secret', 'readSecret'],
+  ['list:secret', 'listSecret'],
+  ['write:secret', 'writeSecret'],
+  ['read:audit', 'readAudit'],
+  ['manage:project', 'manageProject'],
+]
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -171,7 +178,7 @@ onMounted(refresh)
         />
         <UiSelect v-model="scope" :label="t('tokens.scope')" :placeholder="t('tokens.selectScope')">
           <option v-for="[value, label] in SCOPES" :key="value" :value="value">
-            {{ label }} ({{ value }})
+            {{ t(`tokens.scopeDescriptions.${label}`) }} ({{ value }})
           </option>
         </UiSelect>
         <UiInput
