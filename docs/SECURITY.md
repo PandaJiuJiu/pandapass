@@ -175,7 +175,8 @@ otherwise have had no CSRF check at all.
   backup, they are both in the attacker's hands and the encryption buys
   nothing. Keeping the key off the database host is the meaningful version of
   this control.
-- **The web UI has never been built.** `npm install` and `npm run build` are
-  unverified — the registry was unreachable from the sandbox. The Dockerfile
-  runs the type-check, so a broken build fails the image rather than shipping,
-  but nobody has confirmed it passes.
+- **The web UI was historically unbuilt.** `npm install` and `npm run build`
+  were long unverified — the registry was unreachable from the sandbox. The
+  all-in-one Docker build (`docker/Dockerfile.allinone`) now builds it as part
+  of the image, and the type-check runs during `npm run build`, so a broken
+  build fails the image rather than shipping.
