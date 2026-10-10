@@ -1,6 +1,16 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api, ApiError, type ServiceToken } from '@/api/client'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiSelect from '@/components/ui/UiSelect.vue'
+import UiTable from '@/components/ui/UiTable.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
+
+const { t } = useI18n()
 
 const tokens = ref<ServiceToken[]>([])
 const loading = ref(true)
@@ -27,7 +37,7 @@ const SCOPES = [
   ['write:secret', 'Create, replace, and delete secrets'],
   ['read:audit', 'Read the audit log'],
   ['manage:project', 'Manage projects and members'],
-]
+] as const
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -35,7 +45,7 @@ async function refresh(): Promise<void> {
   try {
     tokens.value = await api.listTokens()
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : 'Could not load tokens'
+    error.value = e instanceof ApiError ? e.message : t('common.loadFailed')
   } finally {
     loading.value = false
   }
@@ -60,20 +70,20 @@ async function create(): Promise<void> {
     expiresDays.value = ''
     await refresh()
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : 'Could not create token'
+    error.value = e instanceof ApiError ? e.message : t('common.createFailed')
   } finally {
     creating.value = false
   }
 }
 
-async function revoke(t: ServiceToken): Promise<void> {
-  if (!confirm(`Revoke "${t.name}"? Anything using it stops working immediately.`)) return
+async function revoke(tok: ServiceToken): Promise<void> {
+  if (!confirm(t('tokens.revokeConfirm', { name: tok.name }))) return
   error.value = ''
   try {
-    await api.revokeToken(t.id)
+    await api.revokeToken(tok.id)
     await refresh()
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : 'Could not revoke'
+    error.value = e instanceof ApiError ? e.message : t('common.revokeFailed')
   }
 }
 
@@ -86,94 +96,165 @@ onMounted(refresh)
 
 <template>
   <div>
-    <h1 style="font-size: 20px; margin-top: 0">Service tokens</h1>
-    <p class="dim" style="font-size: 13px">
-      Tokens let CI and agents act without a password. Scope each one to the
-      least it can do — a token that can write can rotate a production credential.
-    </p>
+    <UiPageHeader :title="t('tokens.title')" :description="t('tokens.subtitle')" />
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <UiAlert v-if="error" variant="error" class="page-alert">{{ error }}</UiAlert>
 
-    <div v-if="issued" class="card" style="border-color: var(--accent)">
-      <div class="spread" style="margin-bottom: 8px">
-        <strong>Copy this now — it will not be shown again</strong>
-        <button @click="dismissIssued">Dismiss</button>
+    <UiAlert v-if="issued" variant="success" class="issued-alert">
+      <div class="issued-inner">
+        <div>
+          <strong>{{ t('tokens.copyNow') }}</strong>
+          <div class="token-value">{{ issued }}</div>
+        </div>
+        <UiButton variant="ghost" size="sm" @click="dismissIssued">
+          {{ t('tokens.dismiss') }}
+        </UiButton>
       </div>
-      <div class="mono" style="background: var(--bg); padding: 12px; border-radius: 6px; overflow-wrap: anywhere">
-        {{ issued }}
-      </div>
-    </div>
+    </UiAlert>
 
-    <div class="card" style="padding: 0">
-      <table>
-        <thead>
+    <UiCard variant="outlined" padding>
+      <UiTable
+        :loading="loading"
+        :empty="!tokens.length"
+        :empty-text="t('tokens.noTokens')"
+        :colspan="4"
+      >
+        <template #head>
           <tr>
-            <th>Name</th>
-            <th style="width: 30%">Scopes</th>
-            <th style="width: 18%">Expires</th>
+            <th>{{ t('tokens.tokenName') }}</th>
+            <th style="width: 30%">{{ t('tokens.scopes') }}</th>
+            <th style="width: 18%">{{ t('tokens.expires') }}</th>
             <th style="width: 12%" />
           </tr>
-        </thead>
-        <tbody>
-          <tr v-for="t in tokens" :key="t.id" :style="{ opacity: t.revoked_at ? 0.45 : 1 }">
-            <td>
-              {{ t.name }}
-              <span v-if="t.revoked_at" class="dim" style="font-size: 12px">· revoked</span>
-            </td>
-            <td class="mono dim" style="font-size: 12px">{{ t.scopes.join(', ') }}</td>
-            <td class="dim mono" style="font-size: 12px">
-              {{ t.expires_at ? new Date(t.expires_at).toLocaleDateString() : 'never' }}
-            </td>
-            <td>
-              <button
-                v-if="!t.revoked_at"
-                class="danger"
-                style="float: right"
-                @click="revoke(t)"
-              >
-                Revoke
-              </button>
-            </td>
-          </tr>
-          <tr v-if="!loading && !tokens.length">
-            <td colspan="4" class="dim">No tokens yet.</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+        </template>
 
-    <div class="card">
-      <strong style="font-size: 14px">Issue a token</strong>
-      <div style="margin-top: 12px">
-        <div class="row">
-          <label style="flex: 1">
-            Name
-            <input v-model="name" placeholder="ci-deploy" />
-          </label>
-          <label style="flex: 1">
-            Project slug <span class="dim">(blank = all)</span>
-            <input v-model="project" class="mono" placeholder="my-app" />
-          </label>
-        </div>
-        <div class="row">
-          <label style="flex: 1">
-            Scope
-            <select v-model="scope">
-              <option value="" disabled>Select a scope…</option>
-              <option v-for="[value, label] in SCOPES" :key="value" :value="value">
-                {{ label }} ({{ value }})
-              </option>
-            </select>
-          </label>
-          <label style="flex: 0 0 160px">
-            Expires in days <span class="dim">(blank = never)</span>
-            <input v-model="expiresDays" type="number" min="1" />
-          </label>
-        </div>
-        <button class="primary" :disabled="creating || !name || !scope" @click="create">
-          {{ creating ? 'Issuing…' : 'Issue token' }}
-        </button>
+        <tr v-for="tok in tokens" :key="tok.id" :class="{ revoked: tok.revoked_at }">
+          <td>
+            <span class="token-name">{{ tok.name }}</span>
+            <span v-if="tok.revoked_at" class="revoked-tag">· {{ t('tokens.revokedTag') }}</span>
+          </td>
+          <td>
+            <code class="mono dim small">{{ tok.scopes.join(', ') }}</code>
+          </td>
+          <td class="dim mono small">
+            {{ tok.expires_at ? new Date(tok.expires_at).toLocaleDateString() : t('common.never') }}
+          </td>
+          <td>
+            <UiButton
+              v-if="!tok.revoked_at"
+              size="sm"
+              variant="danger"
+              class="float-right"
+              @click="revoke(tok)"
+            >
+              {{ t('common.revoke') }}
+            </UiButton>
+          </td>
+        </tr>
+      </UiTable>
+    </UiCard>
+
+    <!-- Issue a token -->
+    <UiCard variant="elevated" class="issue-card">
+      <h2 class="section-title">{{ t('tokens.issueToken') }}</h2>
+      <div class="form-grid">
+        <UiInput
+          v-model="name"
+          :label="t('tokens.name')"
+          :placeholder="t('tokens.namePlaceholder')"
+        />
+        <UiInput
+          v-model="project"
+          mono
+          :label="`${t('tokens.projectSlug')} ${t('tokens.projectBlankAll')}`"
+          :placeholder="t('tokens.projectSlug')"
+        />
+        <UiSelect v-model="scope" :label="t('tokens.scope')" :placeholder="t('tokens.selectScope')">
+          <option v-for="[value, label] in SCOPES" :key="value" :value="value">
+            {{ label }} ({{ value }})
+          </option>
+        </UiSelect>
+        <UiInput
+          v-model="expiresDays"
+          type="number"
+          min="1"
+          :label="`${t('tokens.expiresDays')} ${t('tokens.expiresBlankNever')}`"
+        />
       </div>
-    </div>
+      <UiButton
+        variant="primary"
+        :loading="creating"
+        :disabled="creating || !name || !scope"
+        @click="create"
+      >
+        {{ creating ? t('tokens.issuing') : t('tokens.issueToken') }}
+      </UiButton>
+    </UiCard>
   </div>
 </template>
+
+<style scoped>
+.page-alert {
+  margin-bottom: var(--space-4);
+}
+
+.issued-alert {
+  margin-bottom: var(--space-4);
+}
+
+.issued-inner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  width: 100%;
+}
+
+.token-value {
+  margin-top: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  background: var(--surface);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+
+.revoked {
+  opacity: 0.45;
+}
+
+.token-name {
+  font-weight: 500;
+}
+
+.revoked-tag {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.small {
+  font-size: 12px;
+}
+
+.float-right {
+  float: right;
+}
+
+.section-title {
+  margin: 0 0 var(--space-4);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.issue-card {
+  margin-top: var(--space-6);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 var(--space-4);
+}
+</style>

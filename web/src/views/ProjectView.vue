@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api, ApiError, type Environment } from '@/api/client'
 import SecretTable from '@/components/SecretTable.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 
 const props = defineProps<{ slug: string }>()
+const { t } = useI18n()
 
 const envs = ref<Environment[]>([])
 const selected = ref('')
@@ -25,7 +32,7 @@ async function refresh(): Promise<void> {
       selected.value = envs.value[0]?.slug ?? ''
     }
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : 'Could not load environments'
+    error.value = e instanceof ApiError ? e.message : t('common.loadFailed')
   } finally {
     loading.value = false
   }
@@ -41,7 +48,7 @@ async function createEnv(): Promise<void> {
     envSlug.value = ''
     await refresh()
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : 'Could not create environment'
+    error.value = e instanceof ApiError ? e.message : t('common.createFailed')
   } finally {
     creating.value = false
   }
@@ -56,44 +63,146 @@ onMounted(refresh)
 
 <template>
   <div>
-    <div class="spread" style="margin-bottom: 16px">
-      <h1 style="font-size: 20px; margin: 0">
-        {{ slug }} <span v-if="selected" class="dim">/ {{ selected }}</span>
-      </h1>
-      <router-link to="/projects" class="dim" style="font-size: 13px">← All projects</router-link>
-    </div>
+    <UiPageHeader :title="`${slug}${selected ? ` / ${selected}` : ''}`">
+      <template #actions>
+        <router-link
+          :to="`/projects/${slug}/dynamic-creds`"
+          class="creds-link"
+        >
+          <UiButton variant="secondary" size="sm">
+            {{ t('project.dynamicCreds') }}
+          </UiButton>
+        </router-link>
+        <router-link to="/projects" class="back-link">{{ t('project.allProjects') }}</router-link>
+      </template>
+    </UiPageHeader>
 
-    <p v-if="error" class="error">{{ error }}</p>
-    <p v-if="loading" class="dim">Loading…</p>
+    <UiAlert v-if="error" variant="error" class="page-alert">{{ error }}</UiAlert>
+    <div v-if="loading" class="dim">{{ t('common.loading') }}</div>
 
     <template v-else>
-      <div class="row" style="margin-bottom: 16px; flex-wrap: wrap">
+      <!-- Environment tabs -->
+      <div class="env-tabs" role="tablist">
         <button
           v-for="e in envs"
           :key="e.id"
-          :class="{ primary: e.slug === selected }"
+          class="env-tab"
+          :class="{ active: e.slug === selected }"
+          role="tab"
+          :aria-selected="e.slug === selected"
           @click="selected = e.slug"
         >
           {{ e.name }}
         </button>
-        <span v-if="!envs.length" class="dim">No environments yet.</span>
+        <span v-if="!envs.length" class="dim">{{ t('project.noEnvironments') }}</span>
       </div>
 
-      <div class="card">
+      <UiCard variant="elevated">
         <SecretTable v-if="selected" :project="slug" :env="selected" />
-        <p v-else class="dim">Create an environment to start storing secrets.</p>
-      </div>
+        <p v-else class="dim">{{ t('project.noEnvironments') }}</p>
+      </UiCard>
 
-      <div class="card" style="background: var(--surface-2)">
-        <strong style="font-size: 14px">New environment</strong>
-        <div class="row" style="margin-top: 10px">
-          <input v-model="envName" placeholder="Production" style="flex: 1" />
-          <input v-model="envSlug" placeholder="prod" class="mono" style="flex: 0 0 30%" />
-          <button class="primary" :disabled="creating || !envName || !envSlug" @click="createEnv">
-            Add
-          </button>
+      <!-- New environment -->
+      <UiCard variant="subtle" class="new-env">
+        <h2 class="section-title">{{ t('project.newEnvironment') }}</h2>
+        <div class="env-form">
+          <UiInput
+            v-model="envName"
+            :label="t('project.envName')"
+            :placeholder="t('project.envNamePlaceholder')"
+          />
+          <UiInput
+            v-model="envSlug"
+            :label="t('project.envSlug')"
+            :placeholder="t('project.envSlugPlaceholder')"
+            mono
+          />
+          <div class="env-form-actions">
+            <UiButton
+              variant="primary"
+              :loading="creating"
+              :disabled="creating || !envName || !envSlug"
+              @click="createEnv"
+            >
+              {{ creating ? t('project.creatingEnvironment') : t('project.addEnvironment') }}
+            </UiButton>
+          </div>
         </div>
-      </div>
+      </UiCard>
     </template>
   </div>
 </template>
+
+<style scoped>
+.page-alert {
+  margin-bottom: var(--space-4);
+}
+
+.back-link {
+  font-size: 13px;
+  color: var(--text-dim);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.back-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.creds-link {
+  text-decoration: none;
+}
+
+.env-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.env-tab {
+  padding: 6px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.env-tab:hover {
+  background: var(--surface-2);
+}
+
+.env-tab.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.section-title {
+  margin: 0 0 var(--space-3);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.new-env {
+  margin-top: var(--space-6);
+}
+
+.env-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 var(--space-4);
+  align-items: end;
+}
+
+.env-form-actions {
+  padding-bottom: var(--space-4);
+}
+</style>

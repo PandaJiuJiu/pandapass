@@ -37,6 +37,11 @@ export default {
     noItems: '暂无数据。',
     roleAdmin: '管理员',
     roleMember: '成员',
+    createFailed: '创建失败',
+    loadFailed: '加载失败',
+    saveFailed: '保存失败',
+    deleteFailed: '删除失败',
+    revokeFailed: '吊销失败',
   },
   nav: {
     workspace: '工作区',

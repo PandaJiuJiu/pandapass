@@ -1,9 +1,19 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { api, ApiError, type Project } from '@/api/client'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiTable from '@/components/ui/UiTable.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
 
 const router = useRouter()
+const { t } = useI18n()
+
 const projects = ref<Project[]>([])
 const loading = ref(true)
 const error = ref('')
@@ -29,7 +39,7 @@ async function refresh(): Promise<void> {
   try {
     projects.value = await api.listProjects()
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : 'Could not load projects'
+    error.value = e instanceof ApiError ? e.message : t('dashboard.loading')
   } finally {
     loading.value = false
   }
@@ -47,7 +57,7 @@ async function create(): Promise<void> {
     slugTouched = false
     await refresh()
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : 'Could not create project'
+    error.value = e instanceof ApiError ? e.message : t('common.createFailed')
   } finally {
     creating.value = false
   }
@@ -58,72 +68,129 @@ onMounted(refresh)
 
 <template>
   <div>
-    <h1 style="font-size: 20px; margin-top: 0">Projects</h1>
-    <p v-if="error" class="error">{{ error }}</p>
-    <p v-if="loading" class="dim">Loading…</p>
+    <UiPageHeader :title="t('dashboard.title')">
+      <template #actions>
+        <UiButton variant="ghost" size="sm" :disabled="loading" @click="refresh">
+          {{ t('common.refresh') }}
+        </UiButton>
+      </template>
+    </UiPageHeader>
 
-    <div v-else class="card" style="padding: 0">
-      <table>
-        <thead>
+    <UiAlert v-if="error" variant="error" class="page-alert">{{ error }}</UiAlert>
+
+    <UiCard variant="outlined" padding>
+      <UiTable
+        :loading="loading"
+        :empty="!projects.length"
+        :empty-text="t('dashboard.noProjects')"
+        :colspan="4"
+      >
+        <template #head>
           <tr>
-            <th>Name</th>
-            <th style="width: 20%">Slug</th>
-            <th style="width: 16%">Your role</th>
-            <th style="width: 10%" />
+            <th>{{ t('dashboard.projectName') }}</th>
+            <th style="width: 18%">{{ t('dashboard.projectSlug') }}</th>
+            <th style="width: 14%">{{ t('dashboard.yourRole') }}</th>
+            <th style="width: 8%" />
           </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="p in projects"
-            :key="p.id"
-            style="cursor: pointer"
-            @click="router.push(`/projects/${p.slug}`)"
-          >
-            <td>
-              {{ p.name }}
-              <div v-if="p.description" class="dim" style="font-size: 12px">
-                {{ p.description }}
-              </div>
-            </td>
-            <td class="mono dim">{{ p.slug }}</td>
-            <td class="dim">{{ p.user_role ?? '—' }}</td>
-            <td @click.stop>
-              <button @click="router.push(`/projects/${p.slug}`)">Open</button>
-            </td>
-          </tr>
-          <tr v-if="!projects.length">
-            <td colspan="4" class="dim">No projects yet. Create one below.</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+        </template>
 
-    <div class="card">
-      <strong style="font-size: 14px">New project</strong>
-      <div style="margin-top: 12px">
-        <label>
-          Name
-          <input v-model="name" placeholder="My App" @input="onNameInput" />
-        </label>
-        <div class="row">
-          <label style="flex: 1">
-            Slug
-            <input
-              v-model="slug"
-              class="mono"
-              placeholder="my-app"
-              @input="slugTouched = true"
-            />
-          </label>
-          <label style="flex: 2">
-            Description <span class="dim">(optional)</span>
-            <input v-model="description" />
-          </label>
-        </div>
-        <button class="primary" :disabled="creating || !name || !slug" @click="create">
-          {{ creating ? 'Creating…' : 'Create' }}
-        </button>
+        <tr
+          v-for="p in projects"
+          :key="p.id"
+          class="project-row"
+          @click="router.push(`/projects/${p.slug}`)"
+        >
+          <td>
+            <span class="project-name">{{ p.name }}</span>
+            <div v-if="p.description" class="project-desc">{{ p.description }}</div>
+          </td>
+          <td>
+            <code class="mono dim">{{ p.slug }}</code>
+          </td>
+          <td>
+            <UiBadge variant="dim">{{ p.user_role ?? t('dashboard.noRole') }}</UiBadge>
+          </td>
+          <td @click.stop>
+            <UiButton size="sm" @click="router.push(`/projects/${p.slug}`)">
+              {{ t('dashboard.open') }}
+            </UiButton>
+          </td>
+        </tr>
+      </UiTable>
+    </UiCard>
+
+    <!-- New project -->
+    <UiCard variant="elevated" class="new-project">
+      <h2 class="section-title">{{ t('dashboard.newProject') }}</h2>
+      <div class="form-grid">
+        <UiInput
+          v-model="name"
+          :label="t('dashboard.projectName')"
+          :placeholder="t('dashboard.projectName')"
+          @input="onNameInput"
+        />
+        <UiInput
+          v-model="slug"
+          mono
+          :label="t('dashboard.projectSlug')"
+          :hint="t('dashboard.slugHint')"
+          :placeholder="t('dashboard.projectSlug')"
+          @input="slugTouched = true"
+        />
+        <UiInput
+          v-model="description"
+          :label="`${t('common.description')} ${t('common.optional')}`"
+          class="span-2"
+        />
       </div>
-    </div>
+      <UiButton
+        variant="primary"
+        :loading="creating"
+        :disabled="creating || !name || !slug"
+        @click="create"
+      >
+        {{ creating ? t('dashboard.creating') : t('dashboard.createProject') }}
+      </UiButton>
+    </UiCard>
   </div>
 </template>
+
+<style scoped>
+.page-alert {
+  margin-bottom: var(--space-4);
+}
+
+.project-row {
+  cursor: pointer;
+}
+
+.project-name {
+  font-weight: 600;
+}
+
+.project-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.section-title {
+  margin: 0 0 var(--space-4);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.new-project {
+  margin-top: var(--space-6);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 var(--space-4);
+}
+
+.span-2 {
+  grid-column: 1 / -1;
+}
+</style>

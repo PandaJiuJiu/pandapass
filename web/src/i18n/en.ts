@@ -35,6 +35,11 @@ export default {
     noItems: 'No items.',
     roleAdmin: 'admin',
     roleMember: 'member',
+    createFailed: 'Could not create',
+    loadFailed: 'Could not load',
+    saveFailed: 'Could not save',
+    deleteFailed: 'Could not delete',
+    revokeFailed: 'Could not revoke',
   },
   nav: {
     workspace: 'Workspace',
