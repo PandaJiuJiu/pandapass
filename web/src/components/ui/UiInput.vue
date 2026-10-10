@@ -8,7 +8,7 @@ withDefaults(
     hint?: string
     error?: string
     autocomplete?: string
-    spellcheck?: boolean
+    spellcheck?: boolean | 'true' | 'false'
     mono?: boolean
     id?: string
   }>(),
