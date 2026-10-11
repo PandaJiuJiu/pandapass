@@ -91,6 +91,7 @@ impl Harness {
             dynamic_proxy_upstream: None,
             trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
             audit_chain_key_file: None,
+            backup_dir: None,
         };
 
         let db = connect(&config.db_url).await.expect("connect");
@@ -2421,6 +2422,7 @@ async fn harness_with_rate_limit(max: u32, window_secs: u64) -> Harness {
         dynamic_proxy_upstream: None,
         trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
             audit_chain_key_file: None,
+            backup_dir: None,
     };
     let db = connect(&config.db_url).await.expect("connect");
     migrate(&db).await.expect("migrate");
@@ -2955,6 +2957,7 @@ async fn harness_with_idle_timeout(idle_secs: i64) -> Harness {
         dynamic_proxy_upstream: None,
         trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
             audit_chain_key_file: None,
+            backup_dir: None,
     };
     let db = connect(&config.db_url).await.expect("connect");
     migrate(&db).await.expect("migrate");
@@ -3148,4 +3151,68 @@ async fn admin_can_create_user() {
         json!({"email": "eve@example.com", "password": "eve-password-123"}),
     ).await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
+}
+
+// ── backup endpoint (D5) ─────────────────────────────────────────��──────────
+
+/// The admin backup endpoint returns a consistent SQLite snapshot whose
+/// SHA-256 matches the bytes, and records a `backup_create` audit entry.
+#[tokio::test]
+async fn admin_backup_returns_consistent_sqlite_snapshot() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+    h.set_secret(&admin, "API_KEY", "s3cr3t").await;
+
+    let res = h.get("/api/v1/admin/backup", &admin).await;
+    assert!(res.ok(), "backup failed: {:?}", res.body);
+    assert_eq!(res.body["format"], "pandapass-sqlite-snapshot-v1");
+    assert!(res.body["created_at"].is_string());
+    assert!(res.body["db"]["size_bytes"].as_u64().unwrap() > 0);
+
+    // Decode and verify SHA-256.
+    use base64::Engine as _;
+    let b64 = res.body["db"]["bytes_b64"].as_str().unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+    use sha2::{Digest, Sha256};
+    let digest = hex::encode(Sha256::digest(&bytes));
+    assert_eq!(digest, res.body["db"]["sha256"].as_str().unwrap());
+    assert_eq!(bytes.len() as u64, res.body["db"]["size_bytes"].as_u64().unwrap());
+
+    // The snapshot is a real SQLite file.
+    assert!(bytes.starts_with(b"SQLite format 3\0"), "snapshot should be SQLite");
+
+    // The snapshot contains the data written earlier.
+    let tmp = std::env::temp_dir().join(format!("pp-backup-check-{}.db", uuid::Uuid::now_v7()));
+    std::fs::write(&tmp, &bytes).unwrap();
+    let opts = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&tmp)
+        .read_only(true);
+    let pool = sqlx::SqlitePool::connect_with(opts).await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM secrets")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(count >= 1, "snapshot should contain the written secret");
+    pool.close().await;
+    let _ = std::fs::remove_file(&tmp);
+
+    // A non-admin cannot create a backup.
+    let editor = h.post(
+        "/api/v1/auth/register",
+        "",
+        json!({"email": "backup-editor@example.com", "password": "hunter2hunter2"}),
+    ).await;
+    let editor_token = editor.body["session_token"].as_str().unwrap().to_string();
+    let denied = h.get("/api/v1/admin/backup", &editor_token).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{:?}", denied.body);
+
+    // The audit log records the backup.
+    let audit = h.get("/api/v1/audit", &admin).await;
+    let items = audit.body["items"].as_array().unwrap();
+    assert!(
+        items.iter().any(|i| i["action"] == "backup_create"),
+        "audit should contain a backup_create entry: {:?}",
+        items.iter().map(|i| i["action"].as_str().unwrap_or("")).collect::<Vec<_>>()
+    );
 }

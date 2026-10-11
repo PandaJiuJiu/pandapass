@@ -192,3 +192,12 @@ otherwise have had no CSRF check at all.
   and a Vite dev server on ephemeral ports and exercises sign-in, projects,
   secrets, session/CSRF cookies, admin boundaries and locale switching
   (`npm run e2e` in `web/`).
+- **Backups are age-encrypted and restore is offline.** `pandapass backup`
+  fetches a consistent SQLite snapshot from the admin endpoint
+  (`GET /api/v1/admin/backup`), optionally includes the server age identity and
+  audit chain key, and seals the whole payload to the operator's age public key
+  before writing it to disk. `pandapass restore` decrypts locally, verifies
+  the embedded SHA-256, and writes the database atomically — it must be run
+  against a stopped server, never a live one. See `docs/DEPLOY.md` for the
+  cron template and the monthly restore-drill procedure. A backup that has
+  never been restored is a hypothesis.

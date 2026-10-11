@@ -11,13 +11,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{AppState, StartupInfo};
 use crate::middleware::auth::{ApiError, require_csrf};
-use crate::routes::{auth, dynamic, policies, pki, projects, scan, secrets, tokens};
+use crate::routes::{auth, backup, dynamic, policies, pki, projects, scan, secrets, tokens};
 use pandapass_core::{AuditAction, AuditContext, CommandResult};
 
 pub mod state;
 
 mod routes {
     pub mod auth;
+    pub mod backup;
     pub mod projects;
     pub mod secrets;
     pub mod tokens;
@@ -98,6 +99,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/audit", get(tokens::list_audit))
         .route("/api/v1/audit/verify", get(tokens::verify_audit))
         .route("/api/v1/admin/server-age", get(tokens::server_age_show))
+        .route("/api/v1/admin/backup", get(backup::create_backup))
         .route("/api/v1/admin/users", get(tokens::list_users_admin).post(tokens::create_user_admin))
         .route("/api/v1/admin/users/{user_id}/disable", post(tokens::disable_user_admin))
         .route("/api/v1/admin/users/{user_id}/enable", post(tokens::enable_user_admin))

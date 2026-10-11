@@ -114,6 +114,9 @@ pub struct Config {
     /// key also invalidates the chain). When set, the chain can survive
     /// age-key rotation — and the key can be backed up independently.
     pub audit_chain_key_file: Option<String>,
+    /// Directory where the admin backup endpoint may create temporary
+    /// `VACUUM INTO` snapshots. Defaults to the system temp dir when unset.
+    pub backup_dir: Option<String>,
 }
 
 impl Config {
@@ -212,6 +215,10 @@ impl Config {
             .ok()
             .filter(|s| !s.is_empty());
 
+        let backup_dir = std::env::var("PANDAPASS_BACKUP_DIR")
+            .ok()
+            .filter(|s| !s.is_empty());
+
         Self {
             listen_addr,
             public_url,
@@ -234,6 +241,7 @@ impl Config {
             dynamic_proxy_upstream,
             trusted_proxy_cidrs,
             audit_chain_key_file,
+            backup_dir,
         }
     }
 }

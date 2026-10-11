@@ -122,8 +122,68 @@ your PostgreSQL and the proxy starts on boot.
 The database and the age key must be backed up together, from the same moment.
 A backup of one without the other is not a backup.
 
-The image ships `sqlite3` (installed in the runtime stage of
-`docker/Dockerfile`), so the backup runs entirely inside the container.
+PandaPass ships first-class backup and restore commands (`pandapass backup` /
+`pandapass restore`). The backup is taken server-side with SQLite's
+`VACUUM INTO`, which produces a consistent snapshot of a live database, then
+sealed with age before it touches disk.
+
+### `pandapass backup`
+
+Run inside the container (it talks to the local API and reads the server's age
+identity file):
+
+```bash
+# 1. Create a directory on the host that will hold encrypted backups
+mkdir -p /backup/pandapass
+
+# 2. Take a backup — the server age identity and audit chain key are included
+#    and sealed to your operator age key, so a restore can unwrap envelopes.
+docker compose exec -T pandapass \
+  pandapass backup \
+    --out /tmp/pandapass-$(date +%F).age \
+    --server-age-identity /data/server-age.key \
+    --audit-chain-key /data/audit-chain.key
+
+# 3. Copy it out of the container
+docker compose cp pandapass:/tmp/pandapass-$(date +%F).age /backup/pandapass/
+docker compose exec -T pandapass rm -f /tmp/pandapass-$(date +%F).age
+```
+
+The backup file is age-encrypted to your operator key (`~/.pandapass/age.key`
+by default, or `--recipient age1...`). Without `--server-age-identity`, the
+snapshot is still consistent but a restore cannot unwrap any envelope — pass
+the flag to make the backup self-sufficient.
+
+### `pandapass restore`
+
+Restore is fully local and deliberately offline: it writes the database and
+key files directly to the paths you choose. Stop the server first, because a
+running server would overwrite the restored database with its own WAL.
+
+```bash
+# 1. Stop the server
+docker compose stop pandapass
+
+# 2. Decrypt and verify the backup, then write the database, server age
+#    identity, and audit chain key to their live locations.
+docker compose cp /backup/pandapass/pandapass-2026-01-01.age pandapass:/tmp/
+docker compose exec pandapass \
+  pandapass restore \
+    --input /tmp/pandapass-2026-01-01.age \
+    --db-path /data/pandapass.db \
+    --age-identity-path /data/server-age.key \
+    --audit-chain-key-path /data/audit-chain.key \
+    --yes
+
+# 3. Start the server again
+docker compose start pandapass
+```
+
+`restore` verifies the embedded SHA-256 before writing anything, writes the
+database atomically (temp file + rename), and removes stale `-wal`/`-shm`
+sidecars so the restored database starts clean.
+
+### Automation cron
 
 ```bash
 #!/bin/bash
@@ -132,17 +192,15 @@ set -euo pipefail
 
 DEST="/backup/pandapass/$(date +%F)"
 mkdir -p "$DEST"
+FILE="pandapass-$(date +%Y%m%d-%H%M%S).age"
 
-# .backup is safe against a live database; `cp` of the file is not, because
-# SQLite is in WAL mode and the pages live in a sidecar file.
-docker compose exec -T pandapass sqlite3 /data/pandapass.db ".backup /tmp/b.db"
-docker compose cp pandapass:/tmp/b.db "$DEST/pandapass.db"
-docker compose exec -T pandapass rm -f /tmp/b.db
-
-docker compose cp pandapass:/data/server-age.key "$DEST/server-age.key"
-
-tar czf "$DEST.tar.gz" -C "$(dirname "$DEST")" "$(basename "$DEST")"
-rm -rf "$DEST"
+docker compose exec -T pandapass \
+  pandapass backup \
+    --out "/tmp/$FILE" \
+    --server-age-identity /data/server-age.key \
+    --audit-chain-key /data/audit-chain.key
+docker compose cp "pandapass:/tmp/$FILE" "$DEST/$FILE"
+docker compose exec -T pandapass rm -f "/tmp/$FILE"
 ```
 
 ```cron
@@ -150,6 +208,39 @@ rm -rf "$DEST"
 ```
 
 Test the restore. A backup that has never been restored is a hypothesis.
+
+### Disaster-recovery drill (recommended)
+
+Run this on a schedule (monthly) against a throwaway directory, never the live
+one:
+
+```bash
+#!/bin/bash
+# /usr/local/bin/pandapass-restore-drill
+# Restores the latest backup into /tmp/pandapass-drill and verifies the
+# restored database opens and contains data. This is a *drill*: nothing live
+# is touched.
+set -euo pipefail
+
+LATEST="$(ls -t /backup/pandapass/*.age | head -1)"
+DRILL="/tmp/pandapass-drill"
+rm -rf "$DRILL"
+mkdir -p "$DRILL"
+
+docker compose cp "$LATEST" pandapass:/tmp/drill.age
+docker compose exec pandapass \
+  pandapass restore \
+    --input /tmp/drill.age \
+    --db-path "$DRILL/restored.db" \
+    --age-identity-path "$DRILL/restored-server-age.key" \
+    --yes
+docker compose exec -T pandapass sqlite3 "$DRILL/restored.db" \
+  "PRAGMA integrity_check; SELECT COUNT(*) FROM users;"
+docker compose exec -T pandapass rm -f /tmp/drill.age
+```
+
+A drill that fails (wrong key, truncated backup, missing sidecar) is the
+entire point of running it.
 
 ## Hardening checklist
 

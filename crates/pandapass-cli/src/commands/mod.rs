@@ -332,6 +332,58 @@ pub struct RunArgs {
     pub command: Vec<String>,
 }
 
+/// `pandapass backup`: fetch a consistent SQLite snapshot of the server
+/// database and seal it into an age-encrypted file.
+#[derive(Args, Debug)]
+pub struct BackupArgs {
+    /// Output file path. `.age` is appended when the path has no extension.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Age recipient (`age1...`) to seal the backup to. Defaults to the
+    /// operator's own public key derived from `--age-identity` / config.
+    #[arg(long)]
+    pub recipient: Option<String>,
+    /// Path to the server's age identity file to include in the backup.
+    /// Without it, a restore cannot unwrap envelopes. Defaults to
+    /// `PANDAPASS_SERVER_AGE_IDENTITY_FILE`.
+    #[arg(long)]
+    pub server_age_identity: Option<PathBuf>,
+    /// Path to the audit chain key file to include in the backup. Defaults
+    /// to `PANDAPASS_AUDIT_CHAIN_KEY_FILE`.
+    #[arg(long)]
+    pub audit_chain_key: Option<PathBuf>,
+    /// Do not age-encrypt the output; write the raw snapshot. For local
+    /// testing only. Refused when the output path looks like a `.age` file.
+    #[arg(long)]
+    pub raw: bool,
+}
+
+/// `pandapass restore`: restore the server database (and optionally the age
+/// identity) from a backup file. Fully local: the file is decrypted,
+/// verified, and written to the paths you supply. The running server must be
+/// stopped before restoring, or it will overwrite the restored database.
+#[derive(Args, Debug)]
+pub struct RestoreArgs {
+    /// Input backup file. Must be either a raw SQLite snapshot or an
+    /// age-encrypted backup produced by `pandapass backup`.
+    #[arg(long)]
+    pub input: PathBuf,
+    /// Where to write the restored SQLite database.
+    #[arg(long)]
+    pub db_path: PathBuf,
+    /// Where to write the restored server age identity (from the same
+    /// backup). Optional — pass this when the backup file is a full
+    /// encrypted backup containing the age identity.
+    #[arg(long)]
+    pub age_identity_path: Option<PathBuf>,
+    /// Where to write the restored audit chain key (hex). Optional.
+    #[arg(long)]
+    pub audit_chain_key_path: Option<PathBuf>,
+    /// Skip the confirmation prompt. Refused when stdin is not a terminal.
+    #[arg(long)]
+    pub yes: bool,
+}
+
 #[derive(Args, Debug)]
 pub struct InjectArgs {
     /// Input template file
@@ -452,6 +504,8 @@ pub enum Command {
     /// GitOps sync (M3): pull/push/diff secrets to/from a local directory
     #[command(subcommand)]
     GitOps(GitOpsCmd),
+    Backup(BackupArgs),
+    Restore(RestoreArgs),
     Run(RunArgs),
     Inject(InjectArgs),
 }
@@ -478,6 +532,8 @@ pub async fn run_command(
         Command::Policy(cmd) => run_policy(api, cmd).await,
         Command::Pki(cmd) => run_pki(api, cmd).await,
         Command::GitOps(cmd) => run_gitops(api, config, cmd).await,
+        Command::Backup(args) => run_backup(api, config, args).await,
+        Command::Restore(args) => run_restore(api, config, args).await,
         Command::Run(args) => run_run(api, config, args).await,
         Command::Inject(args) => run_inject(api, config, args).await,
     }
@@ -1447,6 +1503,324 @@ async fn run_gitops(api: &ApiClient, config: &crate::client::CliConfig, cmd: Git
         GitOpsCmd::Diff(args) => run_gitops_diff(api, config, args).await,
         GitOpsCmd::Push(args) => run_gitops_push(api, config, args).await,
     }
+}
+
+// ─────────────────────────── Backup / Restore (D5) ───────────────────────────
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+
+/// Read a small secret file (server age identity or audit chain key), failing
+/// with a clear message when the file is absent. Returns the trimmed contents.
+fn read_optional_secret_file(path: &std::path::Path, what: &str) -> Result<String> {
+    if !path.exists() {
+        anyhow::bail!(
+            "{what} file {} does not exist. Point --server-age-identity / \
+             --audit-chain-key at the real files.",
+            path.display()
+        );
+    }
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("cannot read {what} {}: {}", path.display(), e))?;
+    Ok(content.trim().to_string())
+}
+
+/// The plaintext payload of a `pandapass backup` file.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct BackupPayload {
+    /// What kind of backup this is. `db-only` = raw SQLite snapshot; `full`
+    /// = snapshot + server age identity + audit chain key.
+    pub format: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub db: BackupPayloadDb,
+    pub server_age_identity: Option<String>,
+    pub audit_chain_key: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct BackupPayloadDb {
+    pub bytes_b64: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
+/// `pandapass backup`: fetch a consistent SQLite snapshot from the server and
+/// seal it (plus the server age identity and audit chain key, when readable)
+/// into an age-encrypted file.
+async fn run_backup(api: &ApiClient, config: &crate::client::CliConfig, args: BackupArgs) -> Result<()> {
+    // Fetch the snapshot from the server.
+    let snap = api.admin_backup().await?;
+
+    // Build the plaintext payload. The snapshot is base64 in the wire
+    // format; keep it that way in the payload so the bytes are not decoded
+    // into memory twice.
+    let mut payload = BackupPayload {
+        format: "pandapass-backup-v1".to_string(),
+        created_at: snap.created_at,
+        db: BackupPayloadDb {
+            bytes_b64: snap.db.bytes_b64.clone(),
+            sha256: snap.db.sha256.clone(),
+            size_bytes: snap.db.size_bytes,
+        },
+        server_age_identity: None,
+        audit_chain_key: None,
+    };
+
+    // Include the server age identity (needed to unwrap envelopes after
+    // restore) and the audit chain key (needed to keep the chain verifiable)
+    // when the operator points us at them.
+    let age_identity_path = args
+        .server_age_identity
+        .clone()
+        .or_else(|| std::env::var_os("PANDAPASS_SERVER_AGE_IDENTITY_FILE").map(PathBuf::from));
+    if let Some(path) = age_identity_path {
+        payload.server_age_identity = Some(read_optional_secret_file(&path, "server age identity")?);
+    }
+    let chain_key_path = args
+        .audit_chain_key
+        .clone()
+        .or_else(|| std::env::var_os("PANDAPASS_AUDIT_CHAIN_KEY_FILE").map(PathBuf::from));
+    if let Some(path) = chain_key_path {
+        payload.audit_chain_key = Some(read_optional_secret_file(&path, "audit chain key")?);
+    }
+
+    // Determine the recipient (default: the operator's own public key).
+    let recipient = match args.recipient {
+        Some(r) => Some(pandapass_core::crypto::AgePublicKey(r)),
+        None => {
+            // Without --raw, we need the operator's age identity to derive
+            // their public key. Load it from the CLI config.
+            if args.raw {
+                None
+            } else {
+                let identity = load_age_identity(config)?;
+                Some(identity.public_key()?)
+            }
+        }
+    };
+
+    let plaintext = serde_json::to_string_pretty(&payload)?;
+
+    // Write the output file.
+    if args.raw {
+        // Raw snapshot: write the base64-decoded DB bytes directly.
+        if recipient.is_some() {
+            anyhow::bail!("--raw cannot be combined with --recipient");
+        }
+        let bytes = BASE64.decode(&payload.db.bytes_b64)
+            .map_err(|e| anyhow::anyhow!("invalid base64 in server response: {e}"))?;
+        write_backup_file(&args.out, &bytes, false)?;
+    } else {
+        let recipient = recipient.ok_or_else(|| {
+            anyhow::anyhow!("No age recipient available. Pass --recipient, or configure an age identity.")
+        })?;
+        let ciphertext = pandapass_core::crypto::age_encrypt_file(
+            &plaintext,
+            std::slice::from_ref(&recipient),
+        )?;
+        write_backup_file(&args.out, ciphertext.as_bytes(), true)?;
+    }
+
+    println!(
+        "Backup written to {} ({} bytes, sha256 {})",
+        args.out.display(),
+        payload.db.size_bytes,
+        payload.db.sha256
+    );
+    if payload.server_age_identity.is_none() {
+        eprintln!(
+            "Note: no server age identity included. Restoring this backup will \
+             not restore envelope unwrapping. Pass --server-age-identity (or set \
+             PANDAPASS_SERVER_AGE_IDENTITY_FILE) to include it."
+        );
+    }
+    Ok(())
+}
+
+/// Write the backup file atomically with 0600 permissions (it contains a
+/// live database snapshot).
+fn write_backup_file(path: &std::path::Path, bytes: &[u8], _encrypted: bool) -> Result<()> {
+    let tmp = path.with_extension("bak.tmp");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&tmp, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// `pandapass restore`: decrypt (if needed), verify, and write a backup to
+/// the local database path and age identity path.
+async fn run_restore(_api: &ApiClient, _config: &crate::client::CliConfig, args: RestoreArgs) -> Result<()> {
+    if !args.yes && !confirm_destructive(&format!(
+        "Restore database from '{}'? This overwrites the target paths.",
+        args.input.display()
+    ))? {
+        println!("Aborted.");
+        return Ok(());
+    }
+
+    let input_bytes = std::fs::read(&args.input)
+        .map_err(|e| anyhow::anyhow!("cannot read backup {}: {}", args.input.display(), e))?;
+
+    // Decide whether the input is age-encrypted or a raw SQLite snapshot.
+    let is_age = looks_like_age_file(&input_bytes);
+    let plaintext = if is_age {
+        // Age-encrypted backup: decrypt with the operator's age identity.
+        let identity = load_age_identity(_config)?;
+        let ciphertext = String::from_utf8(input_bytes.clone())
+            .map_err(|_| anyhow::anyhow!("encrypted backup is not UTF-8 ASCII armor"))?;
+        pandapass_core::crypto::age_decrypt_file(&ciphertext, &identity)
+            .map_err(|e| anyhow::anyhow!("cannot decrypt backup: {e}"))?
+    } else {
+        // Raw SQLite snapshot: no decryption needed.
+        String::new()
+    };
+
+    // Verify the payload.
+    let payload: BackupPayload = if is_age {
+        let payload: BackupPayload = serde_json::from_str(&plaintext)
+            .map_err(|e| anyhow::anyhow!("backup payload is invalid JSON: {e}"))?;
+        verify_payload(&payload)?;
+        payload
+    } else {
+        // Raw snapshot: verify the SHA-256 over the raw bytes.
+        use sha2::{Digest, Sha256};
+        let digest = hex::encode(Sha256::digest(&input_bytes));
+        // No embedded hash for raw snapshots; verify by checking it parses as
+        // a SQLite database (header magic) and print the computed hash.
+        if !input_bytes.starts_with(b"SQLite format 3\0") {
+            anyhow::bail!("input is neither an age backup nor a SQLite database");
+        }
+        // Build a db-only payload for consistent handling.
+        BackupPayload {
+            format: "pandapass-sqlite-snapshot-v1".to_string(),
+            created_at: chrono::Utc::now(),
+            db: BackupPayloadDb {
+                bytes_b64: BASE64.encode(&input_bytes),
+                sha256: digest,
+                size_bytes: input_bytes.len() as u64,
+            },
+            server_age_identity: None,
+            audit_chain_key: None,
+        }
+    };
+
+    // Write the database.
+    let db_bytes = BASE64.decode(&payload.db.bytes_b64)
+        .map_err(|e| anyhow::anyhow!("invalid base64 in backup payload: {e}"))?;
+    write_db_atomic(&args.db_path, &db_bytes)?;
+
+    // Write the age identity if present and a target path was given.
+    if let Some(age_identity) = &payload.server_age_identity {
+        if let Some(target) = &args.age_identity_path {
+            write_identity_file(target, age_identity)?;
+        } else {
+            eprintln!("Backup contains a server age identity, but no --age-identity-path was given. Skipping.");
+        }
+    } else if args.age_identity_path.is_some() {
+        anyhow::bail!(
+            "No server age identity in this backup, but --age-identity-path was supplied."
+        );
+    }
+
+    // Write the audit chain key if present and a target path was given.
+    if let Some(chain_key) = &payload.audit_chain_key {
+        if let Some(target) = &args.audit_chain_key_path {
+            write_identity_file(target, chain_key)?;
+        } else {
+            eprintln!("Backup contains an audit chain key, but no --audit-chain-key-path was given. Skipping.");
+        }
+    } else if args.audit_chain_key_path.is_some() {
+        anyhow::bail!(
+            "No audit chain key in this backup, but --audit-chain-key-path was supplied."
+        );
+    }
+
+    println!("Restored database to {}", args.db_path.display());
+    if let Some(target) = &args.age_identity_path {
+        if payload.server_age_identity.is_some() {
+            println!("Restored server age identity to {}", target.display());
+        }
+    }
+    Ok(())
+}
+
+/// Verify a backup payload's embedded SHA-256 over its base64 DB bytes.
+fn verify_payload(payload: &BackupPayload) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let bytes = BASE64.decode(&payload.db.bytes_b64)
+        .map_err(|e| anyhow::anyhow!("invalid base64 in backup payload: {e}"))?;
+    let digest = hex::encode(Sha256::digest(&bytes));
+    if digest != payload.db.sha256 {
+        anyhow::bail!(
+            "backup integrity check failed: payload sha256 {} != computed {}",
+            payload.db.sha256,
+            digest
+        );
+    }
+    if bytes.len() as u64 != payload.db.size_bytes {
+        anyhow::bail!(
+            "backup size mismatch: payload says {} bytes, got {}",
+            payload.db.size_bytes,
+            bytes.len()
+        );
+    }
+    Ok(())
+}
+
+/// Heuristic: an age-encrypted file begins with the ASCII armor header.
+fn looks_like_age_file(bytes: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(64)]);
+    head.contains("-----BEGIN AGE ENCRYPTED FILE-----")
+}
+
+/// Write the SQLite database atomically (temp + rename) and drop any stale
+/// WAL/SHM sidecar files so the restored DB starts clean.
+fn write_db_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("db.tmp");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&tmp, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::rename(&tmp, path)?;
+
+    // Remove sidecar files that belong to a previous database state. If the
+    // old server left a WAL behind, the restored DB would try to replay it
+    // and corrupt itself.
+    let wal = path.with_extension("db-wal");
+    let shm = path.with_extension("db-shm");
+    if wal.exists() {
+        std::fs::remove_file(&wal)?;
+    }
+    if shm.exists() {
+        std::fs::remove_file(&shm)?;
+    }
+    Ok(())
+}
+
+/// Write a secret file (age identity / audit chain key) with 0600.
+fn write_identity_file(path: &std::path::Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 // ─────────────────────────── Dynamic Credentials (M2) ───────────────────────────

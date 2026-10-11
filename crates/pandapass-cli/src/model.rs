@@ -68,3 +68,17 @@ pub struct CreateTokenResponse {
     pub token: pandapass_core::models::ServiceToken,
     pub plain_token: String,
 }
+
+#[derive(Deserialize)]
+pub struct BackupSnapshotResponse {
+    pub format: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub db: BackupDb,
+}
+
+#[derive(Deserialize)]
+pub struct BackupDb {
+    pub bytes_b64: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+}

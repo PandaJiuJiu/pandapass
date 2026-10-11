@@ -85,6 +85,11 @@ enum Commands {
     #[command(name = "gitops", subcommand)]
     GitOps(commands::GitOpsCmd),
 
+    /// Backup the server database to an age-encrypted local file
+    Backup(commands::BackupArgs),
+
+    /// Restore the server database and age identity from a backup file
+    Restore(commands::RestoreArgs),
 
     /// Inject secrets into environment and run command
     Run(commands::RunArgs),
@@ -112,6 +117,8 @@ impl From<Commands> for commands::Command {
             Commands::Policy(x) => C::Policy(x),
             Commands::Pki(x) => C::Pki(x),
             Commands::GitOps(x) => C::GitOps(x),
+            Commands::Backup(x) => C::Backup(x),
+            Commands::Restore(x) => C::Restore(x),
             Commands::Run(x) => C::Run(x),
             Commands::Inject(x) => C::Inject(x),
         }

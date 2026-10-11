@@ -334,6 +334,8 @@ pub enum AuditAction {
     SshCertRevoke,
     SecretScan,
     AuditRead,
+    // Backup / restore
+    BackupCreate,
 }
 
 impl AuditAction {
@@ -388,6 +390,7 @@ impl AuditAction {
             SshCertRevoke => "ssh_cert_revoke",
             SecretScan => "secret_scan",
             AuditRead => "audit_read",
+            BackupCreate => "backup_create",
         }
     }
 
@@ -440,6 +443,7 @@ impl AuditAction {
             "ssh_cert_revoke" => SshCertRevoke,
             "secret_scan" => SecretScan,
             "audit_read" => AuditRead,
+            "backup_create" => BackupCreate,
             _ => Login,
         }
     }

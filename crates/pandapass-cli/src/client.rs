@@ -379,6 +379,13 @@ impl ApiClient {
         self.get("/audit/verify").await
     }
 
+    // ─────────────────────────── backup (D5) ───────────────────────────
+
+    /// Fetch a consistent SQLite snapshot of the server database. Admin only.
+    pub async fn admin_backup(&self) -> Result<crate::model::BackupSnapshotResponse> {
+        self.get("/admin/backup").await
+    }
+
     // ─────────────────────────── dynamic credentials (M2) ───────────────────────────
 
     pub async fn list_dynamic_creds(
