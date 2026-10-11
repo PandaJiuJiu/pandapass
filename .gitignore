@@ -39,3 +39,8 @@ build/
 # Node / web
 node_modules/
 web/dist/
+
+# Playwright e2e artifacts (screenshots, traces, throwaway backend state)
+test-results/
+playwright-report/
+web/e2e/.server-info.json

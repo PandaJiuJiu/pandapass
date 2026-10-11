@@ -187,4 +187,8 @@ otherwise have had no CSRF check at all.
   were long unverified — the registry was unreachable from the sandbox. The
   all-in-one Docker build (`docker/Dockerfile`) now builds it as part
   of the image, and the type-check runs during `npm run build`, so a broken
-  build fails the image rather than shipping.
+  build fails the image rather than shipping. The browser flow is now also
+  covered by a Playwright e2e suite (`web/e2e`): it boots a throwaway backend
+  and a Vite dev server on ephemeral ports and exercises sign-in, projects,
+  secrets, session/CSRF cookies, admin boundaries and locale switching
+  (`npm run e2e` in `web/`).
