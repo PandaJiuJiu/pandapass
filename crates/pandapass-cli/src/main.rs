@@ -215,6 +215,11 @@ async fn main() -> Result<()> {
     }
 
     if let Err(e) = result {
+        // `pandapass run` 的非零子进程退出码通过 ChildExitStatus 传递，
+        // 保持调用方可分支的语义；不视为 CLI 内部错误，因此不打印 error。
+        if let Some(status) = e.downcast_ref::<pandapass_cli::commands::ChildExitStatus>() {
+            std::process::exit(status.0);
+        }
         error!("{}", e);
         std::process::exit(1);
     }

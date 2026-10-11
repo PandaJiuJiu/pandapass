@@ -6,6 +6,19 @@ use uuid::Uuid;
 
 use crate::client::ApiClient;
 
+/// `pandapass run` 的子进程退出码。`main` 把它映射为 CLI 进程退出码，
+/// 使调用方（脚本/agent）能分支处理，同时避免在命令处理器内直接 exit。
+#[derive(Debug)]
+pub struct ChildExitStatus(pub i32);
+
+impl std::fmt::Display for ChildExitStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "child process exited with status {}", self.0)
+    }
+}
+
+impl std::error::Error for ChildExitStatus {}
+
 #[derive(Args, Debug)]
 pub struct LoginArgs {
     /// Email address. Prompted for when omitted.
@@ -995,17 +1008,49 @@ async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunAr
         envs.push((key.clone(), secret.value));
     }
 
+    // Collect the injected values before they are zeroized: these are the
+    // secrets the child could print, and therefore the exact byte strings the
+    // output masker must conceal.
+    let mask_values: Vec<Vec<u8>> = envs
+        .iter()
+        .map(|(_, v)| v.as_bytes().to_vec())
+        .collect();
+
     // `args.command[0]` is the program, the rest are its arguments. Spawned
     // directly: no `sh -c`, so nothing in a key name or value is ever parsed
     // as shell syntax.
+    //
+    // stdout/stderr are piped (not inherited) so the parent can filter secret
+    // values out of the child's output before it reaches the terminal, an
+    // agent's context, or a CI log. The filtered output is then forwarded to
+    // the parent's own stdout/stderr.
     let program = &args.command[0];
     let mut child = tokio::process::Command::new(program)
         .args(&args.command[1..])
         .envs(envs.iter().map(|(k, v)| (k, v)))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| {
             anyhow::anyhow!("failed to run `{}`: {}", program, e)
         })?;
+
+    let mut stdout_pipe = child.stdout.take().expect("piped stdout");
+    let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+
+    // Read the pipes concurrently with the child running. Reading only after
+    // `wait()` would deadlock once the child fills the pipe buffer (~64KB):
+    // it would block writing and never exit, until the timeout killed it.
+    let read_stdout = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        tokio::io::copy(&mut stdout_pipe, &mut buf).await?;
+        Ok::<_, std::io::Error>(buf)
+    });
+    let read_stderr = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        tokio::io::copy(&mut stderr_pipe, &mut buf).await?;
+        Ok::<_, std::io::Error>(buf)
+    });
 
     // Bound how long a child can hold the parent. The default is 120s; the
     // user can tighten or relax it in `~/.pandapass/config.json`.
@@ -1018,9 +1063,31 @@ async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunAr
             // Best-effort: send SIGKILL, then reap.
             let _ = child.start_kill();
             let _ = child.wait().await;
+            // The child is dead, so the pipes close and the read tasks end.
             anyhow::bail!("`{}` exceeded the {}s command timeout and was killed", program, timeout_secs);
         }
     };
+
+    // The child has exited and its pipes are closed; the read tasks are done.
+    let stdout_buf = read_stdout.await.expect("join stdout")?;
+    let stderr_buf = read_stderr.await.expect("join stderr")?;
+
+    // Mask injected secret values out of the child's output.
+    let masked_stdout = mask_output(&stdout_buf, &mask_values);
+    let masked_stderr = mask_output(&stderr_buf, &mask_values);
+
+    // Forward the filtered output. Use raw write_all (not println!) so binary
+    // output from the child is preserved apart from the masked secrets.
+    {
+        let mut out = std::io::stdout().lock();
+        out.write_all(&masked_stdout)?;
+        out.flush()?;
+    }
+    {
+        let mut err = std::io::stderr().lock();
+        err.write_all(&masked_stderr)?;
+        err.flush()?;
+    }
 
     // Drop the values before doing anything else that could log or panic.
     for (_, v) in &mut envs {
@@ -1030,8 +1097,46 @@ async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunAr
     drop(envs);
 
     // Propagate the child's exit status so a caller (or an agent) can branch on
-    // success without parsing output.
-    std::process::exit(status.code().unwrap_or(1));
+    // success without parsing output. Exit code 0 is success; non-zero codes
+    // are carried to `main` via ChildExitStatus, which maps them to the CLI
+    // process's own exit code (instead of calling `std::process::exit` here,
+    // which would be untestable and would skip flushing).
+    match status.code().unwrap_or(1) {
+        0 => Ok(()),
+        code => Err(anyhow::anyhow!(ChildExitStatus(code))),
+    }
+}
+
+/// The placeholder injected secret values are replaced with in child output.
+const MASK_PLACEHOLDER: &str = "<concealed by pandapass>";
+
+/// Replace every occurrence of any `secret` byte string in `data` with
+/// `MASK_PLACEHOLDER`.
+///
+/// Secrets are matched longest-first so a short secret can never greedily
+/// consume the prefix of a longer one. The operation is purely byte-based:
+/// non-UTF-8 output from the child is preserved apart from the masked spans.
+fn mask_output(data: &[u8], secrets: &[Vec<u8>]) -> Vec<u8> {
+    if secrets.is_empty() {
+        return data.to_vec();
+    }
+    let mut sorted: Vec<&Vec<u8>> = secrets.iter().filter(|s| !s.is_empty()).collect();
+    sorted.sort_by_key(|s| std::cmp::Reverse(s.len()));
+
+    let mut result = Vec::with_capacity(data.len());
+    let mut i = 0;
+    'outer: while i < data.len() {
+        for secret in &sorted {
+            if data[i..].starts_with(secret) {
+                result.extend_from_slice(MASK_PLACEHOLDER.as_bytes());
+                i += secret.len();
+                continue 'outer;
+            }
+        }
+        result.push(data[i]);
+        i += 1;
+    }
+    result
 }
 
 async fn run_inject(api: &ApiClient, _config: &crate::client::CliConfig, args: InjectArgs) -> Result<()> {
@@ -1583,4 +1688,118 @@ async fn run_ssh(api: &ApiClient, cmd: SshCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mask_replaces_simple_secret() {
+        let data = b"pass=s3cr3t";
+        let secrets = vec![b"s3cr3t".to_vec()];
+        assert_eq!(
+            mask_output(data, &secrets),
+            b"pass=<concealed by pandapass>"
+        );
+    }
+
+    #[test]
+    fn mask_multiple_secrets() {
+        let data = b"user=alice pass=one token=two";
+        let secrets = vec![b"one".to_vec(), b"two".to_vec()];
+        assert_eq!(
+            mask_output(data, &secrets),
+            b"user=alice pass=<concealed by pandapass> token=<concealed by pandapass>"
+        );
+    }
+
+    #[test]
+    fn mask_empty_secrets_returns_original() {
+        let data = b"hello world";
+        assert_eq!(mask_output(data, &[]), b"hello world");
+    }
+
+    #[test]
+    fn mask_skips_empty_secret_without_panic() {
+        let data = b"abc";
+        let secrets = vec![b"".to_vec(), b"b".to_vec()];
+        assert_eq!(
+            mask_output(data, &secrets),
+            b"a<concealed by pandapass>c"
+        );
+    }
+
+    #[test]
+    fn mask_single_byte_secret() {
+        let data = b"banana";
+        let secrets = vec![b"a".to_vec()];
+        assert_eq!(
+            mask_output(data, &secrets),
+            b"b<concealed by pandapass>n<concealed by pandapass>n<concealed by pandapass>"
+        );
+    }
+
+    #[test]
+    fn mask_longest_secret_wins() {
+        // "ab" must win over "a" so the longer secret is fully concealed
+        // rather than being consumed piecemeal by the shorter one.
+        let data = b"abab";
+        let secrets = vec![b"a".to_vec(), b"ab".to_vec()];
+        assert_eq!(
+            mask_output(data, &secrets),
+            b"<concealed by pandapass><concealed by pandapass>"
+        );
+    }
+
+    #[test]
+    fn mask_secret_at_edges() {
+        let data = b"s3cr3tmid";
+        let secrets = vec![b"s3cr3t".to_vec()];
+        assert_eq!(
+            mask_output(data, &secrets),
+            b"<concealed by pandapass>mid"
+        );
+
+        let data = b"mids3cr3t";
+        assert_eq!(
+            mask_output(data, &secrets),
+            b"mid<concealed by pandapass>"
+        );
+    }
+
+    #[test]
+    fn mask_preserves_non_utf8() {
+        let data: Vec<u8> = vec![0xff, 0xfe, b's', b'3', b'c', b'r', b'3', b't', 0x00];
+        let secrets = vec![b"s3cr3t".to_vec()];
+        let expected: Vec<u8> = vec![
+            0xff,
+            0xfe,
+            b'<',
+            b'c',
+            b'o',
+            b'n',
+            b'c',
+            b'e',
+            b'a',
+            b'l',
+            b'e',
+            b'd',
+            b' ',
+            b'b',
+            b'y',
+            b' ',
+            b'p',
+            b'a',
+            b'n',
+            b'd',
+            b'a',
+            b'p',
+            b'a',
+            b's',
+            b's',
+            b'>',
+            0x00,
+        ];
+        assert_eq!(mask_output(&data, &secrets), expected);
+    }
 }

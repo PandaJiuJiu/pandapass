@@ -395,3 +395,71 @@ async fn inject_refuses_disk_write_without_force() {
     assert!(res.is_ok(), "inject without --force should succeed: {res:?}");
     assert!(!output.exists(), "output file must not be created without --force");
 }
+
+/// `pandapass run` must propagate a child's exit status to the caller: exit
+/// code 0 is a plain `Ok`, and a non-zero code comes back as
+/// `ChildExitStatus` so `main` can map it to the CLI process's exit code
+/// (rather than `std::process::exit` inside the command handler, which would
+/// be untestable in-process).
+#[tokio::test]
+async fn run_propagates_child_exit_status() {
+    use pandapass_cli::commands::{ChildExitStatus, Command, RunArgs};
+    use pandapass_core::models::CreateProjectRequest;
+
+    let (base_url, _handle) = start_server().await;
+
+    let operator = AgeIdentity::generate();
+    let operator_pub = operator.public_key().expect("public key");
+
+    let setup = ApiClient::new(base_url.clone(), false).expect("setup client");
+    let token = register_and_login(&setup, "run-status@example.com", operator_pub.as_str()).await;
+    setup.set_auth_token(Some(token.clone())).await;
+
+    setup
+        .create_project(&CreateProjectRequest {
+            name: "status".into(),
+            slug: "status".into(),
+            description: None,
+        })
+        .await
+        .expect("create project");
+    setup
+        .set_secret("status", "dev", "KEY", "value")
+        .await
+        .expect("set secret");
+
+    let (api, mut config) =
+        make_cli(&base_url, &token, &PathBuf::from("/nonexistent/age.key")).await;
+
+    // Exit code 0 -> Ok(())
+    let ok_res = run_command(
+        &api,
+        &mut config,
+        Command::Run(RunArgs {
+            project: "status".into(),
+            env: "dev".into(),
+            only: Some("KEY".into()),
+            command: vec!["/usr/bin/true".into()],
+        }),
+    )
+    .await;
+    assert!(ok_res.is_ok(), "exit 0 should be Ok, got: {ok_res:?}");
+
+    // Non-zero exit code -> Err(ChildExitStatus(code))
+    let err_res = run_command(
+        &api,
+        &mut config,
+        Command::Run(RunArgs {
+            project: "status".into(),
+            env: "dev".into(),
+            only: Some("KEY".into()),
+            command: vec!["/usr/bin/false".into()],
+        }),
+    )
+    .await;
+    let err = err_res.expect_err("exit 1 should be Err");
+    let status = err
+        .downcast_ref::<ChildExitStatus>()
+        .expect("error should be ChildExitStatus");
+    assert_eq!(status.0, 1, "child exit code should be 1, got {status:?}");
+}
