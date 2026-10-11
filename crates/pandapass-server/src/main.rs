@@ -39,6 +39,7 @@ async fn run() -> anyhow::Result<()> {
     // because the runtime image is distroless and has no shell to run one.
     if std::env::args().any(|a| a == "--init") {
         init_storage()?;
+        return Ok(());
     }
 
     // Initialize tracing

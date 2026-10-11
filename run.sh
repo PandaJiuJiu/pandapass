@@ -103,32 +103,20 @@ init_storage() {
     return 0
   fi
 
-  # `pandapass-server --init` writes the identity file then continues
-  # through the rest of main() (DB connect, bind, etc.) — it does not exit.
-  # We give it a valid DB URL so it gets past init_storage, wait briefly
-  # for the file to appear, then kill the process.
+  # Clean up any orphan processes on the server port first.
+  cleanup_port "$SERVER_PORT"
+
+  # `--init` now generates the age identity and exits immediately (since the
+  # Rust fix). We run it synchronously and wait for the file to appear.
   log "generating server age identity at $SERVER_AGE_FILE"
-  (
-    cd "$ROOT"
-    PANDAPASS_LISTEN="127.0.0.1:$SERVER_PORT" \
-    PANDAPASS_DB_URL="sqlite://$DATA_DIR/pandapass.db?mode=rwc" \
-    PANDAPASS_SERVER_AGE_IDENTITY_FILE="$SERVER_AGE_FILE" \
-    PANDAPASS_PUBLIC_URL="http://localhost:$VITE_PORT" \
-    "$SERVER_BIN" --init
-  ) &
-  local init_pid=$!
-  local elapsed=0
-  while [ ! -f "$SERVER_AGE_FILE" ] && [ $elapsed -lt 30 ]; do
-    sleep 0.2
-    elapsed=$((elapsed + 1))
-  done
-  # init_storage is synchronous and writes the file before any blocking IO,
-  # so the wait is conservative. Kill regardless.
-  kill "$init_pid" 2>/dev/null || true
-  # Reap so it does not become a zombie.
-  wait "$init_pid" 2>/dev/null || true
+  PANDAPASS_LISTEN="127.0.0.1:$SERVER_PORT" \
+  PANDAPASS_DB_URL="sqlite://$DATA_DIR/pandapass.db?mode=rwc" \
+  PANDAPASS_SERVER_AGE_IDENTITY_FILE="$SERVER_AGE_FILE" \
+  PANDAPASS_PUBLIC_URL="http://localhost:$VITE_PORT" \
+  "$SERVER_BIN" --init >>"$SERVER_LOG" 2>&1
+
   if [ ! -f "$SERVER_AGE_FILE" ]; then
-    err "server age identity was not written within 6s; check server logs"
+    err "server age identity was not written; check server logs"
     return 1
   fi
   chmod 600 "$SERVER_AGE_FILE" 2>/dev/null || true
@@ -159,6 +147,42 @@ detect_lan_ip() {
     | head -n1
 }
 
+# Check if the server port is free (no LISTEN on BIND_ADDR:PORT or 0.0.0.0:PORT).
+# Returns 0 if free, 1 if occupied.
+port_free() {
+  local port="$1"
+  local addr="${2:-$BIND_ADDR}"
+  # Check both the specific bind address and 0.0.0.0 (since a process on
+  # 127.0.0.1:PORT blocks 0.0.0.0:PORT and vice versa on Linux).
+  if ss -ltn 2>/dev/null | grep -qE "[:.]${port} "; then
+    # Filter to only our bind address or 0.0.0.0
+    local listeners
+    listeners=$(ss -ltn 2>/dev/null | grep -E "[:.]${port} ")
+    if echo "$listeners" | grep -qE "(^| )(${addr}|0\.0\.0\.0|127\.0\.0\.1):${port} "; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# Kill any process listening on the server port that isn't ours.
+# This cleans up orphaned --init processes from previous runs.
+cleanup_port() {
+  local port="$1"
+  local pids
+  # fuser -k would be simpler but not always available; use lsof + kill.
+  pids=$(lsof -ti :"$port" 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    log "cleaning up orphan processes on port $port: $pids"
+    kill -TERM $pids 2>/dev/null || true
+    sleep 0.5
+    pids=$(lsof -ti :"$port" 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+      kill -KILL $pids 2>/dev/null || true
+    fi
+  fi
+}
+
 # ── commands ─────────────────────────────────────────────────────────────────
 
 cmd_start() {
@@ -166,6 +190,16 @@ cmd_start() {
   ensure_web_deps
   ensure_run_dir
   init_storage
+
+  # Clean up any orphan processes on the server port before starting.
+  cleanup_port "$SERVER_PORT"
+
+  # Verify the port is free; if not, fail fast with a clear message.
+  if ! port_free "$SERVER_PORT"; then
+    err "port $SERVER_PORT is still in use after cleanup; cannot start server"
+    err "run 'lsof -i :$SERVER_PORT' to investigate, or stop conflicting services"
+    return 1
+  fi
 
   local lan_ip
   lan_ip="$(detect_lan_ip)"
@@ -276,8 +310,18 @@ cmd_init() {
 }
 
 cmd_clean() {
-  err "this will delete $RUN_DIR (server identity + db). press enter to confirm or ctrl-c"
-  read -r _
+  while true; do
+    err "this will delete $RUN_DIR (server identity + db)."
+    read -rp "type 'y' or 'yes' to confirm, or ctrl-c to cancel: " confirm
+    case "${confirm,,}" in
+      y|yes)
+        break
+        ;;
+      *)
+        log "confirmation required: please type 'y' or 'yes'"
+        ;;
+    esac
+  done
   cmd_stop || true
   rm -rf "$RUN_DIR"
   log "cleaned $RUN_DIR"
