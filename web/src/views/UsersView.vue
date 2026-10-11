@@ -1,25 +1,22 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError, type User } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiCard from '@/components/ui/UiCard.vue'
-import UiInput from '@/components/ui/UiInput.vue'
 import UiTable from '@/components/ui/UiTable.vue'
 import UiAlert from '@/components/ui/UiAlert.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import UiBadge from '@/components/ui/UiBadge.vue'
 
 const auth = useAuthStore()
+const router = useRouter()
 const { t } = useI18n()
 const users = ref<User[]>([])
 const loading = ref(true)
 const error = ref('')
-
-const email = ref('')
-const password = ref('')
-const creating = ref(false)
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -31,22 +28,6 @@ async function refresh(): Promise<void> {
     error.value = e instanceof ApiError ? e.message : t('common.loadFailed')
   } finally {
     loading.value = false
-  }
-}
-
-async function create(): Promise<void> {
-  if (!email.value || !password.value) return
-  creating.value = true
-  error.value = ''
-  try {
-    await api.adminCreateUser(email.value, password.value)
-    email.value = ''
-    password.value = ''
-    await refresh()
-  } catch (e) {
-    error.value = e instanceof ApiError ? e.message : t('common.createFailed')
-  } finally {
-    creating.value = false
   }
 }
 
@@ -64,12 +45,22 @@ async function toggleDisabled(u: User): Promise<void> {
   }
 }
 
+function newUser(): void {
+  router.push('/users/new')
+}
+
 onMounted(refresh)
 </script>
 
 <template>
   <div>
-    <UiPageHeader :title="t('users.title')" :description="t('users.subtitle')" />
+    <UiPageHeader :title="t('users.title')" :description="t('users.subtitle')">
+      <template #actions>
+        <UiButton variant="primary" size="sm" @click="newUser">
+          {{ t('users.createUser') }}
+        </UiButton>
+      </template>
+    </UiPageHeader>
 
     <UiAlert v-if="error" variant="error" class="page-alert">{{ error }}</UiAlert>
 
@@ -122,33 +113,6 @@ onMounted(refresh)
         </tr>
       </UiTable>
     </UiCard>
-
-    <!-- Create a user -->
-    <UiCard variant="elevated" class="create-card">
-      <h2 class="section-title">{{ t('users.createUser') }}</h2>
-      <div class="form-grid">
-        <UiInput
-          v-model="email"
-          type="email"
-          spellcheck="false"
-          :label="t('users.email')"
-          :placeholder="t('users.emailPlaceholder')"
-        />
-        <UiInput
-          v-model="password"
-          :label="t('common.password')"
-          :placeholder="t('users.passwordPlaceholder')"
-        />
-      </div>
-      <UiButton
-        variant="primary"
-        :loading="creating"
-        :disabled="creating || !email || !password"
-        @click="create"
-      >
-        {{ creating ? t('users.creating') : t('users.createUser') }}
-      </UiButton>
-    </UiCard>
   </div>
 </template>
 
@@ -172,21 +136,5 @@ onMounted(refresh)
 
 .float-right {
   float: right;
-}
-
-.section-title {
-  margin: 0 0 var(--space-4);
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.create-card {
-  margin-top: var(--space-6);
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 var(--space-4);
 }
 </style>

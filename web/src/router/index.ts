@@ -3,14 +3,19 @@ import { useAuthStore } from '@/stores/auth'
 
 import LoginView from '@/views/LoginView.vue'
 import DashboardView from '@/views/DashboardView.vue'
+import ProjectCreateView from '@/views/ProjectCreateView.vue'
 import ProjectView from '@/views/ProjectView.vue'
+import EnvironmentCreateView from '@/views/EnvironmentCreateView.vue'
+import SecretCreateView from '@/views/SecretCreateView.vue'
 import TokensView from '@/views/TokensView.vue'
+import TokenCreateView from '@/views/TokenCreateView.vue'
 import AuditView from '@/views/AuditView.vue'
 import DynamicCredsView from '@/views/DynamicCredsView.vue'
 import PoliciesView from '@/views/PoliciesView.vue'
 import PkiView from '@/views/PkiView.vue'
 import ScanView from '@/views/ScanView.vue'
 import UsersView from '@/views/UsersView.vue'
+import UserCreateView from '@/views/UserCreateView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -18,13 +23,27 @@ export const router = createRouter({
     { path: '/', redirect: '/projects' },
     { path: '/login', component: LoginView, meta: { public: true } },
     { path: '/projects', component: DashboardView, meta: { title: 'nav.projects' } },
+    { path: '/projects/new', component: ProjectCreateView, meta: { title: 'nav.projects', parent: '/projects' } },
     {
       path: '/projects/:slug',
       component: ProjectView,
       props: true,
       meta: { title: 'nav.projects', paramLabel: true, parent: '/projects' },
     },
+    {
+      path: '/projects/:slug/envs/new',
+      component: EnvironmentCreateView,
+      props: true,
+      meta: { title: 'nav.projects', parent: '/projects/:slug', paramLabel: true },
+    },
+    {
+      path: '/projects/:slug/envs/:env/secrets/new',
+      component: SecretCreateView,
+      props: true,
+      meta: { title: 'nav.projects', parent: '/projects/:slug', paramLabel: true },
+    },
     { path: '/tokens', component: TokensView, meta: { title: 'nav.tokens' } },
+    { path: '/tokens/new', component: TokenCreateView, meta: { title: 'nav.tokens', parent: '/tokens' } },
     { path: '/audit', component: AuditView, meta: { title: 'nav.audit' } },
     {
       path: '/projects/:slug/dynamic-creds',
@@ -36,6 +55,7 @@ export const router = createRouter({
     { path: '/pki', component: PkiView, meta: { title: 'nav.pki' } },
     { path: '/scan', component: ScanView, meta: { title: 'nav.scan' } },
     { path: '/users', component: UsersView, meta: { title: 'nav.users', admin: true } },
+    { path: '/users/new', component: UserCreateView, meta: { title: 'nav.users', parent: '/users', admin: true } },
   ],
 })
 

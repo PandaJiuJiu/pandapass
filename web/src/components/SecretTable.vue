@@ -8,6 +8,7 @@
  * is cached, and no value is ever written to the URL, storage, or a store.
  */
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError, type SecretMeta } from '@/api/client'
 import UiButton from '@/components/ui/UiButton.vue'
@@ -15,7 +16,7 @@ import UiTable from '@/components/ui/UiTable.vue'
 import UiAlert from '@/components/ui/UiAlert.vue'
 
 const props = defineProps<{ project: string; env: string }>()
-const emit = defineEmits<{ (e: 'changed'): void }>()
+const router = useRouter()
 const { t } = useI18n()
 
 const secrets = ref<SecretMeta[]>([])
@@ -26,10 +27,6 @@ const error = ref('')
 const revealedKey = ref<string | null>(null)
 const revealedValue = ref('')
 const busyKey = ref<string | null>(null)
-
-const newKey = ref('')
-const newValue = ref('')
-const saving = ref(false)
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -44,6 +41,10 @@ async function refresh(): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+function newSecret(): void {
+  router.push(`/projects/${props.project}/envs/${props.env}/secrets/new`)
 }
 
 async function reveal(key: string): Promise<void> {
@@ -69,25 +70,6 @@ function hide(): void {
   // Overwrite rather than just null the ref: this drops the last reference to
   // the string so it can be collected instead of lingering in a heap snapshot.
   revealedValue.value = ''
-}
-
-async function save(): Promise<void> {
-  if (!newKey.value || !newValue.value) return
-  saving.value = true
-  error.value = ''
-  try {
-    await api.setSecret(props.project, props.env, newKey.value, newValue.value)
-    // Clear the form *before* any await-resume work, so the value does not sit
-    // in the DOM while the list refreshes.
-    newKey.value = ''
-    newValue.value = ''
-    await refresh()
-    emit('changed')
-  } catch (e) {
-    error.value = e instanceof ApiError ? e.message : t('common.saveFailed')
-  } finally {
-    saving.value = false
-  }
 }
 
 async function remove(key: string): Promise<void> {
@@ -123,9 +105,14 @@ onMounted(refresh)
       <h3 class="secret-title">
         {{ t('secretTable.title') }} <span class="count">({{ secrets.length }})</span>
       </h3>
-      <UiButton variant="ghost" size="sm" @click="refresh">
-        {{ t('secretTable.refresh') }}
-      </UiButton>
+      <div class="row actions">
+        <UiButton variant="primary" size="sm" @click="newSecret">
+          {{ t('secretTable.addOrReplace') }}
+        </UiButton>
+        <UiButton variant="ghost" size="sm" @click="refresh">
+          {{ t('secretTable.refresh') }}
+        </UiButton>
+      </div>
     </div>
 
     <UiAlert v-if="error" variant="error" class="page-alert">{{ error }}</UiAlert>
@@ -177,35 +164,6 @@ onMounted(refresh)
         </td>
       </tr>
     </UiTable>
-
-    <!-- Add or replace a secret -->
-    <div class="add-secret">
-      <div class="add-head">
-        <strong>{{ t('secretTable.addOrReplace') }}</strong>
-      </div>
-      <div class="add-row">
-        <input
-          v-model="newKey"
-          class="add-input mono"
-          :placeholder="t('secretTable.keyPlaceholder')"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        <input
-          v-model="newValue"
-          class="add-input value"
-          type="password"
-          :placeholder="t('secretTable.valuePlaceholder')"
-          autocomplete="off"
-          spellcheck="false"
-          @keyup.enter="save"
-        />
-        <UiButton variant="primary" :loading="saving" :disabled="saving || !newKey || !newValue" @click="save">
-          {{ saving ? t('secretTable.saving') : t('secretTable.save') }}
-        </UiButton>
-      </div>
-      <p class="hint">{{ t('secretTable.maskedHint') }}</p>
-    </div>
   </div>
 </template>
 
@@ -252,58 +210,5 @@ onMounted(refresh)
 
 .actions {
   justify-content: flex-end;
-}
-
-.add-secret {
-  margin-top: var(--space-5);
-  padding: var(--space-4);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-}
-
-.add-head {
-  margin-bottom: var(--space-3);
-  font-size: 14px;
-}
-
-.add-row {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-}
-
-.add-input {
-  font: inherit;
-  padding: 7px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-  color: var(--text);
-}
-
-.add-input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
-
-.mono {
-  font-family: var(--font-mono);
-  font-size: 13px;
-}
-
-.add-input.mono {
-  flex: 0 0 30%;
-}
-
-.add-input.value {
-  flex: 1;
-}
-
-.hint {
-  margin: var(--space-3) 0 0;
-  font-size: 12px;
-  color: var(--text-faint);
 }
 </style>

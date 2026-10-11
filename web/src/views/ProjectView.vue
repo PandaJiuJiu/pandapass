@@ -1,25 +1,22 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError, type Environment } from '@/api/client'
 import SecretTable from '@/components/SecretTable.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiCard from '@/components/ui/UiCard.vue'
-import UiInput from '@/components/ui/UiInput.vue'
 import UiAlert from '@/components/ui/UiAlert.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 
 const props = defineProps<{ slug: string }>()
+const router = useRouter()
 const { t } = useI18n()
 
 const envs = ref<Environment[]>([])
 const selected = ref('')
 const loading = ref(true)
 const error = ref('')
-
-const envName = ref('')
-const envSlug = ref('')
-const creating = ref(false)
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -38,20 +35,8 @@ async function refresh(): Promise<void> {
   }
 }
 
-async function createEnv(): Promise<void> {
-  if (!envName.value || !envSlug.value) return
-  creating.value = true
-  error.value = ''
-  try {
-    await api.createEnv(props.slug, envName.value, envSlug.value)
-    envName.value = ''
-    envSlug.value = ''
-    await refresh()
-  } catch (e) {
-    error.value = e instanceof ApiError ? e.message : t('common.createFailed')
-  } finally {
-    creating.value = false
-  }
+function newEnvironment(): void {
+  router.push(`/projects/${props.slug}/envs/new`)
 }
 
 // The slug is a route param, so navigating between projects changes it in place
@@ -74,6 +59,9 @@ onMounted(refresh)
           </UiButton>
         </router-link>
         <router-link to="/projects" class="back-link">{{ t('project.allProjects') }}</router-link>
+        <UiButton variant="primary" size="sm" @click="newEnvironment">
+          {{ t('project.newEnvironment') }}
+        </UiButton>
       </template>
     </UiPageHeader>
 
@@ -100,34 +88,6 @@ onMounted(refresh)
       <UiCard variant="elevated">
         <SecretTable v-if="selected" :project="slug" :env="selected" />
         <p v-else class="dim">{{ t('project.noEnvironments') }}</p>
-      </UiCard>
-
-      <!-- New environment -->
-      <UiCard variant="subtle" class="new-env">
-        <h2 class="section-title">{{ t('project.newEnvironment') }}</h2>
-        <div class="env-form">
-          <UiInput
-            v-model="envName"
-            :label="t('project.envName')"
-            :placeholder="t('project.envNamePlaceholder')"
-          />
-          <UiInput
-            v-model="envSlug"
-            :label="t('project.envSlug')"
-            :placeholder="t('project.envSlugPlaceholder')"
-            mono
-          />
-          <div class="env-form-actions">
-            <UiButton
-              variant="primary"
-              :loading="creating"
-              :disabled="creating || !envName || !envSlug"
-              @click="createEnv"
-            >
-              {{ creating ? t('project.creatingEnvironment') : t('project.addEnvironment') }}
-            </UiButton>
-          </div>
-        </div>
       </UiCard>
     </template>
   </div>
@@ -183,26 +143,5 @@ onMounted(refresh)
   background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent);
-}
-
-.section-title {
-  margin: 0 0 var(--space-3);
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.new-env {
-  margin-top: var(--space-6);
-}
-
-.env-form {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 var(--space-4);
-  align-items: end;
-}
-
-.env-form-actions {
-  padding-bottom: var(--space-4);
 }
 </style>

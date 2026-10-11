@@ -1,50 +1,21 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError, type ServiceToken } from '@/api/client'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiCard from '@/components/ui/UiCard.vue'
-import UiInput from '@/components/ui/UiInput.vue'
-import UiSelect from '@/components/ui/UiSelect.vue'
 import UiTable from '@/components/ui/UiTable.vue'
-import UiAlert from '@/components/ui/UiAlert.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
 
+const router = useRouter()
 const { t } = useI18n()
 
 const tokens = ref<ServiceToken[]>([])
 const loading = ref(true)
 const error = ref('')
-
-const name = ref('')
-const scope = ref('')
-const project = ref('')
-const expiresDays = ref('')
-const creating = ref(false)
-
-/** The plaintext token, shown exactly once. Never stored anywhere. */
 const issued = ref('')
-
-/**
- * The complete set, and what each may do. Listed here so the choice is made
- * deliberately — the default here is read-only because a token that can write
- * can rotate a production credential, and that is not what a CI job usually
- * needs.
- */
-type ScopeKey =
-  | 'readSecret'
-  | 'listSecret'
-  | 'writeSecret'
-  | 'readAudit'
-  | 'manageProject'
-
-const SCOPES: ReadonlyArray<readonly [string, ScopeKey]> = [
-  ['read:secret', 'readSecret'],
-  ['list:secret', 'listSecret'],
-  ['write:secret', 'writeSecret'],
-  ['read:audit', 'readAudit'],
-  ['manage:project', 'manageProject'],
-]
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -55,31 +26,6 @@ async function refresh(): Promise<void> {
     error.value = e instanceof ApiError ? e.message : t('common.loadFailed')
   } finally {
     loading.value = false
-  }
-}
-
-async function create(): Promise<void> {
-  if (!name.value || !scope.value) return
-  creating.value = true
-  error.value = ''
-  try {
-    const res = await api.createToken({
-      name: name.value,
-      scopes: [scope.value],
-      project_id: project.value || null,
-      expires_at: expiresDays.value
-        ? new Date(Date.now() + Number(expiresDays.value) * 86_400_000).toISOString()
-        : null,
-    })
-    issued.value = res.plain_token
-    name.value = ''
-    project.value = ''
-    expiresDays.value = ''
-    await refresh()
-  } catch (e) {
-    error.value = e instanceof ApiError ? e.message : t('common.createFailed')
-  } finally {
-    creating.value = false
   }
 }
 
@@ -98,12 +44,22 @@ function dismissIssued(): void {
   issued.value = ''
 }
 
+function newToken(): void {
+  router.push('/tokens/new')
+}
+
 onMounted(refresh)
 </script>
 
 <template>
   <div>
-    <UiPageHeader :title="t('tokens.title')" :description="t('tokens.subtitle')" />
+    <UiPageHeader :title="t('tokens.title')" :description="t('tokens.subtitle')">
+      <template #actions>
+        <UiButton variant="primary" size="sm" @click="newToken">
+          {{ t('tokens.issueToken') }}
+        </UiButton>
+      </template>
+    </UiPageHeader>
 
     <UiAlert v-if="error" variant="error" class="page-alert">{{ error }}</UiAlert>
 
@@ -160,43 +116,6 @@ onMounted(refresh)
         </tr>
       </UiTable>
     </UiCard>
-
-    <!-- Issue a token -->
-    <UiCard variant="elevated" class="issue-card">
-      <h2 class="section-title">{{ t('tokens.issueToken') }}</h2>
-      <div class="form-grid">
-        <UiInput
-          v-model="name"
-          :label="t('tokens.name')"
-          :placeholder="t('tokens.namePlaceholder')"
-        />
-        <UiInput
-          v-model="project"
-          mono
-          :label="`${t('tokens.projectSlug')} ${t('tokens.projectBlankAll')}`"
-          :placeholder="t('tokens.projectSlug')"
-        />
-        <UiSelect v-model="scope" :label="t('tokens.scope')" :placeholder="t('tokens.selectScope')">
-          <option v-for="[value, label] in SCOPES" :key="value" :value="value">
-            {{ t(`tokens.scopeDescriptions.${label}`) }} ({{ value }})
-          </option>
-        </UiSelect>
-        <UiInput
-          v-model="expiresDays"
-          type="number"
-          min="1"
-          :label="`${t('tokens.expiresDays')} ${t('tokens.expiresBlankNever')}`"
-        />
-      </div>
-      <UiButton
-        variant="primary"
-        :loading="creating"
-        :disabled="creating || !name || !scope"
-        @click="create"
-      >
-        {{ creating ? t('tokens.issuing') : t('tokens.issueToken') }}
-      </UiButton>
-    </UiCard>
   </div>
 </template>
 
@@ -247,21 +166,5 @@ onMounted(refresh)
 
 .float-right {
   float: right;
-}
-
-.section-title {
-  margin: 0 0 var(--space-4);
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.issue-card {
-  margin-top: var(--space-6);
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 var(--space-4);
 }
 </style>
