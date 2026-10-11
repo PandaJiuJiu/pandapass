@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError } from '@/api/client'
@@ -19,8 +19,11 @@ const envName = ref('')
 const envSlug = ref('')
 const error = ref('')
 
+/** Is the current slug syntactically valid? */
+const slugValid = computed(() => /^[a-z0-9]+(-[a-z0-9]+)*$/.test(envSlug.value))
+
 async function createEnv(): Promise<void> {
-  if (!envName.value || !envSlug.value) return
+  if (!envName.value || !slugValid.value) return
   creating.value = true
   error.value = ''
   try {
@@ -51,31 +54,43 @@ function cancel(): void {
     <UiAlert v-if="error" variant="error" class="page-alert">{{ error }}</UiAlert>
 
     <UiCard variant="elevated" class="create-card">
-      <div class="env-form">
-        <UiInput
-          v-model="envName"
-          :label="t('project.envName')"
-          :placeholder="t('project.envNamePlaceholder')"
-        />
-        <UiInput
-          v-model="envSlug"
-          :label="t('project.envSlug')"
-          :placeholder="t('project.envSlugPlaceholder')"
-          mono
-        />
-        <div class="env-form-actions">
-          <UiButton variant="secondary" @click="cancel">
-            {{ t('common.cancel') }}
-          </UiButton>
-          <UiButton
-            variant="primary"
-            :loading="creating"
-            :disabled="creating || !envName || !envSlug"
-            @click="createEnv"
-          >
-            {{ creating ? t('project.creatingEnvironment') : t('project.addEnvironment') }}
-          </UiButton>
+      <div class="field-row">
+        <label class="field-label" for="env-name">{{ t('project.envName') }}</label>
+        <div class="field-control">
+          <UiInput
+            v-model="envName"
+            id="env-name"
+            :placeholder="t('project.envNamePlaceholder')"
+          />
         </div>
+      </div>
+
+      <div class="field-row">
+        <label class="field-label" for="env-slug">{{ t('project.envSlug') }}</label>
+        <div class="field-control">
+          <UiInput
+            v-model="envSlug"
+            id="env-slug"
+            mono
+            :placeholder="t('project.envSlugPlaceholder')"
+            :hint="t('project.envSlugHint')"
+            :error="envSlug && !slugValid ? t('project.envSlugHint') : undefined"
+          />
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <UiButton variant="secondary" @click="cancel">
+          {{ t('common.cancel') }}
+        </UiButton>
+        <UiButton
+          variant="primary"
+          :loading="creating"
+          :disabled="creating || !envName || !slugValid"
+          @click="createEnv"
+        >
+          {{ creating ? t('project.creatingEnvironment') : t('project.addEnvironment') }}
+        </UiButton>
       </div>
     </UiCard>
   </div>
@@ -87,18 +102,29 @@ function cancel(): void {
 }
 
 .create-card {
-  max-width: 500px;
+  max-width: 640px;
 }
 
-.env-form {
+.field-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 var(--space-4);
-  align-items: end;
+  grid-template-columns: 160px 1fr;
+  gap: var(--space-4);
+  align-items: start;
+  margin-bottom: var(--space-4);
 }
 
-.env-form-actions {
-  grid-column: 1 / -1;
+.field-label {
+  padding-top: 9px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.field-control {
+  min-width: 0;
+}
+
+.form-actions {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-3);

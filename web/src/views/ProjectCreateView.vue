@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError } from '@/api/client'
@@ -18,18 +18,11 @@ const slug = ref('')
 const description = ref('')
 const error = ref('')
 
-/** True once the user edits the slug by hand; stops auto-derivation. */
-const slugTouched = ref(false)
-function onNameInput(): void {
-  if (slugTouched.value) return
-  slug.value = name.value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-}
+/** Is the current slug syntactically valid? */
+const slugValid = computed(() => /^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug.value))
 
 async function create(): Promise<void> {
-  if (!name.value || !slug.value) return
+  if (!name.value || !slugValid.value) return
   creating.value = true
   error.value = ''
   try {
@@ -60,27 +53,44 @@ function cancel(): void {
     <UiAlert v-if="error" variant="error" class="page-alert">{{ error }}</UiAlert>
 
     <UiCard variant="elevated" class="create-card">
-      <div class="form-grid">
-        <UiInput
-          v-model="name"
-          :label="t('dashboard.projectName')"
-          :placeholder="t('dashboard.projectName')"
-          @input="onNameInput"
-        />
-        <UiInput
-          v-model="slug"
-          mono
-          :label="t('dashboard.projectSlug')"
-          :hint="t('dashboard.slugHint')"
-          :placeholder="t('dashboard.projectSlug')"
-          @update:model-value="slugTouched = true"
-        />
-        <UiInput
-          v-model="description"
-          :label="`${t('common.description')} ${t('common.optional')}`"
-          class="span-2"
-        />
+      <div class="field-row">
+        <label class="field-label" for="project-name">{{ t('dashboard.projectName') }}</label>
+        <div class="field-control">
+          <UiInput
+            v-model="name"
+            id="project-name"
+            :placeholder="t('dashboard.projectNamePlaceholder')"
+          />
+        </div>
       </div>
+
+      <div class="field-row">
+        <label class="field-label" for="project-slug">{{ t('dashboard.projectSlug') }}</label>
+        <div class="field-control">
+          <UiInput
+            v-model="slug"
+            id="project-slug"
+            mono
+            :placeholder="t('dashboard.projectSlug')"
+            :hint="t('dashboard.slugHint')"
+            :error="slug && !slugValid ? t('dashboard.slugHint') : undefined"
+          />
+        </div>
+      </div>
+
+      <div class="field-row">
+        <label class="field-label" for="project-description">
+          {{ t('dashboard.descriptionOptional') }}
+        </label>
+        <div class="field-control">
+          <UiInput
+            v-model="description"
+            id="project-description"
+            :placeholder="t('dashboard.descriptionOptional')"
+          />
+        </div>
+      </div>
+
       <div class="form-actions">
         <UiButton variant="secondary" @click="cancel">
           {{ t('common.cancel') }}
@@ -88,7 +98,7 @@ function cancel(): void {
         <UiButton
           variant="primary"
           :loading="creating"
-          :disabled="creating || !name || !slug"
+          :disabled="creating || !name || !slugValid"
           @click="create"
         >
           {{ creating ? t('dashboard.creating') : t('dashboard.createProject') }}
@@ -104,17 +114,26 @@ function cancel(): void {
 }
 
 .create-card {
-  max-width: 600px;
+  max-width: 640px;
 }
 
-.form-grid {
+.field-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 var(--space-4);
+  grid-template-columns: 160px 1fr;
+  gap: var(--space-4);
+  align-items: start;
+  margin-bottom: var(--space-4);
 }
 
-.span-2 {
-  grid-column: 1 / -1;
+.field-label {
+  padding-top: 9px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.field-control {
+  min-width: 0;
 }
 
 .form-actions {
