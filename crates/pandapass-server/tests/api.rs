@@ -89,6 +89,8 @@ impl Harness {
             auth_rate_limit_window_secs: 60,
             dynamic_proxy_listen: None,
             dynamic_proxy_upstream: None,
+            dynamic_proxy_redis_listen: None,
+            dynamic_proxy_redis_upstream: None,
             trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
             audit_chain_key_file: None,
             backup_dir: None,
@@ -886,7 +888,7 @@ async fn dynamic_creds_scope_boundary() {
         .post(
             "/api/v1/projects/demo/envs/prod/creds",
             &writer,
-            json!({ "kind": "mysql", "username": "writer", "ttl_seconds": 7200 }),
+            json!({ "kind": "redis", "username": "writer", "ttl_seconds": 7200 }),
         )
         .await;
     assert!(create2.ok(), "write:secret must create: {:?}", create2.body);
@@ -932,6 +934,30 @@ async fn dynamic_cred_never_returns_plaintext() {
     assert!(
         rendered.contains("cache-user"),
         "username is metadata and should be in the list"
+    );
+}
+
+/// MySQL dynamic credentials must be refused at issuance: there is no MySQL
+/// wire proxy, so minting one would hand out a credential that can never
+/// connect to anything (D8).
+#[tokio::test]
+async fn mysql_dynamic_cred_is_rejected_at_issuance() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    h.project(&admin).await;
+
+    let create = h
+        .post(
+            "/api/v1/projects/demo/envs/prod/creds",
+            &admin,
+            json!({ "kind": "mysql", "username": "mysql-user", "ttl_seconds": 3600 }),
+        )
+        .await;
+    assert_eq!(create.status, StatusCode::NOT_IMPLEMENTED);
+    let msg = create.body.to_string();
+    assert!(
+        msg.contains("MySQL dynamic credentials are not supported"),
+        "unexpected body: {msg}"
     );
 }
 
@@ -1175,13 +1201,17 @@ async fn server_can_generate_ca_keys_without_the_private_key_ever_reaching_the_c
     // 5. The generated root can be listed/read like any other CA key.
     let list = h.get("/api/v1/ca?include_revoked=true", &admin).await;
     assert!(list.ok());
-    let ids: Vec<&str> = list.body
+    let ids: Vec<&str> = list
+        .body
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|k| k["id"].as_str())
         .collect();
-    assert!(ids.contains(&root_id.as_str()), "generated root must be listed");
+    assert!(
+        ids.contains(&root_id.as_str()),
+        "generated root must be listed"
+    );
 }
 
 /// Only admins can manage CA keys.
@@ -1609,7 +1639,10 @@ deny[msg] {
     );
 
     let denied_remove = h
-        .del(&format!("/api/v1/projects/demo/members/{member_id}"), &editor_token)
+        .del(
+            &format!("/api/v1/projects/demo/members/{member_id}"),
+            &editor_token,
+        )
         .await;
     assert_eq!(denied_remove.status, StatusCode::FORBIDDEN);
     assert!(
@@ -1780,7 +1813,11 @@ deny[msg] {
             json!({ "kind": "redis", "username": "admin-user", "ttl_seconds": 3600 }),
         )
         .await;
-    assert!(admin_create.ok(), "admin create failed: {:?}", admin_create.body);
+    assert!(
+        admin_create.ok(),
+        "admin create failed: {:?}",
+        admin_create.body
+    );
 
     // A write:secret token is denied by policy.
     let writer = h.token(&admin, &["write:secret"]).await;
@@ -1808,7 +1845,9 @@ deny[msg] {
 
     // A list:secret token is denied listing creds.
     let lister = h.token(&admin, &["list:secret"]).await;
-    let denied_list = h.get("/api/v1/projects/demo/envs/prod/creds", &lister).await;
+    let denied_list = h
+        .get("/api/v1/projects/demo/envs/prod/creds", &lister)
+        .await;
     assert_eq!(
         denied_list.status,
         StatusCode::FORBIDDEN,
@@ -1932,7 +1971,11 @@ deny[msg] {
             json!({ "name": "admin-token", "scopes": ["read:secret"] }),
         )
         .await;
-    assert!(admin_create.ok(), "admin create token failed: {:?}", admin_create.body);
+    assert!(
+        admin_create.ok(),
+        "admin create token failed: {:?}",
+        admin_create.body
+    );
 
     // A non-admin token cannot mint tokens anyway (RBAC), and the policy
     // would deny it too — but a non-admin *human* session is the interesting
@@ -2064,7 +2107,8 @@ deny[msg] {
 
     // Admin can create CA.
     let key_pem = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg...\n-----END PRIVATE KEY-----";
-    let cert_pem = "-----BEGIN CERTIFICATE-----\nMIIBUTCCAQigAwIBAgIJ...\n-----END CERTIFICATE-----";
+    let cert_pem =
+        "-----BEGIN CERTIFICATE-----\nMIIBUTCCAQigAwIBAgIJ...\n-----END CERTIFICATE-----";
     let admin_create = h
         .post(
             "/api/v1/ca",
@@ -2078,7 +2122,11 @@ deny[msg] {
             }),
         )
         .await;
-    assert!(admin_create.ok(), "admin CA create failed: {:?}", admin_create.body);
+    assert!(
+        admin_create.ok(),
+        "admin CA create failed: {:?}",
+        admin_create.body
+    );
     let ca_id = admin_create.body["id"].as_str().unwrap().to_string();
 
     // A non-admin token cannot manage CA (RBAC denies ManageUsers for tokens),
@@ -2141,7 +2189,11 @@ deny[msg] {
             }),
         )
         .await;
-    assert!(admin_create.ok(), "admin SSH cert failed: {:?}", admin_create.body);
+    assert!(
+        admin_create.ok(),
+        "admin SSH cert failed: {:?}",
+        admin_create.body
+    );
     let _ = policy_id;
 }
 
@@ -2373,7 +2425,10 @@ async fn secret_scan_finds_aws_key_without_leaking_plaintext() {
     let start = items[0]["match_start"].as_i64().unwrap() as usize;
     let end = items[0]["match_end"].as_i64().unwrap() as usize;
     assert!(start < end, "match offsets must be ordered");
-    assert!(end <= PLAINTEXT.len(), "match offsets must be within the value");
+    assert!(
+        end <= PLAINTEXT.len(),
+        "match offsets must be within the value"
+    );
 
     // Neither the scan response nor the findings may carry the plaintext.
     let scan_rendered = res.body.to_string();
@@ -2423,7 +2478,8 @@ async fn secret_scan_rerun_overwrites_previous_findings() {
     let admin = h.admin().await;
     h.project(&admin).await;
 
-    h.set_secret(&admin, "AWS_KEY", "AKIA1234567890123456").await;
+    h.set_secret(&admin, "AWS_KEY", "AKIA1234567890123456")
+        .await;
     let first = h.post("/api/v1/scan", &admin, json!({})).await;
     assert!(first.ok());
     assert_eq!(first.body["findings"], 1);
@@ -2451,7 +2507,8 @@ async fn secret_scan_admin_only() {
     let h = Harness::start().await;
     let admin = h.admin().await;
     h.project(&admin).await;
-    h.set_secret(&admin, "AWS_KEY", "AKIA1234567890123456").await;
+    h.set_secret(&admin, "AWS_KEY", "AKIA1234567890123456")
+        .await;
 
     // A second non-admin account with editor role on the project.
     let key = AgeIdentity::generate();
@@ -2485,7 +2542,11 @@ async fn secret_scan_admin_only() {
     assert_eq!(denied_list.status, StatusCode::FORBIDDEN);
 
     // Service tokens with various scopes: denied (no scope grants ManageUsers).
-    for scopes in [&["read:secret"][..], &["write:secret", "read:secret"][..], &["list:secret"][..]] {
+    for scopes in [
+        &["read:secret"][..],
+        &["write:secret", "read:secret"][..],
+        &["list:secret"][..],
+    ] {
         let tok = h.token(&admin, scopes).await;
         let denied_trigger = h.post("/api/v1/scan", &tok, json!({})).await;
         assert_eq!(denied_trigger.status, StatusCode::FORBIDDEN);
@@ -2513,10 +2574,10 @@ async fn harness_with_rate_limit(max: u32, window_secs: u64) -> Harness {
         public_url: "http://localhost:8233".into(),
         db_url: format!("sqlite://{}?mode=rwc", db_path.display()),
         session_ttl_days: 30,
-            session_idle_timeout_secs: None,
+        session_idle_timeout_secs: None,
         allowed_origins: vec![],
         bootstrap_admin_email: None,
-            bootstrap_enabled: false,
+        bootstrap_enabled: false,
         require_totp: false,
         allow_registration: true,
         max_concurrent_exec: 10,
@@ -2528,9 +2589,11 @@ async fn harness_with_rate_limit(max: u32, window_secs: u64) -> Harness {
         auth_rate_limit_window_secs: window_secs,
         dynamic_proxy_listen: None,
         dynamic_proxy_upstream: None,
+        dynamic_proxy_redis_listen: None,
+        dynamic_proxy_redis_upstream: None,
         trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
-            audit_chain_key_file: None,
-            backup_dir: None,
+        audit_chain_key_file: None,
+        backup_dir: None,
     };
     let db = connect(&config.db_url).await.expect("connect");
     migrate(&db).await.expect("migrate");
@@ -2542,7 +2605,11 @@ async fn harness_with_rate_limit(max: u32, window_secs: u64) -> Harness {
         Arc::new(DbAuditLogger::with_chain_key(db.clone(), chain_key.clone()));
     let audit = AuditService::new(audit_logger);
     let state = AppState::new(db.clone(), audit, config).with_audit_chain_key(chain_key);
-    Harness { router: build_router(state), db_path, db }
+    Harness {
+        router: build_router(state),
+        db_path,
+        db,
+    }
 }
 
 /// The regression this asserts: until the public-route ClientIp middleware
@@ -2558,16 +2625,18 @@ async fn login_rate_limit_actually_fires_on_public_route() {
     });
     let mut statuses = Vec::new();
     for _ in 0..4 {
-        let res = h.send_from(
-            "127.0.0.1:50000".parse().unwrap(),
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/auth/login")
-                .header("x-forwarded-for", "203.0.113.7")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        ).await;
+        let res = h
+            .send_from(
+                "127.0.0.1:50000".parse().unwrap(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("x-forwarded-for", "203.0.113.7")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await;
         statuses.push(res.status.as_u16());
     }
     // The first two attempts should reach the handler (and return 401 because
@@ -2592,16 +2661,18 @@ async fn register_rate_limit_fires_when_registration_is_open() {
     });
     let mut statuses = Vec::new();
     for _ in 0..4 {
-        let res = h.send_from(
-            "127.0.0.1:50001".parse().unwrap(),
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/auth/register")
-                .header("x-forwarded-for", "198.51.100.42")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        ).await;
+        let res = h
+            .send_from(
+                "127.0.0.1:50001".parse().unwrap(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/register")
+                    .header("x-forwarded-for", "198.51.100.42")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await;
         statuses.push(res.status.as_u16());
     }
     // First two are 201/200 (the first user bootstraps as admin), the next
@@ -2628,7 +2699,11 @@ async fn untrusted_peer_does_not_inherit_xff() {
 
     let ip = extract_client_ip(&headers, Some(peer), &trusted)
         .expect("peer should be authoritative when no proxy is trusted");
-    assert_eq!(ip.to_string(), "10.0.0.1", "XFF must be ignored without trusted proxy");
+    assert_eq!(
+        ip.to_string(),
+        "10.0.0.1",
+        "XFF must be ignored without trusted proxy"
+    );
 }
 
 /// When the peer is in the trusted CIDR list, the leftmost XFF is the
@@ -2639,16 +2714,18 @@ async fn trusted_peer_inherits_xff() {
     use std::net::SocketAddr;
 
     // 127.0.0.0/8 — match the test peer.
-    let trusted: Vec<(std::net::IpAddr, u8)> = vec![
-        ("127.0.0.0".parse().unwrap(), 8),
-    ];
+    let trusted: Vec<(std::net::IpAddr, u8)> = vec![("127.0.0.0".parse().unwrap(), 8)];
     let mut headers = axum::http::HeaderMap::new();
     headers.insert("x-forwarded-for", "203.0.113.99, 10.0.0.1".parse().unwrap());
     let peer: SocketAddr = "127.0.0.1:50000".parse().unwrap();
 
     let ip = extract_client_ip(&headers, Some(peer), &trusted)
         .expect("trusted peer should fall through to XFF");
-    assert_eq!(ip.to_string(), "203.0.113.99", "XFF should be honoured when peer is trusted");
+    assert_eq!(
+        ip.to_string(),
+        "203.0.113.99",
+        "XFF should be honoured when peer is trusted"
+    );
 }
 
 /// `POST /api/v1/auth/mk/rotate` must re-encrypt every secret the user
@@ -2660,34 +2737,55 @@ async fn mk_rotate_reencrypts_secrets() {
     let admin = h.admin().await;
 
     // Set a few secrets we can later read back.
-    h.post("/api/v1/projects", &admin, json!({"name": "P", "slug": "p"})).await;
-    h.put("/api/v1/projects/p/envs/dev/secrets/KEY1", &admin, json!({"value": "v1"})).await;
-    h.put("/api/v1/projects/p/envs/dev/secrets/KEY2", &admin, json!({"value": "v2"})).await;
+    h.post(
+        "/api/v1/projects",
+        &admin,
+        json!({"name": "P", "slug": "p"}),
+    )
+    .await;
+    h.put(
+        "/api/v1/projects/p/envs/dev/secrets/KEY1",
+        &admin,
+        json!({"value": "v1"}),
+    )
+    .await;
+    h.put(
+        "/api/v1/projects/p/envs/dev/secrets/KEY2",
+        &admin,
+        json!({"value": "v2"}),
+    )
+    .await;
 
     // Wrong password rejected.
-    let bad = h.send_from(
-        "127.0.0.1:51000".parse().unwrap(),
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/mk/rotate")
-            .header("authorization", format!("Bearer {admin}"))
-            .header("content-type", "application/json")
-            .body(Body::from(json!({"current_password": "wrong"}).to_string()))
-            .unwrap(),
-    ).await;
+    let bad = h
+        .send_from(
+            "127.0.0.1:51000".parse().unwrap(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/mk/rotate")
+                .header("authorization", format!("Bearer {admin}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"current_password": "wrong"}).to_string()))
+                .unwrap(),
+        )
+        .await;
     assert_eq!(bad.status, StatusCode::UNAUTHORIZED);
 
     // Correct password accepted.
-    let res = h.send_from(
-        "127.0.0.1:51001".parse().unwrap(),
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/mk/rotate")
-            .header("authorization", format!("Bearer {admin}"))
-            .header("content-type", "application/json")
-            .body(Body::from(json!({"current_password": "hunter2hunter2"}).to_string()))
-            .unwrap(),
-    ).await;
+    let res = h
+        .send_from(
+            "127.0.0.1:51001".parse().unwrap(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/mk/rotate")
+                .header("authorization", format!("Bearer {admin}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"current_password": "hunter2hunter2"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
     assert_eq!(res.status, StatusCode::OK, "rotate failed: {:?}", res.body);
     assert_eq!(res.body["rotated"], true);
     assert_eq!(res.body["secrets_reencrypted"], 2);
@@ -2697,16 +2795,22 @@ async fn mk_rotate_reencrypts_secrets() {
     assert_eq!(post.status, StatusCode::UNAUTHORIZED);
 
     // Log in again and confirm the secrets still read back.
-    let login = h.post(
-        "/api/v1/auth/login",
-        "",
-        json!({"email": "admin@example.com", "password": "hunter2hunter2"}),
-    ).await;
+    let login = h
+        .post(
+            "/api/v1/auth/login",
+            "",
+            json!({"email": "admin@example.com", "password": "hunter2hunter2"}),
+        )
+        .await;
     let new_token = login.body["session_token"].as_str().unwrap().to_string();
-    let g = h.get("/api/v1/projects/p/envs/dev/secrets/KEY1", &new_token).await;
+    let g = h
+        .get("/api/v1/projects/p/envs/dev/secrets/KEY1", &new_token)
+        .await;
     assert_eq!(g.status, StatusCode::OK);
     assert_eq!(g.body["value"], "v1");
-    let g2 = h.get("/api/v1/projects/p/envs/dev/secrets/KEY2", &new_token).await;
+    let g2 = h
+        .get("/api/v1/projects/p/envs/dev/secrets/KEY2", &new_token)
+        .await;
     assert_eq!(g2.body["value"], "v2");
 }
 
@@ -2734,12 +2838,15 @@ async fn admin_server_age_show_requires_admin() {
         "/api/v1/auth/register",
         "",
         json!({"email": alice_email, "password": "alice-password-123"}),
-    ).await;
-    let login = h.post(
-        "/api/v1/auth/login",
-        "",
-        json!({"email": alice_email, "password": "alice-password-123"}),
-    ).await;
+    )
+    .await;
+    let login = h
+        .post(
+            "/api/v1/auth/login",
+            "",
+            json!({"email": alice_email, "password": "alice-password-123"}),
+        )
+        .await;
     let alice = login.body["session_token"].as_str().unwrap();
     let r = h.get("/api/v1/admin/server-age", alice).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
@@ -2754,61 +2861,70 @@ async fn recovery_code_generation_and_redeem() {
     let h = Harness::start().await;
     let admin = h.admin().await;
 
-    let gen = h.send(
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/recovery-codes")
-            .header("authorization", format!("Bearer {admin}"))
-            .header("content-type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap(),
-    ).await;
+    let gen = h
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/recovery-codes")
+                .header("authorization", format!("Bearer {admin}"))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await;
     assert_eq!(gen.status, StatusCode::OK, "{:?}", gen.body);
     let codes: Vec<String> = gen.body["codes"]
-        .as_array().unwrap()
+        .as_array()
+        .unwrap()
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
     assert_eq!(codes.len(), 8);
 
     // Redeem one of the codes with the right email.
-    let r = h.send(
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/recovery-code/redeem")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                json!({"email": "admin@example.com", "code": codes[0]}).to_string(),
-            ))
-            .unwrap(),
-    ).await;
+    let r = h
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/recovery-code/redeem")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"email": "admin@example.com", "code": codes[0]}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(r.body["rotated"], true);
 
     // Same code must not work twice.
-    let r2 = h.send(
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/recovery-code/redeem")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                json!({"email": "admin@example.com", "code": codes[0]}).to_string(),
-            ))
-            .unwrap(),
-    ).await;
+    let r2 = h
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/recovery-code/redeem")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"email": "admin@example.com", "code": codes[0]}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
     assert_eq!(r2.status, StatusCode::UNAUTHORIZED);
 
     // A wrong code must not work either.
-    let r3 = h.send(
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/recovery-code/redeem")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                json!({"email": "admin@example.com", "code": "definitely-wrong"}).to_string(),
-            ))
-            .unwrap(),
-    ).await;
+    let r3 = h
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/recovery-code/redeem")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"email": "admin@example.com", "code": "definitely-wrong"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
     assert_eq!(r3.status, StatusCode::UNAUTHORIZED);
 }
 
@@ -2820,35 +2936,41 @@ async fn password_reset_via_recovery_code() {
     let h = Harness::start().await;
     let admin = h.admin().await;
 
-    let gen = h.send(
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/recovery-codes")
-            .header("authorization", format!("Bearer {admin}"))
-            .header("content-type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap(),
-    ).await;
+    let gen = h
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/recovery-codes")
+                .header("authorization", format!("Bearer {admin}"))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await;
     let codes: Vec<String> = gen.body["codes"]
-        .as_array().unwrap()
+        .as_array()
+        .unwrap()
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
 
-    let r = h.send(
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/password/reset")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                json!({
-                    "email": "admin@example.com",
-                    "recovery_code": codes[0],
-                    "new_password": "new-secret-password-1",
-                }).to_string(),
-            ))
-            .unwrap(),
-    ).await;
+    let r = h
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/password/reset")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "email": "admin@example.com",
+                        "recovery_code": codes[0],
+                        "new_password": "new-secret-password-1",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
 
     // The old session token is now invalid.
@@ -2856,20 +2978,23 @@ async fn password_reset_via_recovery_code() {
     assert_eq!(me.status, StatusCode::UNAUTHORIZED);
 
     // A short password is rejected.
-    let r2 = h.send(
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/password/reset")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                json!({
-                    "email": "admin@example.com",
-                    "recovery_code": codes[1],
-                    "new_password": "short",
-                }).to_string(),
-            ))
-            .unwrap(),
-    ).await;
+    let r2 = h
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/password/reset")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "email": "admin@example.com",
+                        "recovery_code": codes[1],
+                        "new_password": "short",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
     assert_eq!(r2.status, StatusCode::BAD_REQUEST);
 }
 
@@ -2885,26 +3010,37 @@ async fn admin_disable_and_enable_user() {
         "/api/v1/auth/register",
         "",
         json!({"email": "alice@example.com", "password": "alice-password-123"}),
-    ).await;
-    let login = h.post(
-        "/api/v1/auth/login",
-        "",
-        json!({"email": "alice@example.com", "password": "alice-password-123"}),
-    ).await;
+    )
+    .await;
+    let login = h
+        .post(
+            "/api/v1/auth/login",
+            "",
+            json!({"email": "alice@example.com", "password": "alice-password-123"}),
+        )
+        .await;
     let alice = login.body["session_token"].as_str().unwrap().to_string();
 
     // List users to find alice's id.
     let lst = h.get("/api/v1/admin/users", &admin).await;
-    let alice_id = lst.body["users"].as_array().unwrap().iter()
+    let alice_id = lst.body["users"]
+        .as_array()
+        .unwrap()
+        .iter()
         .find(|u| u["email"] == "alice@example.com")
-        .unwrap()["id"].as_str().unwrap().to_string();
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Disable.
-    let d = h.post(
-        &format!("/api/v1/admin/users/{alice_id}/disable"),
-        &admin,
-        json!({}),
-    ).await;
+    let d = h
+        .post(
+            &format!("/api/v1/admin/users/{alice_id}/disable"),
+            &admin,
+            json!({}),
+        )
+        .await;
     assert_eq!(d.status, StatusCode::OK, "{:?}", d.body);
 
     // Alice's session is now dead.
@@ -2912,27 +3048,33 @@ async fn admin_disable_and_enable_user() {
     assert_eq!(me.status, StatusCode::UNAUTHORIZED);
 
     // Alice cannot log in either.
-    let l2 = h.post(
-        "/api/v1/auth/login",
-        "",
-        json!({"email": "alice@example.com", "password": "alice-password-123"}),
-    ).await;
+    let l2 = h
+        .post(
+            "/api/v1/auth/login",
+            "",
+            json!({"email": "alice@example.com", "password": "alice-password-123"}),
+        )
+        .await;
     assert_eq!(l2.status, StatusCode::UNAUTHORIZED);
 
     // Re-enable.
-    let e = h.post(
-        &format!("/api/v1/admin/users/{alice_id}/enable"),
-        &admin,
-        json!({}),
-    ).await;
+    let e = h
+        .post(
+            &format!("/api/v1/admin/users/{alice_id}/enable"),
+            &admin,
+            json!({}),
+        )
+        .await;
     assert_eq!(e.status, StatusCode::OK, "{:?}", e.body);
 
     // Alice can log in again.
-    let l3 = h.post(
-        "/api/v1/auth/login",
-        "",
-        json!({"email": "alice@example.com", "password": "alice-password-123"}),
-    ).await;
+    let l3 = h
+        .post(
+            "/api/v1/auth/login",
+            "",
+            json!({"email": "alice@example.com", "password": "alice-password-123"}),
+        )
+        .await;
     assert_eq!(l3.status, StatusCode::OK);
 }
 
@@ -2942,8 +3084,17 @@ async fn admin_cannot_disable_self() {
     let h = Harness::start().await;
     let admin = h.admin().await;
     let lst = h.get("/api/v1/admin/users", &admin).await;
-    let my_id = lst.body["users"].as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
-    let d = h.post(&format!("/api/v1/admin/users/{my_id}/disable"), &admin, json!({})).await;
+    let my_id = lst.body["users"].as_array().unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let d = h
+        .post(
+            &format!("/api/v1/admin/users/{my_id}/disable"),
+            &admin,
+            json!({}),
+        )
+        .await;
     assert_eq!(d.status, StatusCode::BAD_REQUEST);
 }
 
@@ -2958,32 +3109,42 @@ async fn account_locks_after_repeated_failed_logins() {
         "/api/v1/auth/register",
         "",
         json!({"email": "alice@example.com", "password": "alice-password-123"}),
-    ).await;
+    )
+    .await;
 
     // 6 wrong attempts from 6 different IPs.
     for i in 0..6 {
-        let r = h.send(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/auth/login")
-                .header("x-forwarded-for", format!("10.1.{}.{}", i / 256, i % 256))
-                .header("content-type", "application/json")
-                .body(Body::from(json!({"email": "alice@example.com", "password": "wrong"}).to_string()))
-                .unwrap(),
-        ).await;
+        let r = h
+            .send(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("x-forwarded-for", format!("10.1.{}.{}", i / 256, i % 256))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"email": "alice@example.com", "password": "wrong"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
         assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     }
 
     // Now a correct password is locked out.
-    let r = h.send(
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/login")
-            .header("x-forwarded-for", "10.9.9.9")
-            .header("content-type", "application/json")
-            .body(Body::from(json!({"email": "alice@example.com", "password": "alice-password-123"}).to_string()))
-            .unwrap(),
-    ).await;
+    let r = h
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("x-forwarded-for", "10.9.9.9")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"email": "alice@example.com", "password": "alice-password-123"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
     assert_eq!(
         r.status,
         StatusCode::UNAUTHORIZED,
@@ -3000,11 +3161,13 @@ async fn account_locks_after_repeated_failed_logins() {
 async fn totp_setup_works_without_enrolled_key() {
     let h = Harness::start().await;
     // Register without age_public_key.
-    let reg = h.post(
-        "/api/v1/auth/register",
-        "",
-        json!({"email": "no-key@example.com", "password": "password-123456"}),
-    ).await;
+    let reg = h
+        .post(
+            "/api/v1/auth/register",
+            "",
+            json!({"email": "no-key@example.com", "password": "password-123456"}),
+        )
+        .await;
     let token = reg.body["session_token"].as_str().unwrap().to_string();
 
     let setup = h.get("/api/v1/auth/totp/setup", &token).await;
@@ -3019,17 +3182,22 @@ async fn totp_setup_works_without_enrolled_key() {
 #[tokio::test]
 async fn web_client_does_not_receive_session_token() {
     let h = Harness::start().await;
-    let res = h.send_raw(
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/register")
-            .header("content-type", "application/json")
-            .body(Body::from(json!({
-                "email": "web@example.com",
-                "password": "web-password-123",
-            }).to_string()))
-            .unwrap(),
-    ).await;
+    let res = h
+        .send_raw(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/register")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "email": "web@example.com",
+                        "password": "web-password-123",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
     assert_eq!(res.status, StatusCode::OK);
     assert!(
         res.body["session_token"].is_null(),
@@ -3063,9 +3231,11 @@ async fn harness_with_idle_timeout(idle_secs: i64) -> Harness {
         auth_rate_limit_window_secs: 60,
         dynamic_proxy_listen: None,
         dynamic_proxy_upstream: None,
+        dynamic_proxy_redis_listen: None,
+        dynamic_proxy_redis_upstream: None,
         trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
-            audit_chain_key_file: None,
-            backup_dir: None,
+        audit_chain_key_file: None,
+        backup_dir: None,
     };
     let db = connect(&config.db_url).await.expect("connect");
     migrate(&db).await.expect("migrate");
@@ -3077,7 +3247,11 @@ async fn harness_with_idle_timeout(idle_secs: i64) -> Harness {
         Arc::new(DbAuditLogger::with_chain_key(db.clone(), chain_key.clone()));
     let audit = AuditService::new(audit_logger);
     let state = AppState::new(db.clone(), audit, config).with_audit_chain_key(chain_key);
-    Harness { router: build_router(state), db_path, db }
+    Harness {
+        router: build_router(state),
+        db_path,
+        db,
+    }
 }
 
 #[tokio::test]
@@ -3133,17 +3307,19 @@ async fn audit_entries_include_ip_and_user_agent() {
     // Create a project with a User-Agent header. send_from injects a
     // ConnectInfo peer so the trusted-proxy gate accepts our test
     // loopback as a known proxy and the IP flows into the audit entry.
-    let r = h.send_from(
-        "127.0.0.1:51234".parse().unwrap(),
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/projects")
-            .header("authorization", format!("Bearer {admin}"))
-            .header("user-agent", "test-agent/1.0")
-            .header("content-type", "application/json")
-            .body(Body::from(json!({"name": "UA", "slug": "ua"}).to_string()))
-            .unwrap(),
-    ).await;
+    let r = h
+        .send_from(
+            "127.0.0.1:51234".parse().unwrap(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/projects")
+                .header("authorization", format!("Bearer {admin}"))
+                .header("user-agent", "test-agent/1.0")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"name": "UA", "slug": "ua"}).to_string()))
+                .unwrap(),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK);
 
     let aud = h.get("/api/v1/audit?page=1&per_page=50", &admin).await;
@@ -3151,7 +3327,10 @@ async fn audit_entries_include_ip_and_user_agent() {
     let create = entries.iter().find(|e| e["action"] == "project_create");
     let create = create.expect("project_create audit entry");
     assert_eq!(create["user_agent"], "test-agent/1.0");
-    assert!(!create["ip"].as_str().unwrap().is_empty(), "ip must not be empty");
+    assert!(
+        !create["ip"].as_str().unwrap().is_empty(),
+        "ip must not be empty"
+    );
 }
 
 /// The /metrics endpoint exposes Prometheus-style counters. After a
@@ -3163,26 +3342,35 @@ async fn metrics_endpoint_exposes_counters() {
     let admin = h.admin().await;
 
     // One failed login to bump the counter.
-    let _ = h.send(
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/login")
-            .header("content-type", "application/json")
-            .body(Body::from(json!({"email": "noone@example.com", "password": "wrong"}).to_string()))
-            .unwrap(),
-    ).await;
+    let _ = h
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"email": "noone@example.com", "password": "wrong"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
 
-    let r = h.send_raw(
-        Request::builder()
-            .method("GET")
-            .uri("/metrics")
-            .body(Body::empty())
-            .unwrap(),
-    ).await;
+    let r = h
+        .send_raw(
+            Request::builder()
+                .method("GET")
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK);
     let text = String::from_utf8_lossy(&r.raw).to_string();
     assert!(text.contains("pandapass_auth_login_total"), "{text}");
-    assert!(text.contains("pandapass_auth_login_failures_total"), "{text}");
+    assert!(
+        text.contains("pandapass_auth_login_failures_total"),
+        "{text}"
+    );
     assert!(text.contains("pandapass_audit_log_size"), "{text}");
 }
 
@@ -3193,13 +3381,15 @@ async fn setup_status_reports_needs_setup_when_no_users() {
     let h = Harness::start().await;
 
     // No users yet — needs_setup is true.
-    let r = h.send(
-        Request::builder()
-            .method("GET")
-            .uri("/api/v1/setup/status")
-            .body(Body::empty())
-            .unwrap(),
-    ).await;
+    let r = h
+        .send(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/setup/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(r.body["needs_setup"], json!(true), "{:?}", r.body);
 
@@ -3208,13 +3398,15 @@ async fn setup_status_reports_needs_setup_when_no_users() {
     assert!(!admin.is_empty());
 
     // Now needs_setup flips to false.
-    let r2 = h.send(
-        Request::builder()
-            .method("GET")
-            .uri("/api/v1/setup/status")
-            .body(Body::empty())
-            .unwrap(),
-    ).await;
+    let r2 = h
+        .send(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/setup/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
     assert_eq!(r2.status, StatusCode::OK, "{:?}", r2.body);
     assert_eq!(r2.body["needs_setup"], json!(false), "{:?}", r2.body);
 }
@@ -3227,37 +3419,45 @@ async fn admin_can_create_user() {
     let h = Harness::start().await;
     let admin = h.admin().await;
 
-    let res = h.post(
-        "/api/v1/admin/users",
-        &admin,
-        json!({"email": "bob@example.com", "password": "bob-password-123"}),
-    ).await;
+    let res = h
+        .post(
+            "/api/v1/admin/users",
+            &admin,
+            json!({"email": "bob@example.com", "password": "bob-password-123"}),
+        )
+        .await;
     assert_eq!(res.status, StatusCode::OK, "{:?}", res.body);
     assert_eq!(res.body["user"]["email"], "bob@example.com");
     assert_eq!(res.body["user"]["global_role"], "user");
 
     // The new user can log in.
-    let login = h.post(
-        "/api/v1/auth/login",
-        "",
-        json!({"email": "bob@example.com", "password": "bob-password-123"}),
-    ).await;
+    let login = h
+        .post(
+            "/api/v1/auth/login",
+            "",
+            json!({"email": "bob@example.com", "password": "bob-password-123"}),
+        )
+        .await;
     assert_eq!(login.status, StatusCode::OK, "{:?}", login.body);
 
     // A non-admin session is denied.
-    let editor = h.post(
-        "/api/v1/auth/register",
-        "",
-        json!({"email": "editor@example.com", "password": "hunter2hunter2"}),
-    ).await;
+    let editor = h
+        .post(
+            "/api/v1/auth/register",
+            "",
+            json!({"email": "editor@example.com", "password": "hunter2hunter2"}),
+        )
+        .await;
     assert!(editor.status.is_success());
     let editor_token = editor.body["session_token"].as_str().unwrap().to_string();
 
-    let denied = h.post(
-        "/api/v1/admin/users",
-        &editor_token,
-        json!({"email": "eve@example.com", "password": "eve-password-123"}),
-    ).await;
+    let denied = h
+        .post(
+            "/api/v1/admin/users",
+            &editor_token,
+            json!({"email": "eve@example.com", "password": "eve-password-123"}),
+        )
+        .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 }
 
@@ -3281,14 +3481,22 @@ async fn admin_backup_returns_consistent_sqlite_snapshot() {
     // Decode and verify SHA-256.
     use base64::Engine as _;
     let b64 = res.body["db"]["bytes_b64"].as_str().unwrap();
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .unwrap();
     use sha2::{Digest, Sha256};
     let digest = hex::encode(Sha256::digest(&bytes));
     assert_eq!(digest, res.body["db"]["sha256"].as_str().unwrap());
-    assert_eq!(bytes.len() as u64, res.body["db"]["size_bytes"].as_u64().unwrap());
+    assert_eq!(
+        bytes.len() as u64,
+        res.body["db"]["size_bytes"].as_u64().unwrap()
+    );
 
     // The snapshot is a real SQLite file.
-    assert!(bytes.starts_with(b"SQLite format 3\0"), "snapshot should be SQLite");
+    assert!(
+        bytes.starts_with(b"SQLite format 3\0"),
+        "snapshot should be SQLite"
+    );
 
     // The snapshot contains the data written earlier.
     let tmp = std::env::temp_dir().join(format!("pp-backup-check-{}.db", uuid::Uuid::now_v7()));
@@ -3306,11 +3514,13 @@ async fn admin_backup_returns_consistent_sqlite_snapshot() {
     let _ = std::fs::remove_file(&tmp);
 
     // A non-admin cannot create a backup.
-    let editor = h.post(
-        "/api/v1/auth/register",
-        "",
-        json!({"email": "backup-editor@example.com", "password": "hunter2hunter2"}),
-    ).await;
+    let editor = h
+        .post(
+            "/api/v1/auth/register",
+            "",
+            json!({"email": "backup-editor@example.com", "password": "hunter2hunter2"}),
+        )
+        .await;
     let editor_token = editor.body["session_token"].as_str().unwrap().to_string();
     let denied = h.get("/api/v1/admin/backup", &editor_token).await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN, "{:?}", denied.body);
@@ -3321,7 +3531,10 @@ async fn admin_backup_returns_consistent_sqlite_snapshot() {
     assert!(
         items.iter().any(|i| i["action"] == "backup_create"),
         "audit should contain a backup_create entry: {:?}",
-        items.iter().map(|i| i["action"].as_str().unwrap_or("")).collect::<Vec<_>>()
+        items
+            .iter()
+            .map(|i| i["action"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -3369,8 +3582,14 @@ async fn internal_exec_injects_secrets_and_runs_command() {
     assert_eq!(res.body["exit_code"], 0);
     // The secret value must be masked in output
     let stdout = res.body["stdout"].as_str().unwrap();
-    assert!(stdout.contains("***"), "secret must be masked in stdout: {stdout}");
-    assert!(!stdout.contains("server-secret-value"), "raw secret must not appear: {stdout}");
+    assert!(
+        stdout.contains("***"),
+        "secret must be masked in stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("server-secret-value"),
+        "raw secret must not appear: {stdout}"
+    );
     assert_eq!(res.body["injected_keys"], json!(["API_KEY"]));
 }
 
@@ -3410,7 +3629,11 @@ async fn internal_exec_requires_run_secret_scope() {
             }),
         )
         .await;
-    assert_eq!(res.status, StatusCode::FORBIDDEN, "read:secret must not allow internal_exec");
+    assert_eq!(
+        res.status,
+        StatusCode::FORBIDDEN,
+        "read:secret must not allow internal_exec"
+    );
 }
 
 /// Server-side allowlist blocks commands not in the list.
@@ -3443,6 +3666,8 @@ async fn internal_exec_respects_server_allowlist() {
         auth_rate_limit_window_secs: 60,
         dynamic_proxy_listen: None,
         dynamic_proxy_upstream: None,
+        dynamic_proxy_redis_listen: None,
+        dynamic_proxy_redis_upstream: None,
         trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
         audit_chain_key_file: None,
         backup_dir: None,
@@ -3462,7 +3687,13 @@ async fn internal_exec_respects_server_allowlist() {
     let router = build_router(state);
 
     // Helper to send requests against this router
-    async fn do_req(router: &axum::Router, token: &str, path: &str, body: Value, method: &str) -> Res {
+    async fn do_req(
+        router: &axum::Router,
+        token: &str,
+        path: &str,
+        body: Value,
+        method: &str,
+    ) -> Res {
         let req = Request::builder()
             .method(method)
             .uri(path)
@@ -3504,44 +3735,103 @@ async fn internal_exec_respects_server_allowlist() {
         .as_str()
         .to_string();
     let admin_res = do_req(&router, "", "/api/v1/auth/register", json!({"email": "a@example.com", "password": "password1234", "age_public_key": admin_public}), "POST").await;
-    assert!(admin_res.ok(), "admin register failed: {:?}", admin_res.body);
-    let login = do_req(&router, "", "/api/v1/auth/login", json!({"email": "a@example.com", "password": "password1234"}), "POST").await;
+    assert!(
+        admin_res.ok(),
+        "admin register failed: {:?}",
+        admin_res.body
+    );
+    let login = do_req(
+        &router,
+        "",
+        "/api/v1/auth/login",
+        json!({"email": "a@example.com", "password": "password1234"}),
+        "POST",
+    )
+    .await;
     assert!(login.ok(), "admin login failed: {:?}", login.body);
     let admin_tok = login.body["session_token"].as_str().unwrap().to_string();
-    let tok_res = do_req(&router, &admin_tok, "/api/v1/tokens", json!({"name": "runner", "scopes": ["run:secret"]}), "POST").await;
+    let tok_res = do_req(
+        &router,
+        &admin_tok,
+        "/api/v1/tokens",
+        json!({"name": "runner", "scopes": ["run:secret"]}),
+        "POST",
+    )
+    .await;
     assert!(tok_res.ok(), "token create failed: {:?}", tok_res.body);
     let run_tok = tok_res.body["plain_token"].as_str().unwrap().to_string();
-    let proj = do_req(&router, &admin_tok, "/api/v1/projects", json!({"name": "p", "slug": "p"}), "POST").await;
+    let proj = do_req(
+        &router,
+        &admin_tok,
+        "/api/v1/projects",
+        json!({"name": "p", "slug": "p"}),
+        "POST",
+    )
+    .await;
     assert!(proj.ok(), "project create failed: {:?}", proj.body);
     let proj_id = proj.body["id"].as_str().unwrap();
     let proj_slug = proj.body["slug"].as_str().unwrap();
     // Project already has a "prod" env created by default
-    let envs = do_get(&router, &admin_tok, &format!("/api/v1/projects/{proj_slug}/envs")).await;
+    let envs = do_get(
+        &router,
+        &admin_tok,
+        &format!("/api/v1/projects/{proj_slug}/envs"),
+    )
+    .await;
     assert!(envs.ok(), "list envs failed: {:?}", envs.body);
     let envs_arr = envs.body.as_array().unwrap();
-    let prod_env = envs_arr.iter().find(|e| e["slug"] == "prod").expect("prod env exists");
+    let prod_env = envs_arr
+        .iter()
+        .find(|e| e["slug"] == "prod")
+        .expect("prod env exists");
     let env_id = prod_env["id"].as_str().unwrap();
     let env_slug = prod_env["slug"].as_str().unwrap();
-    let secret = do_req(&router, &admin_tok, &format!("/api/v1/projects/{proj_slug}/envs/{env_slug}/secrets"), json!({"key": "K", "value": "v"}), "POST").await;
+    let secret = do_req(
+        &router,
+        &admin_tok,
+        &format!("/api/v1/projects/{proj_slug}/envs/{env_slug}/secrets"),
+        json!({"key": "K", "value": "v"}),
+        "POST",
+    )
+    .await;
     assert!(secret.ok(), "secret create failed: {:?}", secret.body);
 
     // Allowed command: echo
-    let ok = do_req(&router, &run_tok, "/api/v1/internal/exec", json!({
-        "keys": ["K"],
-        "command": ["/bin/echo", "hello"],
-        "project_id": proj_id,
-        "env_id": env_id,
-    }), "POST").await;
+    let ok = do_req(
+        &router,
+        &run_tok,
+        "/api/v1/internal/exec",
+        json!({
+            "keys": ["K"],
+            "command": ["/bin/echo", "hello"],
+            "project_id": proj_id,
+            "env_id": env_id,
+        }),
+        "POST",
+    )
+    .await;
     assert!(ok.ok(), "echo should be allowed: {:?}", ok.body);
 
     // Disallowed command: /bin/sh
-    let denied = do_req(&router, &run_tok, "/api/v1/internal/exec", json!({
-        "keys": ["K"],
-        "command": ["/bin/sh", "-c", "echo hi"],
-        "project_id": proj_id,
-        "env_id": env_id,
-    }), "POST").await;
-    assert_eq!(denied.status, StatusCode::FORBIDDEN, "sh should be blocked by allowlist: {:?}", denied.body);
+    let denied = do_req(
+        &router,
+        &run_tok,
+        "/api/v1/internal/exec",
+        json!({
+            "keys": ["K"],
+            "command": ["/bin/sh", "-c", "echo hi"],
+            "project_id": proj_id,
+            "env_id": env_id,
+        }),
+        "POST",
+    )
+    .await;
+    assert_eq!(
+        denied.status,
+        StatusCode::FORBIDDEN,
+        "sh should be blocked by allowlist: {:?}",
+        denied.body
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

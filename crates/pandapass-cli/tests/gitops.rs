@@ -32,10 +32,10 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
         public_url: "http://localhost:8233".into(),
         db_url: format!("sqlite://{}?mode=rwc", db_path.display()),
         session_ttl_days: 30,
-            session_idle_timeout_secs: None,
+        session_idle_timeout_secs: None,
         allowed_origins: vec![],
         bootstrap_admin_email: None,
-            bootstrap_enabled: false,
+        bootstrap_enabled: false,
         require_totp: false,
         allow_registration: true,
         max_concurrent_exec: 10,
@@ -47,9 +47,11 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
         auth_rate_limit_window_secs: 60,
         dynamic_proxy_listen: None,
         dynamic_proxy_upstream: None,
+        dynamic_proxy_redis_listen: None,
+        dynamic_proxy_redis_upstream: None,
         trusted_proxy_cidrs: vec![],
-            audit_chain_key_file: None,
-            backup_dir: None,
+        audit_chain_key_file: None,
+        backup_dir: None,
     };
 
     let db = connect(&config.db_url).await.expect("connect");
@@ -79,7 +81,11 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
 }
 
 /// Build a CLI `ApiClient` and `CliConfig` wired to the test server.
-async fn make_cli(base_url: &str, token: &str, age_identity_path: &PathBuf) -> (ApiClient, CliConfig) {
+async fn make_cli(
+    base_url: &str,
+    token: &str,
+    age_identity_path: &PathBuf,
+) -> (ApiClient, CliConfig) {
     let api = ApiClient::new(base_url.to_string(), false).expect("api client");
     api.set_auth_token(Some(token.to_string())).await;
     let config = CliConfig {
@@ -126,7 +132,10 @@ async fn gitops_pull_diff_push_round_trip() {
         slug: "myapp".into(),
         description: None,
     };
-    setup.create_project(&project).await.expect("create project");
+    setup
+        .create_project(&project)
+        .await
+        .expect("create project");
 
     // `create_project` auto-creates dev/staging/prod environments; use prod.
     setup
@@ -176,19 +185,18 @@ async fn gitops_pull_diff_push_round_trip() {
     let sync_path = workdir.join(".sync-state.json");
     assert!(sync_path.exists(), "sync state written");
     let sync: pandapass_core::models::SyncState =
-        serde_json::from_str(&std::fs::read_to_string(&sync_path).expect("read sync")).expect("parse sync");
+        serde_json::from_str(&std::fs::read_to_string(&sync_path).expect("read sync"))
+            .expect("parse sync");
     assert!(sync.secrets.contains_key("API_KEY"), "sync has API_KEY");
     assert!(sync.secrets.contains_key("DB_URL"), "sync has DB_URL");
 
     // ── diff: everything in sync ───────────────────────────────────────────
     // diff takes GitOpsDiffArgs; exercise it through the real command path.
-    let diff_cmd = Command::GitOps(GitOpsCmd::Diff(
-        pandapass_cli::commands::GitOpsDiffArgs {
-            project: "myapp".into(),
-            env: "prod".into(),
-            dir: workdir.clone(),
-        },
-    ));
+    let diff_cmd = Command::GitOps(GitOpsCmd::Diff(pandapass_cli::commands::GitOpsDiffArgs {
+        project: "myapp".into(),
+        env: "prod".into(),
+        dir: workdir.clone(),
+    }));
     run_command(&api, &mut config, diff_cmd)
         .await
         .expect("gitops diff");
@@ -253,7 +261,12 @@ async fn gitops_pull_requires_age_identity() {
 
     let operator = AgeIdentity::generate();
     let setup = ApiClient::new(base_url.clone(), false).expect("setup client");
-    let token = register_and_login(&setup, "bob@example.com", operator.public_key().unwrap().as_str()).await;
+    let token = register_and_login(
+        &setup,
+        "bob@example.com",
+        operator.public_key().unwrap().as_str(),
+    )
+    .await;
     setup.set_auth_token(Some(token.clone())).await;
 
     let project = pandapass_core::models::CreateProjectRequest {
@@ -261,15 +274,20 @@ async fn gitops_pull_requires_age_identity() {
         slug: "noid".into(),
         description: None,
     };
-    setup.create_project(&project).await.expect("create project");
+    setup
+        .create_project(&project)
+        .await
+        .expect("create project");
     // `create_project` auto-creates dev/staging/prod environments; use dev.
     setup
         .set_secret("noid", "dev", "KEY", "value")
         .await
         .expect("set secret");
 
-    let (api, mut config) = make_cli(&base_url, &token, &PathBuf::from("/nonexistent/age.key")).await;
-    let workdir = std::env::temp_dir().join(format!("pandapass-gitops-noid-{}", uuid::Uuid::now_v7()));
+    let (api, mut config) =
+        make_cli(&base_url, &token, &PathBuf::from("/nonexistent/age.key")).await;
+    let workdir =
+        std::env::temp_dir().join(format!("pandapass-gitops-noid-{}", uuid::Uuid::now_v7()));
 
     let result = run_command(
         &api,
@@ -292,7 +310,12 @@ async fn run_refuses_command_not_in_allowlist() {
     use pandapass_cli::commands::{Command, RunArgs};
 
     let (base_url, _handle) = start_server().await;
-    let (api, mut config) = make_cli(&base_url, "no-such-token", &PathBuf::from("/nonexistent/age.key")).await;
+    let (api, mut config) = make_cli(
+        &base_url,
+        "no-such-token",
+        &PathBuf::from("/nonexistent/age.key"),
+    )
+    .await;
     // The auth token won't reach the server in this test, but allowlist
     // checking happens before any HTTP call, so we never need it to.
     config.command_allowlist = vec!["/usr/bin/true".to_string()];
@@ -324,7 +347,12 @@ async fn run_with_empty_allowlist_does_not_block() {
     use pandapass_cli::commands::{Command, RunArgs};
 
     let (base_url, _handle) = start_server().await;
-    let (api, mut config) = make_cli(&base_url, "no-such-token", &PathBuf::from("/nonexistent/age.key")).await;
+    let (api, mut config) = make_cli(
+        &base_url,
+        "no-such-token",
+        &PathBuf::from("/nonexistent/age.key"),
+    )
+    .await;
     config.command_allowlist = vec![];
 
     let res = run_command(
@@ -366,14 +394,21 @@ async fn inject_refuses_disk_write_without_force() {
     let token = register_and_login(&setup, "inject-user@example.com", operator_pub.as_str()).await;
     setup.set_auth_token(Some(token.clone())).await;
 
-    setup.create_project(&CreateProjectRequest {
-        name: "inj".into(),
-        slug: "inj".into(),
-        description: None,
-    }).await.expect("create project");
-    setup.set_secret("inj", "dev", "KEY", "value").await.expect("set secret");
+    setup
+        .create_project(&CreateProjectRequest {
+            name: "inj".into(),
+            slug: "inj".into(),
+            description: None,
+        })
+        .await
+        .expect("create project");
+    setup
+        .set_secret("inj", "dev", "KEY", "value")
+        .await
+        .expect("set secret");
 
-    let (api, mut config) = make_cli(&base_url, &token, &PathBuf::from("/nonexistent/age.key")).await;
+    let (api, mut config) =
+        make_cli(&base_url, &token, &PathBuf::from("/nonexistent/age.key")).await;
     let workdir = std::env::temp_dir().join(format!("pandapass-inject-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(&workdir).expect("workdir");
     let input = workdir.join("template.txt");
@@ -393,8 +428,14 @@ async fn inject_refuses_disk_write_without_force() {
     )
     .await;
     // Should succeed (printing to stdout) and the output file must not exist.
-    assert!(res.is_ok(), "inject without --force should succeed: {res:?}");
-    assert!(!output.exists(), "output file must not be created without --force");
+    assert!(
+        res.is_ok(),
+        "inject without --force should succeed: {res:?}"
+    );
+    assert!(
+        !output.exists(),
+        "output file must not be created without --force"
+    );
 }
 
 /// `pandapass run` must propagate a child's exit status to the caller: exit

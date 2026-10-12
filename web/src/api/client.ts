@@ -174,7 +174,7 @@ export interface ServiceToken {
 
 // ── dynamic credentials (M2) ──
 
-export type DynamicCredKind = 'postgres' | 'mysql' | 'redis'
+export type DynamicCredKind = 'postgresql' | 'redis'
 
 export interface DynamicCred {
   id: string

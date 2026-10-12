@@ -117,8 +117,10 @@ security doc.
 ## Status
 
 M1 is complete: storage, CLI, web UI, RBAC with enforced scopes, and an audit
-log. M2's dynamic-credential proxy is complete: a PostgreSQL wire-protocol
-proxy that enforces credential TTL and revocation at the handshake. M3's policy
+log. M2's dynamic-credential proxy is complete for PostgreSQL and Redis: a
+wire-protocol proxy that enforces credential TTL and revocation at the
+handshake for both databases. MySQL dynamic credentials are refused at
+issuance (no MySQL proxy yet). M3's policy
 engine evaluates secrets routes (admin-only CRUD, regorus-backed), and M4's CA
 can sign both X.509 CSRs and SSH user certificates. Still open: policy
 coverage beyond secrets, GitOps sync, secret scanning, and parts of the PKI web

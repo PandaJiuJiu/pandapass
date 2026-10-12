@@ -97,6 +97,8 @@ All server settings are environment variables. The ones that matter:
 | `RUST_LOG` | `info` | Request metadata only; never secret values. |
 | `PANDAPASS_DYNAMIC_PROXY_LISTEN` | unset | Bind address for the M2 PostgreSQL proxy, e.g. `127.0.0.1:5433`. Unset disables the proxy. |
 | `PANDAPASS_DYNAMIC_PROXY_UPSTREAM` | unset | Upstream PostgreSQL, e.g. `db.internal:5432`. Must be set together with LISTEN. |
+| `PANDAPASS_DYNAMIC_PROXY_REDIS_LISTEN` | unset | Bind address for the M2 Redis proxy, e.g. `127.0.0.1:6380`. Unset disables the Redis proxy. |
+| `PANDAPASS_DYNAMIC_PROXY_REDIS_UPSTREAM` | unset | Upstream Redis, e.g. `redis.internal:6379`. Must be set together with REDIS_LISTEN. |
 
 ### Dynamic credential proxy (M2)
 
@@ -116,6 +118,28 @@ age identity (which the container already provides via
 In `docker-compose.yml`, the host port `127.0.0.1:5433` is already mapped to
 the container. Set `PANDAPASS_DYNAMIC_PROXY_UPSTREAM` in `.env` to point at
 your PostgreSQL and the proxy starts on boot.
+
+#### Redis dynamic credential proxy
+
+When `PANDAPASS_DYNAMIC_PROXY_REDIS_LISTEN` and
+`PANDAPASS_DYNAMIC_PROXY_REDIS_UPSTREAM` are both set, the server also speaks
+the Redis RESP protocol on the listen address. A client connects using a
+dynamic credential's username and password (issued through the API) and sends
+`AUTH <username> <password>`; the proxy checks the credential against the
+database — TTL, revocation, kind — before connecting to the upstream. Once
+authenticated, it relays bytes without inspecting them.
+
+The same `PANDAPASS_SERVER_AGE_IDENTITY` requirement applies. In
+`docker-compose.yml`, the host port `127.0.0.1:6380` is already mapped to the
+container. Set `PANDAPASS_DYNAMIC_PROXY_REDIS_UPSTREAM` in `.env` to point at
+your Redis and the proxy starts on boot.
+
+#### MySQL dynamic credentials
+
+MySQL dynamic credentials are **not supported**: there is no MySQL wire proxy,
+so the API refuses to issue them (`POST .../creds` with `kind: mysql` returns
+`501 Not Implemented`). Only PostgreSQL and Redis dynamic credentials can be
+issued and connected to.
 
 ## Backups
 

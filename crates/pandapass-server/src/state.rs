@@ -57,9 +57,15 @@ impl Metrics {
     /// counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
-            login_attempts: self.login_attempts.load(std::sync::atomic::Ordering::Relaxed),
-            login_failures: self.login_failures.load(std::sync::atomic::Ordering::Relaxed),
-            account_lockouts: self.account_lockouts.load(std::sync::atomic::Ordering::Relaxed),
+            login_attempts: self
+                .login_attempts
+                .load(std::sync::atomic::Ordering::Relaxed),
+            login_failures: self
+                .login_failures
+                .load(std::sync::atomic::Ordering::Relaxed),
+            account_lockouts: self
+                .account_lockouts
+                .load(std::sync::atomic::Ordering::Relaxed),
             secret_reads: self.secret_reads.load(std::sync::atomic::Ordering::Relaxed),
             audit_log_size: 0,
         }
@@ -103,6 +109,11 @@ pub struct Config {
     pub dynamic_proxy_listen: Option<String>,
     /// Upstream PostgreSQL address the dynamic-credential proxy forwards to.
     pub dynamic_proxy_upstream: Option<String>,
+    /// Optional Redis dynamic-credential proxy listener, e.g. "127.0.0.1:6380".
+    /// `None` (the default) disables the Redis proxy entirely.
+    pub dynamic_proxy_redis_listen: Option<String>,
+    /// Upstream Redis address the dynamic-credential Redis proxy forwards to.
+    pub dynamic_proxy_redis_upstream: Option<String>,
     /// Comma-separated CIDR ranges of trusted reverse proxies. X-Forwarded-For
     /// and X-Real-IP are only honoured when the immediate peer is in this list.
     /// Empty (the default) means XFF is ignored and only the socket peer is
@@ -203,6 +214,12 @@ impl Config {
         let dynamic_proxy_upstream = std::env::var("PANDAPASS_DYNAMIC_PROXY_UPSTREAM")
             .ok()
             .filter(|s| !s.trim().is_empty());
+        let dynamic_proxy_redis_listen = std::env::var("PANDAPASS_DYNAMIC_PROXY_REDIS_LISTEN")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let dynamic_proxy_redis_upstream = std::env::var("PANDAPASS_DYNAMIC_PROXY_REDIS_UPSTREAM")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
 
         let trusted_proxy_cidrs = std::env::var("PANDAPASS_TRUSTED_PROXY_CIDRS")
             .unwrap_or_default()
@@ -239,6 +256,8 @@ impl Config {
             auth_rate_limit_window_secs,
             dynamic_proxy_listen,
             dynamic_proxy_upstream,
+            dynamic_proxy_redis_listen,
+            dynamic_proxy_redis_upstream,
             trusted_proxy_cidrs,
             audit_chain_key_file,
             backup_dir,
@@ -276,16 +295,20 @@ impl Default for Metrics {
 
 impl Metrics {
     pub fn inc_login_attempts(&self) {
-        self.login_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.login_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     pub fn inc_login_failures(&self) {
-        self.login_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.login_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     pub fn inc_account_lockouts(&self) {
-        self.account_lockouts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.account_lockouts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     pub fn inc_secret_reads(&self) {
-        self.secret_reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.secret_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

@@ -20,13 +20,13 @@ const creds = ref<DynamicCred[]>([])
 const showCreateModal = ref(false)
 const creating = ref(false)
 const form = ref<CreateDynamicCredRequest>({
-  kind: 'postgres',
+  kind: 'postgresql',
   username: '',
   ttl_seconds: 3600,
 })
 const formError = ref('')
 
-const kindOptions = ['postgresql', 'mysql', 'redis'] as const
+const kindOptions = ['postgresql', 'redis'] as const
 
 async function loadCreds() {
   if (!route.params.slug) return
@@ -59,7 +59,7 @@ async function handleCreate() {
     const envSlug = 'prod'
     await api.createDynamicCred(projectSlug, envSlug, form.value)
     showCreateModal.value = false
-    form.value = { kind: 'postgres', username: '', ttl_seconds: 3600 }
+    form.value = { kind: 'postgresql', username: '', ttl_seconds: 3600 }
     await loadCreds()
   } catch (e: any) {
     formError.value = e.message ?? t('dynamicCreds.createFailed')

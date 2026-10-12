@@ -17,15 +17,18 @@ services:
     image: ghcr.io/pandajiujiu/pandapass:0.0.1
     restart: unless-stopped
 
-    # Web UI on 8080, API on 8233, dynamic PostgreSQL proxy on 5433.
-    # All loopback-only; clients reach them over the same VPN as the API. Put
-    # a TLS-terminating reverse proxy in front (or set PANDAPASS_PUBLIC_URL and
-    # expose deliberately) rather than publishing 8233 on all interfaces.
+    # Web UI on 8080, API on 8233, dynamic PostgreSQL proxy on 5433, dynamic
+    # Redis proxy on 6380. All loopback-only; clients reach them over the same
+    # VPN as the API. Put a TLS-terminating reverse proxy in front (or set
+    # PANDAPASS_PUBLIC_URL and expose deliberately) rather than publishing 8233
+    # on all interfaces.
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:8233:8233"
       # Dynamic credential proxy (M2): PostgreSQL wire protocol.
       - "127.0.0.1:5433:5433"
+      # Dynamic credential proxy (M2, D8): Redis RESP protocol.
+      - "127.0.0.1:6380:6380"
 
     environment:
       # ── core ──────────────────────────────────────────────────────────────
@@ -92,6 +95,12 @@ services:
       # to the configured upstream.
       PANDAPASS_DYNAMIC_PROXY_LISTEN: ${PANDAPASS_DYNAMIC_PROXY_LISTEN:-}
       PANDAPASS_DYNAMIC_PROXY_UPSTREAM: ${PANDAPASS_DYNAMIC_PROXY_UPSTREAM:-}
+
+      # Redis dynamic credential proxy (M2, D8): when UPSTREAM is set, the
+      # proxy listens on 6380 and forwards Redis RESP traffic to the
+      # configured upstream. Same TTL/revocation enforcement as PostgreSQL.
+      PANDAPASS_DYNAMIC_PROXY_REDIS_LISTEN: ${PANDAPASS_DYNAMIC_PROXY_REDIS_LISTEN:-}
+      PANDAPASS_DYNAMIC_PROXY_REDIS_UPSTREAM: ${PANDAPASS_DYNAMIC_PROXY_REDIS_UPSTREAM:-}
 
       # ── agent command runner ─────────────────────────────────────────────
       # `pandapass run` refuses to spawn anything not named here, which bounds

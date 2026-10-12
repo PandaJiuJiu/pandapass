@@ -359,6 +359,7 @@ export default {
     usernameRequired: 'Username is required',
     ttlTooShort: 'TTL must be at least 60 seconds',
     createFailed: 'Failed to create credential',
+    mysqlNotSupported: 'MySQL dynamic credentials are not supported yet.',
     revokeConfirm: 'Revoke this credential? Anything using it stops working immediately.',
     revoke: 'Revoke',
   },

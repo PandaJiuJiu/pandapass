@@ -44,6 +44,8 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
         auth_rate_limit_window_secs: 60,
         dynamic_proxy_listen: None,
         dynamic_proxy_upstream: None,
+        dynamic_proxy_redis_listen: None,
+        dynamic_proxy_redis_upstream: None,
         trusted_proxy_cidrs: vec![],
         audit_chain_key_file: None,
         backup_dir: None,
@@ -76,7 +78,11 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
 }
 
 /// Build a CLI `ApiClient` and `CliConfig` wired to the test server.
-async fn make_cli(base_url: &str, token: &str, age_identity_path: &PathBuf) -> (ApiClient, CliConfig) {
+async fn make_cli(
+    base_url: &str,
+    token: &str,
+    age_identity_path: &PathBuf,
+) -> (ApiClient, CliConfig) {
     let api = ApiClient::new(base_url.to_string(), false).expect("api client");
     api.set_auth_token(Some(token.to_string())).await;
     let config = CliConfig {
@@ -122,7 +128,10 @@ async fn backup_then_restore_round_trip() {
         slug: "myapp".into(),
         description: None,
     };
-    setup.create_project(&project).await.expect("create project");
+    setup
+        .create_project(&project)
+        .await
+        .expect("create project");
     setup
         .set_secret("myapp", "prod", "API_KEY", "value-1")
         .await
@@ -166,13 +175,16 @@ async fn backup_then_restore_round_trip() {
 
     // The backup decrypts to a payload with the db snapshot.
     let ciphertext = String::from_utf8(backup_bytes).expect("utf8 backup");
-    let plaintext = pandapass_core::crypto::age_decrypt_file(&ciphertext, &operator)
-        .expect("decrypt backup");
+    let plaintext =
+        pandapass_core::crypto::age_decrypt_file(&ciphertext, &operator).expect("decrypt backup");
     let payload: pandapass_cli::commands::BackupPayload =
         serde_json::from_str(&plaintext).expect("parse payload");
     assert_eq!(payload.format, "pandapass-backup-v1");
     assert!(payload.db.size_bytes > 0, "db snapshot present");
-    assert!(payload.server_age_identity.is_none(), "no age identity supplied");
+    assert!(
+        payload.server_age_identity.is_none(),
+        "no age identity supplied"
+    );
 
     // ── restore ─────────────────────────────────────────────────────────────
     let restored_db = dir.join("restored.db");
@@ -199,7 +211,10 @@ async fn backup_then_restore_round_trip() {
         .fetch_one(&restored)
         .await
         .expect("count secrets");
-    assert!(count >= 2, "restored db should contain the secrets, got {count}");
+    assert!(
+        count >= 2,
+        "restored db should contain the secrets, got {count}"
+    );
     restored.close().await;
 }
 
@@ -209,7 +224,12 @@ async fn backup_includes_server_age_identity_when_supplied() {
 
     let operator = AgeIdentity::generate();
     let setup = ApiClient::new(base_url.clone(), false).expect("setup client");
-    let token = register_and_login(&setup, "bob@example.com", operator.public_key().unwrap().as_str()).await;
+    let token = register_and_login(
+        &setup,
+        "bob@example.com",
+        operator.public_key().unwrap().as_str(),
+    )
+    .await;
     setup.set_auth_token(Some(token.clone())).await;
 
     let dir = std::env::temp_dir().join(format!("pandapass-backup-age-{}", uuid::Uuid::now_v7()));
@@ -220,7 +240,11 @@ async fn backup_includes_server_age_identity_when_supplied() {
     let server_age = AgeIdentity::generate();
     std::fs::write(&server_age_path, server_age.expose()).expect("write server age");
     let chain_key_path = dir.join("chain.key");
-    std::fs::write(&chain_key_path, "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899").expect("write chain key");
+    std::fs::write(
+        &chain_key_path,
+        "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+    )
+    .expect("write chain key");
 
     let (api, mut config) = make_cli(&base_url, &token, &age_identity_path).await;
 
@@ -240,8 +264,8 @@ async fn backup_includes_server_age_identity_when_supplied() {
     .expect("backup command");
 
     let ciphertext = std::fs::read_to_string(&backup_file).expect("read backup");
-    let plaintext = pandapass_core::crypto::age_decrypt_file(&ciphertext, &operator)
-        .expect("decrypt backup");
+    let plaintext =
+        pandapass_core::crypto::age_decrypt_file(&ciphertext, &operator).expect("decrypt backup");
     let payload: pandapass_cli::commands::BackupPayload =
         serde_json::from_str(&plaintext).expect("parse payload");
     assert_eq!(
@@ -274,12 +298,16 @@ async fn backup_includes_server_age_identity_when_supplied() {
     .expect("restore command");
 
     assert_eq!(
-        std::fs::read_to_string(&restored_age).expect("read restored age").trim(),
+        std::fs::read_to_string(&restored_age)
+            .expect("read restored age")
+            .trim(),
         server_age.expose(),
         "restored age identity should match"
     );
     assert_eq!(
-        std::fs::read_to_string(&restored_chain).expect("read restored chain").trim(),
+        std::fs::read_to_string(&restored_chain)
+            .expect("read restored chain")
+            .trim(),
         "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
         "restored chain key should match"
     );

@@ -41,6 +41,8 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
         auth_rate_limit_window_secs: 60,
         dynamic_proxy_listen: None,
         dynamic_proxy_upstream: None,
+        dynamic_proxy_redis_listen: None,
+        dynamic_proxy_redis_upstream: None,
         trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
         audit_chain_key_file: None,
         backup_dir: None,
@@ -105,7 +107,13 @@ async fn generate_ca_key_never_exposes_the_private_key() {
 
     // 1. Generate a root CA.
     let root = api
-        .generate_ca_key(CaKeyType::Root, "CN=PandaPass Test Root,O=PandaPass", not_before, not_after, None)
+        .generate_ca_key(
+            CaKeyType::Root,
+            "CN=PandaPass Test Root,O=PandaPass",
+            not_before,
+            not_after,
+            None,
+        )
         .await
         .expect("generate root");
     assert_eq!(root.kind, CaKeyType::Root);
@@ -138,7 +146,10 @@ async fn generate_ca_key_never_exposes_the_private_key() {
     let listed = api.list_ca_keys(false).await.expect("list CA keys");
     let ids: Vec<uuid::Uuid> = listed.iter().map(|k| k.id).collect();
     assert!(ids.contains(&root.id), "generated root must be listed");
-    assert!(ids.contains(&intermediate.id), "generated intermediate must be listed");
+    assert!(
+        ids.contains(&intermediate.id),
+        "generated intermediate must be listed"
+    );
     assert!(
         listed.iter().all(|k| k.revoked_at.is_none()),
         "freshly generated CAs must not be revoked"

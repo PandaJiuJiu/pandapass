@@ -1,18 +1,15 @@
 use axum::{
-    routing::{get, post, put, delete, patch},
+    routing::{delete, get, patch, post, put},
     Router,
 };
-use tower::ServiceBuilder;
-use tower_http::{
-    cors::CorsLayer,
-    trace::TraceLayer,
-};
-use serde::{Deserialize, Serialize};
 use secrecy::ExposeSecret;
+use serde::{Deserialize, Serialize};
+use tower::ServiceBuilder;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
+use crate::middleware::auth::{require_csrf, ApiError};
+use crate::routes::{auth, backup, dynamic, pki, policies, projects, scan, secrets, tokens};
 use crate::state::{AppState, StartupInfo};
-use crate::middleware::auth::{ApiError, require_csrf};
-use crate::routes::{auth, backup, dynamic, policies, pki, projects, scan, secrets, tokens};
 use pandapass_core::{AuditAction, AuditContext, CommandResult};
 
 pub mod state;
@@ -20,13 +17,13 @@ pub mod state;
 mod routes {
     pub mod auth;
     pub mod backup;
+    pub mod dynamic;
+    pub mod pki;
+    pub mod policies;
     pub mod projects;
+    pub mod scan;
     pub mod secrets;
     pub mod tokens;
-    pub mod dynamic;
-    pub mod policies;
-    pub mod pki;
-    pub mod scan;
 }
 
 pub mod middleware {
@@ -35,13 +32,34 @@ pub mod middleware {
 }
 
 pub mod dynamic_proxy;
+pub mod dynamic_proxy_redis;
 
 /// Build the main application router
 pub fn build_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
-        .allow_origin(state.config.allowed_origins.clone().into_iter().map(|o| o.parse().unwrap()).collect::<Vec<_>>())
-        .allow_methods([http::Method::GET, http::Method::POST, http::Method::PUT, http::Method::PATCH, http::Method::DELETE, http::Method::OPTIONS])
-        .allow_headers([http::header::CONTENT_TYPE, http::header::AUTHORIZATION, http::header::COOKIE, "x-csrf-token".parse().unwrap()])
+        .allow_origin(
+            state
+                .config
+                .allowed_origins
+                .clone()
+                .into_iter()
+                .map(|o| o.parse().unwrap())
+                .collect::<Vec<_>>(),
+        )
+        .allow_methods([
+            http::Method::GET,
+            http::Method::POST,
+            http::Method::PUT,
+            http::Method::PATCH,
+            http::Method::DELETE,
+            http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            http::header::CONTENT_TYPE,
+            http::header::AUTHORIZATION,
+            http::header::COOKIE,
+            "x-csrf-token".parse().unwrap(),
+        ])
         .allow_credentials(true);
 
     // Truly public: credential exchange itself. Everything that touches an
@@ -52,7 +70,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/setup/status", get(auth::setup_status))
         .route("/api/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))
-        .route("/api/v1/auth/recovery-code/redeem", post(auth::recovery_code_redeem))
+        .route(
+            "/api/v1/auth/recovery-code/redeem",
+            post(auth::recovery_code_redeem),
+        )
         .route("/api/v1/auth/password/reset", post(auth::password_reset))
         .route("/metrics", get(tokens::metrics));
 
@@ -66,45 +87,132 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/password", post(auth::change_password))
         .route("/api/v1/auth/logout-all", post(auth::logout_all))
         .route("/api/v1/auth/sessions", get(auth::list_my_sessions))
-        .route("/api/v1/auth/sessions/{session_id}", delete(auth::revoke_my_session))
+        .route(
+            "/api/v1/auth/sessions/{session_id}",
+            delete(auth::revoke_my_session),
+        )
         .route("/api/v1/auth/key/enroll", post(auth::enroll_key))
         .route("/api/v1/auth/mk/rotate", post(auth::rotate_master_key))
-        .route("/api/v1/auth/recovery-codes", post(auth::recovery_codes_generate))
-        .route("/api/v1/projects", get(projects::list_projects).post(projects::create_project))
-        .route("/api/v1/projects/{slug}", get(projects::get_project).patch(projects::update_project).delete(projects::delete_project))
-        .route("/api/v1/projects/{slug}/members", get(projects::list_members).post(projects::add_member))
-        .route("/api/v1/projects/{slug}/members/{user_id}", patch(projects::update_member).delete(projects::remove_member))
-        .route("/api/v1/projects/{slug}/envs", get(projects::list_envs).post(projects::create_env))
-        .route("/api/v1/projects/{slug}/envs/{env_slug}", delete(projects::delete_env))
-        .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets", get(secrets::list_secrets).post(secrets::set_secret))
-        .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/batch", post(secrets::batch_set_secrets))
-        .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}", put(secrets::set_secret_at_path).get(secrets::get_secret).delete(secrets::delete_secret))
-        .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}/ciphertext", get(secrets::get_secret_encrypted))
-        .route("/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}/versions", get(secrets::list_secret_versions))
-        .route("/api/v1/projects/{slug}/envs/{env_slug}/creds", get(dynamic::list_dynamic_creds).post(dynamic::create_dynamic_cred))
-        .route("/api/v1/projects/{slug}/envs/{env_slug}/creds/{id}", delete(dynamic::revoke_dynamic_cred))
-        .route("/api/v1/policies", get(policies::list_policies).post(policies::create_policy))
-        .route("/api/v1/policies/{id}", get(policies::get_policy).patch(policies::update_policy).delete(policies::delete_policy))
-        .route("/api/v1/policies/bindings", get(policies::list_policy_bindings).post(policies::bind_policy))
-        .route("/api/v1/policies/bindings/{id}", delete(policies::unbind_policy))
-        .route("/api/v1/ca", get(pki::list_ca_keys).post(pki::create_ca_key))
+        .route(
+            "/api/v1/auth/recovery-codes",
+            post(auth::recovery_codes_generate),
+        )
+        .route(
+            "/api/v1/projects",
+            get(projects::list_projects).post(projects::create_project),
+        )
+        .route(
+            "/api/v1/projects/{slug}",
+            get(projects::get_project)
+                .patch(projects::update_project)
+                .delete(projects::delete_project),
+        )
+        .route(
+            "/api/v1/projects/{slug}/members",
+            get(projects::list_members).post(projects::add_member),
+        )
+        .route(
+            "/api/v1/projects/{slug}/members/{user_id}",
+            patch(projects::update_member).delete(projects::remove_member),
+        )
+        .route(
+            "/api/v1/projects/{slug}/envs",
+            get(projects::list_envs).post(projects::create_env),
+        )
+        .route(
+            "/api/v1/projects/{slug}/envs/{env_slug}",
+            delete(projects::delete_env),
+        )
+        .route(
+            "/api/v1/projects/{slug}/envs/{env_slug}/secrets",
+            get(secrets::list_secrets).post(secrets::set_secret),
+        )
+        .route(
+            "/api/v1/projects/{slug}/envs/{env_slug}/secrets/batch",
+            post(secrets::batch_set_secrets),
+        )
+        .route(
+            "/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}",
+            put(secrets::set_secret_at_path)
+                .get(secrets::get_secret)
+                .delete(secrets::delete_secret),
+        )
+        .route(
+            "/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}/ciphertext",
+            get(secrets::get_secret_encrypted),
+        )
+        .route(
+            "/api/v1/projects/{slug}/envs/{env_slug}/secrets/{key}/versions",
+            get(secrets::list_secret_versions),
+        )
+        .route(
+            "/api/v1/projects/{slug}/envs/{env_slug}/creds",
+            get(dynamic::list_dynamic_creds).post(dynamic::create_dynamic_cred),
+        )
+        .route(
+            "/api/v1/projects/{slug}/envs/{env_slug}/creds/{id}",
+            delete(dynamic::revoke_dynamic_cred),
+        )
+        .route(
+            "/api/v1/policies",
+            get(policies::list_policies).post(policies::create_policy),
+        )
+        .route(
+            "/api/v1/policies/{id}",
+            get(policies::get_policy)
+                .patch(policies::update_policy)
+                .delete(policies::delete_policy),
+        )
+        .route(
+            "/api/v1/policies/bindings",
+            get(policies::list_policy_bindings).post(policies::bind_policy),
+        )
+        .route(
+            "/api/v1/policies/bindings/{id}",
+            delete(policies::unbind_policy),
+        )
+        .route(
+            "/api/v1/ca",
+            get(pki::list_ca_keys).post(pki::create_ca_key),
+        )
         .route("/api/v1/ca/generate", post(pki::generate_ca_key))
-        .route("/api/v1/ca/{id}", get(pki::get_ca_key).delete(pki::revoke_ca_key))
+        .route(
+            "/api/v1/ca/{id}",
+            get(pki::get_ca_key).delete(pki::revoke_ca_key),
+        )
         .route("/api/v1/ca/{id}/sign", post(pki::sign_csr))
         .route("/api/v1/ca/{id}/sign-ssh", post(pki::sign_ssh_cert_route))
         .route("/api/v1/ca/{id}/issued-certs", get(pki::list_issued_certs))
-        .route("/api/v1/issued-certs/{id}/revoke", post(pki::revoke_issued_cert))
-        .route("/api/v1/ssh-certs", get(pki::list_ssh_certs).post(pki::create_ssh_cert))
+        .route(
+            "/api/v1/issued-certs/{id}/revoke",
+            post(pki::revoke_issued_cert),
+        )
+        .route(
+            "/api/v1/ssh-certs",
+            get(pki::list_ssh_certs).post(pki::create_ssh_cert),
+        )
         .route("/api/v1/ssh-certs/{id}", delete(pki::revoke_ssh_cert))
-        .route("/api/v1/tokens", get(tokens::list_tokens).post(tokens::create_token))
+        .route(
+            "/api/v1/tokens",
+            get(tokens::list_tokens).post(tokens::create_token),
+        )
         .route("/api/v1/tokens/{id}", delete(tokens::revoke_token))
         .route("/api/v1/audit", get(tokens::list_audit))
         .route("/api/v1/audit/verify", get(tokens::verify_audit))
         .route("/api/v1/admin/server-age", get(tokens::server_age_show))
         .route("/api/v1/admin/backup", get(backup::create_backup))
-        .route("/api/v1/admin/users", get(tokens::list_users_admin).post(tokens::create_user_admin))
-        .route("/api/v1/admin/users/{user_id}/disable", post(tokens::disable_user_admin))
-        .route("/api/v1/admin/users/{user_id}/enable", post(tokens::enable_user_admin))
+        .route(
+            "/api/v1/admin/users",
+            get(tokens::list_users_admin).post(tokens::create_user_admin),
+        )
+        .route(
+            "/api/v1/admin/users/{user_id}/disable",
+            post(tokens::disable_user_admin),
+        )
+        .route(
+            "/api/v1/admin/users/{user_id}/enable",
+            post(tokens::enable_user_admin),
+        )
         .route("/api/v1/scan", post(scan::trigger_scan))
         .route("/api/v1/scan/results", get(scan::list_results));
 
@@ -118,20 +226,23 @@ pub fn build_router(state: AppState) -> Router {
     // Merge all with middleware
     Router::new()
         .merge(public_routes)
-        .merge(
-            protected_routes
-                .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware))
-        )
-        .merge(
-            internal_routes
-                .layer(axum::middleware::from_fn_with_state(state.clone(), internal_auth_middleware))
-        )
-        .layer(axum::middleware::from_fn_with_state(state.clone(), client_ip_middleware))
+        .merge(protected_routes.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        )))
+        .merge(internal_routes.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            internal_auth_middleware,
+        )))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            client_ip_middleware,
+        ))
         .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                .layer(cors)
+                .layer(cors),
         )
         .with_state(state)
 }
@@ -154,11 +265,10 @@ async fn client_ip_middleware(
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|c| c.0);
-    let trusted = crate::middleware::auth::parse_trusted_cidrs(
-        &state.config.trusted_proxy_cidrs,
-    );
+    let trusted = crate::middleware::auth::parse_trusted_cidrs(&state.config.trusted_proxy_cidrs);
     if let Some(ip) = crate::middleware::auth::extract_client_ip(req.headers(), peer, &trusted) {
-        req.extensions_mut().insert(crate::middleware::auth::ClientIp(ip));
+        req.extensions_mut()
+            .insert(crate::middleware::auth::ClientIp(ip));
     }
     Ok(next.run(req).await)
 }
@@ -208,11 +318,14 @@ async fn internal_auth_middleware(
     next: axum::middleware::Next,
 ) -> Result<axum::http::Response<axum::body::Body>, ApiError> {
     // Must use Bearer token
-    let authz = req.headers().get("authorization")
+    let authz = req
+        .headers()
+        .get("authorization")
         .and_then(|v| v.to_str().ok())
         .ok_or(ApiError::Unauthorized("MCP requires Bearer token".into()))?;
 
-    let token = authz.strip_prefix("Bearer ")
+    let token = authz
+        .strip_prefix("Bearer ")
         .ok_or(ApiError::Unauthorized("Invalid token format".into()))?
         .trim();
 
@@ -231,10 +344,22 @@ async fn internal_auth_middleware(
     // The internal API has two distinct paths now: ciphertext delivery (run:secret)
     // and plain inventory (read/list). Either is enough to enter the API; the
     // route handlers reject what the token doesn't have scope for.
-    let has_read = svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::ReadSecret));
-    let has_list = svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::ListSecret));
-    let has_exec = svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::WriteSecret));
-    let has_run = svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::RunSecret));
+    let has_read = svc
+        .scopes
+        .iter()
+        .any(|s| matches!(s, pandapass_core::models::TokenScope::ReadSecret));
+    let has_list = svc
+        .scopes
+        .iter()
+        .any(|s| matches!(s, pandapass_core::models::TokenScope::ListSecret));
+    let has_exec = svc
+        .scopes
+        .iter()
+        .any(|s| matches!(s, pandapass_core::models::TokenScope::WriteSecret));
+    let has_run = svc
+        .scopes
+        .iter()
+        .any(|s| matches!(s, pandapass_core::models::TokenScope::RunSecret));
 
     if !has_read && !has_list && !has_exec && !has_run {
         return Err(ApiError::Forbidden("Token lacks required scopes".into()));
@@ -264,7 +389,7 @@ async fn internal_auth_middleware(
         env_id: svc_env_id,
         client_ip: None,
         user_agent: None,
-            request_id: None,
+        request_id: None,
     });
 
     req.extensions_mut().insert(auth);
@@ -289,15 +414,27 @@ async fn internal_get_secret(
     // backwards compatibility — but the read path won't normally go through
     // this endpoint). The point is: the plaintext path requires read:secret,
     // and a token that wants to never see plaintext uses run:secret here.
-    if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::RunSecret))
-        && !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::ReadSecret))
+    if !svc
+        .scopes
+        .iter()
+        .any(|s| matches!(s, pandapass_core::models::TokenScope::RunSecret))
+        && !svc
+            .scopes
+            .iter()
+            .any(|s| matches!(s, pandapass_core::models::TokenScope::ReadSecret))
     {
-        return Err(ApiError::Forbidden("Token lacks run:secret or read:secret scope".into()));
+        return Err(ApiError::Forbidden(
+            "Token lacks run:secret or read:secret scope".into(),
+        ));
     }
 
-    let project_id = req.project_id.or(svc.project_id)
+    let project_id = req
+        .project_id
+        .or(svc.project_id)
         .ok_or_else(|| ApiError::BadRequest("Project ID required".into()))?;
-    let env_id = req.env_id.or(svc.env_id)
+    let env_id = req
+        .env_id
+        .or(svc.env_id)
         .ok_or_else(|| ApiError::BadRequest("Environment ID required".into()))?;
 
     let secret = db::get_secret(&state.db, project_id, env_id, &req.key).await?;
@@ -323,13 +460,21 @@ async fn internal_list_secrets(
 ) -> Result<Json<InternalListSecretsResponse>, ApiError> {
     let svc = auth.service_token.as_ref().unwrap();
 
-    if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::ListSecret)) {
+    if !svc
+        .scopes
+        .iter()
+        .any(|s| matches!(s, pandapass_core::models::TokenScope::ListSecret))
+    {
         return Err(ApiError::Forbidden("Token lacks list:secret scope".into()));
     }
 
-    let project_id = req.project_id.or(svc.project_id)
+    let project_id = req
+        .project_id
+        .or(svc.project_id)
         .ok_or_else(|| ApiError::BadRequest("Project ID required".into()))?;
-    let env_id = req.env_id.or(svc.env_id)
+    let env_id = req
+        .env_id
+        .or(svc.env_id)
         .ok_or_else(|| ApiError::BadRequest("Environment ID required".into()))?;
 
     let metas = db::list_secret_metas(&state.db, project_id, env_id).await?;
@@ -350,13 +495,21 @@ async fn internal_exec(
     let svc = auth.service_token.as_ref().unwrap();
 
     // Server-side secret injection requires `run:secret`
-    if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::RunSecret)) {
+    if !svc
+        .scopes
+        .iter()
+        .any(|s| matches!(s, pandapass_core::models::TokenScope::RunSecret))
+    {
         return Err(ApiError::Forbidden("Token lacks run:secret scope".into()));
     }
 
-    let project_id = req.project_id.or(svc.project_id)
+    let project_id = req
+        .project_id
+        .or(svc.project_id)
         .ok_or_else(|| ApiError::BadRequest("Project ID required".into()))?;
-    let env_id = req.env_id.or(svc.env_id)
+    let env_id = req
+        .env_id
+        .or(svc.env_id)
         .ok_or_else(|| ApiError::BadRequest("Environment ID required".into()))?;
 
     // Decrypt the requested secrets using the service account's master key.
@@ -371,14 +524,14 @@ async fn internal_exec(
     }
 
     // Collect the injected values for output masking
-    let mask_values: Vec<Vec<u8>> = envs
-        .iter()
-        .map(|(_, v)| v.as_bytes().to_vec())
-        .collect();
+    let mask_values: Vec<Vec<u8>> = envs.iter().map(|(_, v)| v.as_bytes().to_vec()).collect();
 
     // Enforce server-side command allowlist
     if !state.config.command_allowlist.is_empty() {
-        let program = req.command.first().ok_or_else(|| ApiError::BadRequest("No command specified".into()))?;
+        let program = req
+            .command
+            .first()
+            .ok_or_else(|| ApiError::BadRequest("No command specified".into()))?;
         if !state.config.command_allowlist.iter().any(|p| p == program) {
             return Err(ApiError::Forbidden(format!(
                 "Refusing to run `{}`: not in the server command allowlist",
@@ -390,7 +543,10 @@ async fn internal_exec(
     // Wall-clock timeout from server config (default 120s)
     let timeout_secs = state.config.command_timeout_secs.max(1);
 
-    let program = req.command.first().ok_or_else(|| ApiError::BadRequest("No command specified".into()))?;
+    let program = req
+        .command
+        .first()
+        .ok_or_else(|| ApiError::BadRequest("No command specified".into()))?;
     let mut child = tokio::process::Command::new(program)
         .args(&req.command[1..])
         .envs(envs.iter().map(|(k, v)| (k, v)))
@@ -418,8 +574,11 @@ async fn internal_exec(
     let status = match tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
         child.wait(),
-    ).await {
-        Ok(result) => result.map_err(|e| ApiError::Internal(format!("waiting for `{}` failed: {}", program, e)))?,
+    )
+    .await
+    {
+        Ok(result) => result
+            .map_err(|e| ApiError::Internal(format!("waiting for `{}` failed: {}", program, e)))?,
         Err(_) => {
             let _ = child.start_kill();
             let _ = child.wait().await;
@@ -431,8 +590,14 @@ async fn internal_exec(
     };
 
     // The child has exited; read the output
-    let stdout_buf = read_stdout.await.expect("join stdout").map_err(|e| ApiError::Internal(e.to_string()))?;
-    let stderr_buf = read_stderr.await.expect("join stderr").map_err(|e| ApiError::Internal(e.to_string()))?;
+    let stdout_buf = read_stdout
+        .await
+        .expect("join stdout")
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let stderr_buf = read_stderr
+        .await
+        .expect("join stderr")
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     // Mask secret values in output
     let mask = |buf: &[u8]| {
@@ -531,15 +696,30 @@ pub async fn bootstrap(state: &AppState) -> StartupInfo {
                          PANDAPASS_ADMIN_EMAIL and run `pandapass register` to create the \
                          first account interactively."
                     );
-                    return StartupInfo { admin_bootstrapped: false, user_count };
+                    return StartupInfo {
+                        admin_bootstrapped: false,
+                        user_count,
+                    };
                 }
             };
             let hash = pandapass_core::crypto::hash_password(&password).unwrap();
-            let _ = db::create_user(&state.db, email, &hash, pandapass_core::models::GlobalRole::Admin).await;
+            let _ = db::create_user(
+                &state.db,
+                email,
+                &hash,
+                pandapass_core::models::GlobalRole::Admin,
+            )
+            .await;
             tracing::info!("Bootstrapped admin user: {}", email);
-            return StartupInfo { admin_bootstrapped: true, user_count: 1 };
+            return StartupInfo {
+                admin_bootstrapped: true,
+                user_count: 1,
+            };
         }
     }
 
-    StartupInfo { admin_bootstrapped: false, user_count }
+    StartupInfo {
+        admin_bootstrapped: false,
+        user_count,
+    }
 }

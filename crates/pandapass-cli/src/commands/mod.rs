@@ -52,7 +52,8 @@ pub struct KeygenArgs {
 pub fn keygen(args: &KeygenArgs) -> Result<()> {
     use pandapass_core::crypto::AgeIdentity;
 
-    let identity = AgeIdentity::generate();    let public = identity.public_key()?.as_str().to_string();
+    let identity = AgeIdentity::generate();
+    let public = identity.public_key()?.as_str().to_string();
 
     if args.print {
         println!("{public}");
@@ -112,9 +113,19 @@ fn home_dir() -> Result<PathBuf> {
 #[derive(Subcommand, Debug)]
 pub enum ProjectCmd {
     List,
-    Create { name: String, slug: String, description: Option<String> },
-    Get { slug: String },
-    Update { slug: String, name: Option<String>, description: Option<String> },
+    Create {
+        name: String,
+        slug: String,
+        description: Option<String>,
+    },
+    Get {
+        slug: String,
+    },
+    Update {
+        slug: String,
+        name: Option<String>,
+        description: Option<String>,
+    },
     /// Delete a project and every secret in it. Irreversible.
     Delete {
         slug: String,
@@ -126,8 +137,15 @@ pub enum ProjectCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum EnvCmd {
-    List { project: String },
-    Create { project: String, name: String, slug: String, description: Option<String> },
+    List {
+        project: String,
+    },
+    Create {
+        project: String,
+        name: String,
+        slug: String,
+        description: Option<String>,
+    },
     /// Delete an environment and every secret in it. Irreversible.
     Delete {
         project: String,
@@ -140,16 +158,35 @@ pub enum EnvCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum SecretCmd {
-    List { project: String, env: String },
-    Get { project: String, env: String, key: String },
-    Set { project: String, env: String, key: String, value: String },
-    Delete { project: String, env: String, key: String },
+    List {
+        project: String,
+        env: String,
+    },
+    Get {
+        project: String,
+        env: String,
+        key: String,
+    },
+    Set {
+        project: String,
+        env: String,
+        key: String,
+        value: String,
+    },
+    Delete {
+        project: String,
+        env: String,
+        key: String,
+    },
 }
 
 /// Dynamic credentials (M2)
 #[derive(Subcommand, Debug)]
 pub enum CredCmd {
-    List { project: String, env: String },
+    List {
+        project: String,
+        env: String,
+    },
     Create {
         project: String,
         env: String,
@@ -158,20 +195,48 @@ pub enum CredCmd {
         #[arg(long, default_value = "3600")]
         ttl_seconds: i64,
     },
-    Revoke { project: String, env: String, id: Uuid },
+    Revoke {
+        project: String,
+        env: String,
+        id: Uuid,
+    },
 }
 
 /// Policies (M3)
 #[derive(Subcommand, Debug)]
 pub enum PolicyCmd {
-    List { #[arg(long)] enabled_only: bool },
-    Create { name: String, rego: String },
-    Get { id: Uuid },
-    Update { id: Uuid, name: Option<String>, rego: Option<String>, enabled: Option<bool> },
-    Delete { id: Uuid },
-    Bind { policy_id: Uuid, project: Option<String>, env: Option<String> },
-    Unbind { id: Uuid },
-    ListBindings { project: Option<String>, env: Option<String> },
+    List {
+        #[arg(long)]
+        enabled_only: bool,
+    },
+    Create {
+        name: String,
+        rego: String,
+    },
+    Get {
+        id: Uuid,
+    },
+    Update {
+        id: Uuid,
+        name: Option<String>,
+        rego: Option<String>,
+        enabled: Option<bool>,
+    },
+    Delete {
+        id: Uuid,
+    },
+    Bind {
+        policy_id: Uuid,
+        project: Option<String>,
+        env: Option<String>,
+    },
+    Unbind {
+        id: Uuid,
+    },
+    ListBindings {
+        project: Option<String>,
+        env: Option<String>,
+    },
 }
 
 /// PKI/CA and SSH certificates (M4)
@@ -191,7 +256,10 @@ pub enum PkiCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum CaCmd {
-    List { #[arg(long)] include_revoked: bool },
+    List {
+        #[arg(long)]
+        include_revoked: bool,
+    },
     Create {
         kind: String,
         not_before: String,
@@ -213,8 +281,12 @@ pub enum CaCmd {
         #[arg(long)]
         cert_pem: Option<String>,
     },
-    Get { id: Uuid },
-    Revoke { id: Uuid },
+    Get {
+        id: Uuid,
+    },
+    Revoke {
+        id: Uuid,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -259,15 +331,30 @@ pub enum SshCmd {
         not_before: String,
         not_after: String,
     },
-    Revoke { id: Uuid },
+    Revoke {
+        id: Uuid,
+    },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum MemberCmd {
-    List { project: String },
-    Add { project: String, email: String, role: String },
-    Update { project: String, user_id: Uuid, role: String },
-    Remove { project: String, user_id: Uuid },
+    List {
+        project: String,
+    },
+    Add {
+        project: String,
+        email: String,
+        role: String,
+    },
+    Update {
+        project: String,
+        user_id: Uuid,
+        role: String,
+    },
+    Remove {
+        project: String,
+        user_id: Uuid,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -294,12 +381,18 @@ pub enum TokenCmd {
         #[arg(long)]
         expires_days: Option<u64>,
     },
-    Revoke { id: Uuid },
+    Revoke {
+        id: Uuid,
+    },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum AuditCmd {
-    List { project: Option<String>, page: Option<i64>, per_page: Option<i64> },
+    List {
+        project: Option<String>,
+        page: Option<i64>,
+        per_page: Option<i64>,
+    },
     /// Verify the audit log HMAC chain. Admin only: a broken chain means
     /// the log was edited after it was written.
     Verify,
@@ -308,16 +401,28 @@ pub enum AuditCmd {
 #[derive(Subcommand, Debug)]
 pub enum ConfigCmd {
     Show,
-    SetServer { url: String },
-    SetAgeIdentity { path: PathBuf },
-    SetDefaultProject { project: Option<String> },
-    SetDefaultEnv { env: Option<String> },
+    SetServer {
+        url: String,
+    },
+    SetAgeIdentity {
+        path: PathBuf,
+    },
+    SetDefaultProject {
+        project: Option<String>,
+    },
+    SetDefaultEnv {
+        env: Option<String>,
+    },
     /// Set the `pandapass run` allowlist. Comma-separated absolute paths; pass
     /// the empty string to clear it. An empty allowlist means no restriction.
-    SetCommandAllowlist { paths: String },
+    SetCommandAllowlist {
+        paths: String,
+    },
     /// Set the `pandapass run` wall-clock timeout in seconds. The default is
     /// 120s when unset.
-    SetCommandTimeout { seconds: u64 },
+    SetCommandTimeout {
+        seconds: u64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -579,7 +684,11 @@ pub async fn run_command(
 
 // ─────────────────────────── Auth ───────────────────────────
 
-async fn run_login(api: &ApiClient, config: &mut crate::client::CliConfig, args: LoginArgs) -> Result<()> {
+async fn run_login(
+    api: &ApiClient,
+    config: &mut crate::client::CliConfig,
+    args: LoginArgs,
+) -> Result<()> {
     use rpassword::read_password;
     use std::io::{stdout, Write};
 
@@ -620,7 +729,11 @@ async fn run_login(api: &ApiClient, config: &mut crate::client::CliConfig, args:
             let mut code = String::new();
             std::io::stdin().read_line(&mut code)?;
             let code = code.trim();
-            if code.is_empty() { None } else { Some(code.to_string()) }
+            if code.is_empty() {
+                None
+            } else {
+                Some(code.to_string())
+            }
         }
     };
 
@@ -637,7 +750,9 @@ async fn run_login(api: &ApiClient, config: &mut crate::client::CliConfig, args:
         ));
     }
 
-    let session_token = resp.session_token.ok_or_else(|| anyhow::anyhow!("No session token returned"))?;
+    let session_token = resp
+        .session_token
+        .ok_or_else(|| anyhow::anyhow!("No session token returned"))?;
     config.auth_token = Some(session_token.clone());
     api.set_auth_token(Some(session_token)).await;
 
@@ -666,7 +781,14 @@ async fn run_me(api: &ApiClient) -> Result<()> {
     let user = api.me().await?;
     println!("Email: {}", user.email);
     println!("Role: {:?}", user.global_role);
-    println!("TOTP: {}", if user.totp_enabled { "enabled" } else { "disabled" });
+    println!(
+        "TOTP: {}",
+        if user.totp_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
     println!("Created: {}", user.created_at);
     Ok(())
 }
@@ -678,13 +800,27 @@ async fn run_project(api: &ApiClient, cmd: ProjectCmd) -> Result<()> {
         ProjectCmd::List => {
             let projects = api.list_projects().await?;
             for p in projects {
-                println!("{} ({}) - {:?}", p.project.name, p.project.slug, p.user_role);
+                println!(
+                    "{} ({}) - {:?}",
+                    p.project.name, p.project.slug, p.user_role
+                );
             }
         }
-        ProjectCmd::Create { name, slug, description } => {
-            let req = pandapass_core::models::CreateProjectRequest { name, slug, description };
+        ProjectCmd::Create {
+            name,
+            slug,
+            description,
+        } => {
+            let req = pandapass_core::models::CreateProjectRequest {
+                name,
+                slug,
+                description,
+            };
             let proj = api.create_project(&req).await?;
-            println!("Created project: {} ({})", proj.project.name, proj.project.slug);
+            println!(
+                "Created project: {} ({})",
+                proj.project.name, proj.project.slug
+            );
         }
         ProjectCmd::Get { slug } => {
             let proj = api.get_project(&slug).await?;
@@ -693,16 +829,25 @@ async fn run_project(api: &ApiClient, cmd: ProjectCmd) -> Result<()> {
             println!("Description: {:?}", proj.project.description);
             println!("Your role: {:?}", proj.user_role);
         }
-        ProjectCmd::Update { slug, name, description } => {
+        ProjectCmd::Update {
+            slug,
+            name,
+            description,
+        } => {
             let proj = api.update_project(&slug, name, description).await?;
-            println!("Updated project: {} ({})", proj.project.name, proj.project.slug);
+            println!(
+                "Updated project: {} ({})",
+                proj.project.name, proj.project.slug
+            );
         }
         ProjectCmd::Delete { slug, yes } => {
             let proj = api.get_project(&slug).await?;
-            if !yes && !confirm_destructive(&format!(
-                "Delete project '{}' and every secret in it?",
-                proj.project.name
-            ))? {
+            if !yes
+                && !confirm_destructive(&format!(
+                    "Delete project '{}' and every secret in it?",
+                    proj.project.name
+                ))?
+            {
                 println!("Aborted.");
                 return Ok(());
             }
@@ -726,7 +871,10 @@ fn confirm_destructive(prompt: &str) -> Result<bool> {
     std::io::stderr().flush()?;
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;
-    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 // ─────────────────────────── Env ───────────────────────────
@@ -739,15 +887,26 @@ async fn run_env(api: &ApiClient, cmd: EnvCmd) -> Result<()> {
                 println!("{} ({})", e.name, e.slug);
             }
         }
-        EnvCmd::Create { project, name, slug, description } => {
-            let req = pandapass_core::models::CreateEnvRequest { name, slug, description };
+        EnvCmd::Create {
+            project,
+            name,
+            slug,
+            description,
+        } => {
+            let req = pandapass_core::models::CreateEnvRequest {
+                name,
+                slug,
+                description,
+            };
             let env = api.create_env(&project, &req).await?;
             println!("Created environment: {} ({})", env.name, env.slug);
         }
         EnvCmd::Delete { project, env, yes } => {
-            if !yes && !confirm_destructive(&format!(
-                "Delete environment '{project}/{env}' and every secret in it?"
-            ))? {
+            if !yes
+                && !confirm_destructive(&format!(
+                    "Delete environment '{project}/{env}' and every secret in it?"
+                ))?
+            {
                 println!("Aborted.");
                 return Ok(());
             }
@@ -773,7 +932,12 @@ async fn run_secret(api: &ApiClient, cmd: SecretCmd) -> Result<()> {
             let secret = api.get_secret(&project, &env, &key).await?;
             println!("{}", secret.value);
         }
-        SecretCmd::Set { project, env, key, value } => {
+        SecretCmd::Set {
+            project,
+            env,
+            key,
+            value,
+        } => {
             let secret = api.set_secret(&project, &env, &key, &value).await?;
             // The server already prints the value it received; repeating it
             // would be the only place in this command's output where a secret
@@ -798,7 +962,11 @@ async fn run_member(api: &ApiClient, cmd: MemberCmd) -> Result<()> {
                 println!("{} - {:?}", m.user.email, m.member.role);
             }
         }
-        MemberCmd::Add { project, email, role } => {
+        MemberCmd::Add {
+            project,
+            email,
+            role,
+        } => {
             let role = match role.as_str() {
                 "owner" => pandapass_core::models::ProjectRole::Owner,
                 "editor" => pandapass_core::models::ProjectRole::Editor,
@@ -808,7 +976,11 @@ async fn run_member(api: &ApiClient, cmd: MemberCmd) -> Result<()> {
             let member = api.add_member(&project, &email, role).await?;
             println!("Added {} as {:?}", member.user.email, member.member.role);
         }
-        MemberCmd::Update { project, user_id, role } => {
+        MemberCmd::Update {
+            project,
+            user_id,
+            role,
+        } => {
             let role = match role.as_str() {
                 "owner" => pandapass_core::models::ProjectRole::Owner,
                 "editor" => pandapass_core::models::ProjectRole::Editor,
@@ -836,7 +1008,13 @@ async fn run_token(api: &ApiClient, cmd: TokenCmd) -> Result<()> {
                 println!("{} - {} - scopes: {:?}", t.id, t.name, t.scopes);
             }
         }
-        TokenCmd::Create { name, project, env, scopes, expires_days } => {
+        TokenCmd::Create {
+            name,
+            project,
+            env,
+            scopes,
+            expires_days,
+        } => {
             // The flags take slugs, matching every other command. The API
             // wants ids, so resolve here rather than making the user look one
             // up — parsing these as UUIDs would have failed on every input.
@@ -847,12 +1025,14 @@ async fn run_token(api: &ApiClient, cmd: TokenCmd) -> Result<()> {
             let env_id = match (&project, &env) {
                 (Some(project_slug), Some(env_slug)) => {
                     let envs = api.list_envs(project_slug).await?;
-                    let found = envs
-                        .into_iter()
-                        .find(|e| e.slug == *env_slug)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("No environment '{env_slug}' in project '{project_slug}'")
-                        })?;
+                    let found =
+                        envs.into_iter()
+                            .find(|e| e.slug == *env_slug)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "No environment '{env_slug}' in project '{project_slug}'"
+                                )
+                            })?;
                     Some(found.id)
                 }
                 // An env without a project is meaningless; silently ignoring it
@@ -861,8 +1041,8 @@ async fn run_token(api: &ApiClient, cmd: TokenCmd) -> Result<()> {
                 _ => None,
             };
 
-            let expires_at = expires_days
-                .map(|d| chrono::Utc::now() + chrono::Duration::days(d as i64));
+            let expires_at =
+                expires_days.map(|d| chrono::Utc::now() + chrono::Duration::days(d as i64));
 
             let req = crate::model::CreateTokenRequest {
                 name,
@@ -895,13 +1075,19 @@ async fn run_token(api: &ApiClient, cmd: TokenCmd) -> Result<()> {
 
 async fn run_audit(api: &ApiClient, cmd: AuditCmd) -> Result<()> {
     match cmd {
-        AuditCmd::List { project, page, per_page } => {
+        AuditCmd::List {
+            project,
+            page,
+            per_page,
+        } => {
             // --project is a slug, like everywhere else; the API filters by id.
             let project_id = match &project {
                 Some(slug) => Some(api.resolve_project_id(slug).await?),
                 None => None,
             };
-            let resp = api.list_audit(project_id, page.unwrap_or(1), per_page.unwrap_or(20)).await?;
+            let resp = api
+                .list_audit(project_id, page.unwrap_or(1), per_page.unwrap_or(20))
+                .await?;
             if resp.items.is_empty() {
                 println!("No audit entries.");
                 return Ok(());
@@ -942,7 +1128,14 @@ async fn run_config(config: &mut crate::client::CliConfig, cmd: ConfigCmd) -> Re
     match cmd {
         ConfigCmd::Show => {
             println!("Server: {}", config.server_url);
-            println!("Auth token: {}", if config.auth_token.is_some() { "set" } else { "none" });
+            println!(
+                "Auth token: {}",
+                if config.auth_token.is_some() {
+                    "set"
+                } else {
+                    "none"
+                }
+            );
             println!("Default project: {:?}", config.default_project);
             println!("Default env: {:?}", config.default_env);
             println!("Age identity: {:?}", config.age_identity_file);
@@ -1020,7 +1213,9 @@ async fn run_admin(api: &ApiClient, cmd: AdminCmd) -> Result<()> {
 /// operator's machine), so a plain `pandapass login` session is enough.
 async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunArgs) -> Result<()> {
     if args.command.is_empty() {
-        anyhow::bail!("No command specified. Usage: pandapass run --project P --env E -- cmd args...");
+        anyhow::bail!(
+            "No command specified. Usage: pandapass run --project P --env E -- cmd args..."
+        );
     }
 
     // Enforce the allowlist before doing anything else. Without this, a leaked
@@ -1105,10 +1300,7 @@ async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunAr
     // Collect the injected values before they are zeroized: these are the
     // secrets the child could print, and therefore the exact byte strings the
     // output masker must conceal.
-    let mask_values: Vec<Vec<u8>> = envs
-        .iter()
-        .map(|(_, v)| v.as_bytes().to_vec())
-        .collect();
+    let mask_values: Vec<Vec<u8>> = envs.iter().map(|(_, v)| v.as_bytes().to_vec()).collect();
 
     // `args.command[0]` is the program, the rest are its arguments. Spawned
     // directly: no `sh -c`, so nothing in a key name or value is ever parsed
@@ -1125,9 +1317,7 @@ async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunAr
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| {
-            anyhow::anyhow!("failed to run `{}`: {}", program, e)
-        })?;
+        .map_err(|e| anyhow::anyhow!("failed to run `{}`: {}", program, e))?;
 
     let mut stdout_pipe = child.stdout.take().expect("piped stdout");
     let mut stderr_pipe = child.stderr.take().expect("piped stderr");
@@ -1151,14 +1341,22 @@ async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunAr
     let status = match tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
         child.wait(),
-    ).await {
-        Ok(result) => result.map_err(|e| anyhow::anyhow!("waiting for `{}` failed: {}", program, e))?,
+    )
+    .await
+    {
+        Ok(result) => {
+            result.map_err(|e| anyhow::anyhow!("waiting for `{}` failed: {}", program, e))?
+        }
         Err(_) => {
             // Best-effort: send SIGKILL, then reap.
             let _ = child.start_kill();
             let _ = child.wait().await;
             // The child is dead, so the pipes close and the read tasks end.
-            anyhow::bail!("`{}` exceeded the {}s command timeout and was killed", program, timeout_secs);
+            anyhow::bail!(
+                "`{}` exceeded the {}s command timeout and was killed",
+                program,
+                timeout_secs
+            );
         }
     };
 
@@ -1273,7 +1471,11 @@ fn mask_output(data: &[u8], secrets: &[Vec<u8>]) -> Vec<u8> {
     result
 }
 
-async fn run_inject(api: &ApiClient, _config: &crate::client::CliConfig, args: InjectArgs) -> Result<()> {
+async fn run_inject(
+    api: &ApiClient,
+    _config: &crate::client::CliConfig,
+    args: InjectArgs,
+) -> Result<()> {
     let resp = api.list_secrets(&args.project, &args.env).await?;
 
     let template = tokio::fs::read_to_string(&args.input).await?;
@@ -1318,7 +1520,9 @@ async fn run_inject(api: &ApiClient, _config: &crate::client::CliConfig, args: I
 /// Load the age identity from the CLI config path, if configured. GitOps needs
 /// it to decrypt pulled ciphertexts locally — the plaintext must never come
 /// back over the wire if the operator holds the private key.
-fn load_age_identity(config: &crate::client::CliConfig) -> Result<pandapass_core::crypto::AgeIdentity> {
+fn load_age_identity(
+    config: &crate::client::CliConfig,
+) -> Result<pandapass_core::crypto::AgeIdentity> {
     let path = config.age_identity_file.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
             "No age identity configured. Run `pandapass config set-age-identity <path>` \
@@ -1332,7 +1536,11 @@ fn load_age_identity(config: &crate::client::CliConfig) -> Result<pandapass_core
 }
 
 /// Resolve a project slug to its id, and an env slug to its id, for sync state.
-async fn resolve_env_ids(api: &ApiClient, project: &str, env: &str) -> Result<(uuid::Uuid, uuid::Uuid)> {
+async fn resolve_env_ids(
+    api: &ApiClient,
+    project: &str,
+    env: &str,
+) -> Result<(uuid::Uuid, uuid::Uuid)> {
     let project_id = api.resolve_project_id(project).await?;
     let envs = api.list_envs(project).await?;
     let env = envs
@@ -1384,10 +1592,13 @@ async fn write_local_secrets(
     identity: &pandapass_core::crypto::AgeIdentity,
 ) -> Result<()> {
     use pandapass_core::models::GitOpsSecretFile;
-    let file = GitOpsSecretFile { secrets: secrets.clone() };
+    let file = GitOpsSecretFile {
+        secrets: secrets.clone(),
+    };
     let yaml = serde_yaml::to_string(&file)?;
     let recipient = identity.public_key()?;
-    let ciphertext = pandapass_core::crypto::age_encrypt_file(&yaml, std::slice::from_ref(&recipient))?;
+    let ciphertext =
+        pandapass_core::crypto::age_encrypt_file(&yaml, std::slice::from_ref(&recipient))?;
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -1400,7 +1611,11 @@ async fn write_local_secrets(
 }
 
 /// Read the sync state for an env (or a fresh empty state).
-async fn read_sync_state(dir: &std::path::Path, project_id: uuid::Uuid, env_id: uuid::Uuid) -> Result<pandapass_core::models::SyncState> {
+async fn read_sync_state(
+    dir: &std::path::Path,
+    project_id: uuid::Uuid,
+    env_id: uuid::Uuid,
+) -> Result<pandapass_core::models::SyncState> {
     use pandapass_core::models::SyncState;
     let path = sync_state_path(dir);
     let mut state: SyncState = if path.exists() {
@@ -1414,7 +1629,10 @@ async fn read_sync_state(dir: &std::path::Path, project_id: uuid::Uuid, env_id: 
     Ok(state)
 }
 
-async fn write_sync_state(dir: &std::path::Path, state: &pandapass_core::models::SyncState) -> Result<()> {
+async fn write_sync_state(
+    dir: &std::path::Path,
+    state: &pandapass_core::models::SyncState,
+) -> Result<()> {
     tokio::fs::create_dir_all(dir).await?;
     let content = serde_json::to_string_pretty(state)?;
     let path = sync_state_path(dir);
@@ -1431,7 +1649,11 @@ async fn write_sync_state(dir: &std::path::Path, state: &pandapass_core::models:
 
 /// `gitops pull`: fetch remote secrets (server-decrypted plaintext), seal them
 /// locally to the operator's age public key, and write `<env>.yaml.age`.
-async fn run_gitops_pull(api: &ApiClient, config: &crate::client::CliConfig, args: GitOpsPullArgs) -> Result<()> {
+async fn run_gitops_pull(
+    api: &ApiClient,
+    config: &crate::client::CliConfig,
+    args: GitOpsPullArgs,
+) -> Result<()> {
     let identity = load_age_identity(config)?;
     let (project_id, env_id) = resolve_env_ids(api, &args.project, &args.env).await?;
 
@@ -1478,7 +1700,11 @@ async fn run_gitops_pull(api: &ApiClient, config: &crate::client::CliConfig, arg
 }
 
 /// `gitops diff`: compare local file against remote metadata, print a table.
-async fn run_gitops_diff(api: &ApiClient, config: &crate::client::CliConfig, args: GitOpsDiffArgs) -> Result<()> {
+async fn run_gitops_diff(
+    api: &ApiClient,
+    config: &crate::client::CliConfig,
+    args: GitOpsDiffArgs,
+) -> Result<()> {
     let identity = load_age_identity(config)?;
     let path = local_secrets_path(&args.dir, &args.env);
     let local = read_local_secrets(&path, &identity)?;
@@ -1501,7 +1727,9 @@ async fn run_gitops_diff(api: &ApiClient, config: &crate::client::CliConfig, arg
         let detail = match entry.state {
             SecretDiffState::OnlyLocal => "only local".to_string(),
             SecretDiffState::OnlyRemote => "only remote".to_string(),
-            SecretDiffState::Modified => format!("modified (remote v{})", entry.remote_version.unwrap_or(0)),
+            SecretDiffState::Modified => {
+                format!("modified (remote v{})", entry.remote_version.unwrap_or(0))
+            }
             SecretDiffState::InSync => "in sync".to_string(),
         };
         println!("{marker} {}  {}", entry.key, detail);
@@ -1514,7 +1742,11 @@ async fn run_gitops_diff(api: &ApiClient, config: &crate::client::CliConfig, arg
 }
 
 /// `gitops push`: write local changes back to the server.
-async fn run_gitops_push(api: &ApiClient, config: &crate::client::CliConfig, args: GitOpsPushArgs) -> Result<()> {
+async fn run_gitops_push(
+    api: &ApiClient,
+    config: &crate::client::CliConfig,
+    args: GitOpsPushArgs,
+) -> Result<()> {
     let identity = load_age_identity(config)?;
     let path = local_secrets_path(&args.dir, &args.env);
     let local = read_local_secrets(&path, &identity)?;
@@ -1575,7 +1807,11 @@ async fn run_gitops_push(api: &ApiClient, config: &crate::client::CliConfig, arg
     Ok(())
 }
 
-async fn run_gitops(api: &ApiClient, config: &crate::client::CliConfig, cmd: GitOpsCmd) -> Result<()> {
+async fn run_gitops(
+    api: &ApiClient,
+    config: &crate::client::CliConfig,
+    cmd: GitOpsCmd,
+) -> Result<()> {
     match cmd {
         GitOpsCmd::Pull(args) => run_gitops_pull(api, config, args).await,
         GitOpsCmd::Diff(args) => run_gitops_diff(api, config, args).await,
@@ -1585,8 +1821,8 @@ async fn run_gitops(api: &ApiClient, config: &crate::client::CliConfig, cmd: Git
 
 // ─────────────────────────── Backup / Restore (D5) ───────────────────────────
 
-use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 
 /// Read a small secret file (server age identity or audit chain key), failing
 /// with a clear message when the file is absent. Returns the trimmed contents.
@@ -1625,7 +1861,11 @@ pub struct BackupPayloadDb {
 /// `pandapass backup`: fetch a consistent SQLite snapshot from the server and
 /// seal it (plus the server age identity and audit chain key, when readable)
 /// into an age-encrypted file.
-async fn run_backup(api: &ApiClient, config: &crate::client::CliConfig, args: BackupArgs) -> Result<()> {
+async fn run_backup(
+    api: &ApiClient,
+    config: &crate::client::CliConfig,
+    args: BackupArgs,
+) -> Result<()> {
     // Fetch the snapshot from the server.
     let snap = api.admin_backup().await?;
 
@@ -1652,7 +1892,8 @@ async fn run_backup(api: &ApiClient, config: &crate::client::CliConfig, args: Ba
         .clone()
         .or_else(|| std::env::var_os("PANDAPASS_SERVER_AGE_IDENTITY_FILE").map(PathBuf::from));
     if let Some(path) = age_identity_path {
-        payload.server_age_identity = Some(read_optional_secret_file(&path, "server age identity")?);
+        payload.server_age_identity =
+            Some(read_optional_secret_file(&path, "server age identity")?);
     }
     let chain_key_path = args
         .audit_chain_key
@@ -1685,17 +1926,18 @@ async fn run_backup(api: &ApiClient, config: &crate::client::CliConfig, args: Ba
         if recipient.is_some() {
             anyhow::bail!("--raw cannot be combined with --recipient");
         }
-        let bytes = BASE64.decode(&payload.db.bytes_b64)
+        let bytes = BASE64
+            .decode(&payload.db.bytes_b64)
             .map_err(|e| anyhow::anyhow!("invalid base64 in server response: {e}"))?;
         write_backup_file(&args.out, &bytes, false)?;
     } else {
         let recipient = recipient.ok_or_else(|| {
-            anyhow::anyhow!("No age recipient available. Pass --recipient, or configure an age identity.")
+            anyhow::anyhow!(
+                "No age recipient available. Pass --recipient, or configure an age identity."
+            )
         })?;
-        let ciphertext = pandapass_core::crypto::age_encrypt_file(
-            &plaintext,
-            std::slice::from_ref(&recipient),
-        )?;
+        let ciphertext =
+            pandapass_core::crypto::age_encrypt_file(&plaintext, std::slice::from_ref(&recipient))?;
         write_backup_file(&args.out, ciphertext.as_bytes(), true)?;
     }
 
@@ -1734,11 +1976,17 @@ fn write_backup_file(path: &std::path::Path, bytes: &[u8], _encrypted: bool) -> 
 
 /// `pandapass restore`: decrypt (if needed), verify, and write a backup to
 /// the local database path and age identity path.
-async fn run_restore(_api: &ApiClient, _config: &crate::client::CliConfig, args: RestoreArgs) -> Result<()> {
-    if !args.yes && !confirm_destructive(&format!(
-        "Restore database from '{}'? This overwrites the target paths.",
-        args.input.display()
-    ))? {
+async fn run_restore(
+    _api: &ApiClient,
+    _config: &crate::client::CliConfig,
+    args: RestoreArgs,
+) -> Result<()> {
+    if !args.yes
+        && !confirm_destructive(&format!(
+            "Restore database from '{}'? This overwrites the target paths.",
+            args.input.display()
+        ))?
+    {
         println!("Aborted.");
         return Ok(());
     }
@@ -1790,7 +2038,8 @@ async fn run_restore(_api: &ApiClient, _config: &crate::client::CliConfig, args:
     };
 
     // Write the database.
-    let db_bytes = BASE64.decode(&payload.db.bytes_b64)
+    let db_bytes = BASE64
+        .decode(&payload.db.bytes_b64)
         .map_err(|e| anyhow::anyhow!("invalid base64 in backup payload: {e}"))?;
     write_db_atomic(&args.db_path, &db_bytes)?;
 
@@ -1832,7 +2081,8 @@ async fn run_restore(_api: &ApiClient, _config: &crate::client::CliConfig, args:
 /// Verify a backup payload's embedded SHA-256 over its base64 DB bytes.
 fn verify_payload(payload: &BackupPayload) -> Result<()> {
     use sha2::{Digest, Sha256};
-    let bytes = BASE64.decode(&payload.db.bytes_b64)
+    let bytes = BASE64
+        .decode(&payload.db.bytes_b64)
         .map_err(|e| anyhow::anyhow!("invalid base64 in backup payload: {e}"))?;
     let digest = hex::encode(Sha256::digest(&bytes));
     if digest != payload.db.sha256 {
@@ -1918,16 +2168,27 @@ async fn run_cred(api: &ApiClient, cmd: CredCmd) -> Result<()> {
                 );
             }
         }
-        CredCmd::Create { project, env, kind, username, ttl_seconds } => {
+        CredCmd::Create {
+            project,
+            env,
+            kind,
+            username,
+            ttl_seconds,
+        } => {
             let kind = match kind.as_str() {
                 "postgresql" => pandapass_core::models::DynamicCredKind::PostgreSQL,
-                "mysql" => pandapass_core::models::DynamicCredKind::MySQL,
                 "redis" => pandapass_core::models::DynamicCredKind::Redis,
-                _ => anyhow::bail!("Invalid kind: {}. Must be postgresql, mysql, or redis", kind),
+                _ => anyhow::bail!(
+                    "Invalid kind: {}. Must be postgresql or redis (mysql is not supported yet)",
+                    kind
+                ),
             };
-            let resp = api.create_dynamic_cred(&project, &env, kind, &username, ttl_seconds).await?;
+            let resp = api
+                .create_dynamic_cred(&project, &env, kind, &username, ttl_seconds)
+                .await?;
             let plain = resp["plain_password"].as_str().unwrap_or("");
-            let cred: pandapass_core::models::DynamicCred = serde_json::from_value(resp["cred"].clone())?;
+            let cred: pandapass_core::models::DynamicCred =
+                serde_json::from_value(resp["cred"].clone())?;
             println!("{}", plain);
             eprintln!(
                 "\nCredential created. Shown once; only encrypted value is stored.\n\
@@ -1970,15 +2231,25 @@ async fn run_policy(api: &ApiClient, cmd: PolicyCmd) -> Result<()> {
             println!("Created: {}", policy.created_at);
             println!("Rego:\n{}", policy.rego_source);
         }
-        PolicyCmd::Update { id, name, rego, enabled } => {
-            api.update_policy(id, name.as_deref(), rego.as_deref(), enabled).await?;
+        PolicyCmd::Update {
+            id,
+            name,
+            rego,
+            enabled,
+        } => {
+            api.update_policy(id, name.as_deref(), rego.as_deref(), enabled)
+                .await?;
             println!("Policy updated");
         }
         PolicyCmd::Delete { id } => {
             api.delete_policy(id).await?;
             println!("Policy deleted");
         }
-        PolicyCmd::Bind { policy_id, project, env } => {
+        PolicyCmd::Bind {
+            policy_id,
+            project,
+            env,
+        } => {
             let project_id = match project.as_deref() {
                 Some(slug) => Some(api.resolve_project_id(slug).await?),
                 None => None,
@@ -1986,15 +2257,24 @@ async fn run_policy(api: &ApiClient, cmd: PolicyCmd) -> Result<()> {
             let env_id = match (project.as_deref(), env.as_deref()) {
                 (Some(project_slug), Some(env_slug)) => {
                     let envs = api.list_envs(project_slug).await?;
-                    let found = envs.into_iter().find(|e| e.slug == *env_slug)
-                        .ok_or_else(|| anyhow::anyhow!("No environment '{env_slug}' in project '{project_slug}'"))?;
+                    let found =
+                        envs.into_iter()
+                            .find(|e| e.slug == *env_slug)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "No environment '{env_slug}' in project '{project_slug}'"
+                                )
+                            })?;
                     Some(found.id)
                 }
                 (None, Some(_)) => anyhow::bail!("--env requires --project"),
                 _ => None,
             };
             let binding = api.bind_policy(policy_id, project_id, env_id).await?;
-            println!("Bound policy to project: {:?}, env: {:?}", binding.project_id, binding.env_id);
+            println!(
+                "Bound policy to project: {:?}, env: {:?}",
+                binding.project_id, binding.env_id
+            );
         }
         PolicyCmd::Unbind { id } => {
             api.unbind_policy(id).await?;
@@ -2008,8 +2288,14 @@ async fn run_policy(api: &ApiClient, cmd: PolicyCmd) -> Result<()> {
             let env_id = match (project.as_deref(), env.as_deref()) {
                 (Some(project_slug), Some(env_slug)) => {
                     let envs = api.list_envs(project_slug).await?;
-                    let found = envs.into_iter().find(|e| e.slug == *env_slug)
-                        .ok_or_else(|| anyhow::anyhow!("No environment '{env_slug}' in project '{project_slug}'"))?;
+                    let found =
+                        envs.into_iter()
+                            .find(|e| e.slug == *env_slug)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "No environment '{env_slug}' in project '{project_slug}'"
+                                )
+                            })?;
                     Some(found.id)
                 }
                 (None, Some(_)) => anyhow::bail!("--env requires --project"),
@@ -2017,7 +2303,10 @@ async fn run_policy(api: &ApiClient, cmd: PolicyCmd) -> Result<()> {
             };
             let bindings = api.list_policy_bindings(project_id, env_id).await?;
             for b in bindings {
-                println!("{}  policy: {}  project: {:?}  env: {:?}", b.id, b.policy_id, b.project_id, b.env_id);
+                println!(
+                    "{}  policy: {}  project: {:?}  env: {:?}",
+                    b.id, b.policy_id, b.project_id, b.env_id
+                );
             }
         }
     }
@@ -2038,31 +2327,53 @@ async fn run_ca(api: &ApiClient, cmd: CaCmd) -> Result<()> {
         CaCmd::List { include_revoked } => {
             let keys = api.list_ca_keys(include_revoked).await?;
             for k in keys {
-                println!("{}  {}  {}  revoked: {}", k.id, k.kind.as_str(), k.not_after.format("%Y-%m-%d"), k.revoked_at.map_or("no", |_| "yes"));
+                println!(
+                    "{}  {}  {}  revoked: {}",
+                    k.id,
+                    k.kind.as_str(),
+                    k.not_after.format("%Y-%m-%d"),
+                    k.revoked_at.map_or("no", |_| "yes")
+                );
             }
         }
-        CaCmd::Create { kind, key_pem, cert_pem, subject_dn, parent_ca_id, generate, not_before, not_after } => {
+        CaCmd::Create {
+            kind,
+            key_pem,
+            cert_pem,
+            subject_dn,
+            parent_ca_id,
+            generate,
+            not_before,
+            not_after,
+        } => {
             let kind = match kind.as_str() {
                 "root" => pandapass_core::models::CaKeyType::Root,
                 "intermediate" => pandapass_core::models::CaKeyType::Intermediate,
                 _ => anyhow::bail!("Invalid kind: {}. Must be root or intermediate", kind),
             };
-            let not_before = chrono::DateTime::parse_from_rfc3339(&not_before)?.with_timezone(&chrono::Utc);
-            let not_after = chrono::DateTime::parse_from_rfc3339(&not_after)?.with_timezone(&chrono::Utc);
+            let not_before =
+                chrono::DateTime::parse_from_rfc3339(&not_before)?.with_timezone(&chrono::Utc);
+            let not_after =
+                chrono::DateTime::parse_from_rfc3339(&not_after)?.with_timezone(&chrono::Utc);
 
             let ca = if generate {
                 let subject_dn = subject_dn
                     .ok_or_else(|| anyhow::anyhow!("--subject-dn is required with --generate"))?;
-                if kind == pandapass_core::models::CaKeyType::Intermediate && parent_ca_id.is_none() {
+                if kind == pandapass_core::models::CaKeyType::Intermediate && parent_ca_id.is_none()
+                {
                     anyhow::bail!("--parent-ca-id is required when generating an intermediate CA");
                 }
-                api.generate_ca_key(kind, &subject_dn, not_before, not_after, parent_ca_id).await?
+                api.generate_ca_key(kind, &subject_dn, not_before, not_after, parent_ca_id)
+                    .await?
             } else {
-                let key_pem = key_pem
-                    .ok_or_else(|| anyhow::anyhow!("--key-pem is required unless --generate is set"))?;
-                let cert_pem = cert_pem
-                    .ok_or_else(|| anyhow::anyhow!("--cert-pem is required unless --generate is set"))?;
-                api.create_ca_key(kind, &key_pem, &cert_pem, not_before, not_after).await?
+                let key_pem = key_pem.ok_or_else(|| {
+                    anyhow::anyhow!("--key-pem is required unless --generate is set")
+                })?;
+                let cert_pem = cert_pem.ok_or_else(|| {
+                    anyhow::anyhow!("--cert-pem is required unless --generate is set")
+                })?;
+                api.create_ca_key(kind, &key_pem, &cert_pem, not_before, not_after)
+                    .await?
             };
             println!("Created CA key: {} ({})", ca.kind.as_str(), ca.id);
         }
@@ -2071,7 +2382,10 @@ async fn run_ca(api: &ApiClient, cmd: CaCmd) -> Result<()> {
             println!("Kind: {}", ca.kind.as_str());
             println!("Cert:\n{}", ca.cert_pem);
             println!("Valid: {} to {}", ca.not_before, ca.not_after);
-            println!("Revoked: {}", ca.revoked_at.map(|d| d.to_string()).unwrap_or("no".into()));
+            println!(
+                "Revoked: {}",
+                ca.revoked_at.map(|d| d.to_string()).unwrap_or("no".into())
+            );
         }
         CaCmd::Revoke { id } => {
             api.revoke_ca_key(id).await?;
@@ -2083,12 +2397,18 @@ async fn run_ca(api: &ApiClient, cmd: CaCmd) -> Result<()> {
 
 async fn run_ssh(api: &ApiClient, cmd: SshCmd) -> Result<()> {
     match cmd {
-        SshCmd::List { user, project, include_revoked } => {
+        SshCmd::List {
+            user,
+            project,
+            include_revoked,
+        } => {
             let project_id = match project.as_deref() {
                 Some(slug) => Some(api.resolve_project_id(slug).await?),
                 None => None,
             };
-            let certs = api.list_ssh_certs(user, project_id, include_revoked).await?;
+            let certs = api
+                .list_ssh_certs(user, project_id, include_revoked)
+                .await?;
             for c in certs {
                 println!(
                     "{}  {}  {}  {}  revoked: {}",
@@ -2100,13 +2420,22 @@ async fn run_ssh(api: &ApiClient, cmd: SshCmd) -> Result<()> {
                 );
             }
         }
-        SshCmd::Sign { ca_id, user, principal, public_key, project, not_before, not_after } => {
+        SshCmd::Sign {
+            ca_id,
+            user,
+            principal,
+            public_key,
+            project,
+            not_before,
+            not_after,
+        } => {
             let project_id = match project.as_deref() {
                 Some(slug) => Some(api.resolve_project_id(slug).await?),
                 None => None,
             };
-            let public_key_str = std::fs::read_to_string(&public_key)
-                .map_err(|e| anyhow::anyhow!("cannot read public key {}: {}", public_key.display(), e))?;
+            let public_key_str = std::fs::read_to_string(&public_key).map_err(|e| {
+                anyhow::anyhow!("cannot read public key {}: {}", public_key.display(), e)
+            })?;
             let not_before = match not_before {
                 Some(s) => chrono::DateTime::parse_from_rfc3339(&s)?.with_timezone(&chrono::Utc),
                 None => chrono::Utc::now(),
@@ -2115,16 +2444,18 @@ async fn run_ssh(api: &ApiClient, cmd: SshCmd) -> Result<()> {
                 Some(s) => chrono::DateTime::parse_from_rfc3339(&s)?.with_timezone(&chrono::Utc),
                 None => chrono::Utc::now() + chrono::Duration::hours(12),
             };
-            let resp = api.sign_ssh_cert(
-                ca_id,
-                user,
-                project_id,
-                &principal,
-                public_key_str.trim(),
-                pandapass_core::models::SshKeyType::Ed25519,
-                not_before,
-                not_after,
-            ).await?;
+            let resp = api
+                .sign_ssh_cert(
+                    ca_id,
+                    user,
+                    project_id,
+                    &principal,
+                    public_key_str.trim(),
+                    pandapass_core::models::SshKeyType::Ed25519,
+                    not_before,
+                    not_after,
+                )
+                .await?;
             let cert_id: Uuid = serde_json::from_value(resp["cert_id"].clone())?;
             let cert_openssh: String = serde_json::from_value(resp["cert_openssh"].clone())?;
             println!("{}", cert_openssh);
@@ -2133,7 +2464,15 @@ async fn run_ssh(api: &ApiClient, cmd: SshCmd) -> Result<()> {
                  or use it with `ssh -i` via an agent. Cert ID: {cert_id}"
             );
         }
-        SshCmd::Create { user, project, principal, cert_pem, key_type, not_before, not_after } => {
+        SshCmd::Create {
+            user,
+            project,
+            principal,
+            cert_pem,
+            key_type,
+            not_before,
+            not_after,
+        } => {
             let project_id = match project.as_deref() {
                 Some(slug) => Some(api.resolve_project_id(slug).await?),
                 None => None,
@@ -2143,9 +2482,15 @@ async fn run_ssh(api: &ApiClient, cmd: SshCmd) -> Result<()> {
                 "ed25519" => pandapass_core::models::SshKeyType::Ed25519,
                 _ => anyhow::bail!("Invalid key_type: {}. Must be rsa or ed25519", key_type),
             };
-            let not_before = chrono::DateTime::parse_from_rfc3339(&not_before)?.with_timezone(&chrono::Utc);
-            let not_after = chrono::DateTime::parse_from_rfc3339(&not_after)?.with_timezone(&chrono::Utc);
-            let cert = api.create_ssh_cert(user, project_id, &principal, &cert_pem, key_type, not_before, not_after).await?;
+            let not_before =
+                chrono::DateTime::parse_from_rfc3339(&not_before)?.with_timezone(&chrono::Utc);
+            let not_after =
+                chrono::DateTime::parse_from_rfc3339(&not_after)?.with_timezone(&chrono::Utc);
+            let cert = api
+                .create_ssh_cert(
+                    user, project_id, &principal, &cert_pem, key_type, not_before, not_after,
+                )
+                .await?;
             println!("Created SSH cert: {} ({})", cert.principal, cert.id);
         }
         SshCmd::Revoke { id } => {
@@ -2189,10 +2534,7 @@ mod tests {
     fn mask_skips_empty_secret_without_panic() {
         let data = b"abc";
         let secrets = vec![b"".to_vec(), b"b".to_vec()];
-        assert_eq!(
-            mask_output(data, &secrets),
-            b"a<concealed by pandapass>c"
-        );
+        assert_eq!(mask_output(data, &secrets), b"a<concealed by pandapass>c");
     }
 
     #[test]
@@ -2221,16 +2563,10 @@ mod tests {
     fn mask_secret_at_edges() {
         let data = b"s3cr3tmid";
         let secrets = vec![b"s3cr3t".to_vec()];
-        assert_eq!(
-            mask_output(data, &secrets),
-            b"<concealed by pandapass>mid"
-        );
+        assert_eq!(mask_output(data, &secrets), b"<concealed by pandapass>mid");
 
         let data = b"mids3cr3t";
-        assert_eq!(
-            mask_output(data, &secrets),
-            b"mid<concealed by pandapass>"
-        );
+        assert_eq!(mask_output(data, &secrets), b"mid<concealed by pandapass>");
     }
 
     #[test]
@@ -2238,33 +2574,8 @@ mod tests {
         let data: Vec<u8> = vec![0xff, 0xfe, b's', b'3', b'c', b'r', b'3', b't', 0x00];
         let secrets = vec![b"s3cr3t".to_vec()];
         let expected: Vec<u8> = vec![
-            0xff,
-            0xfe,
-            b'<',
-            b'c',
-            b'o',
-            b'n',
-            b'c',
-            b'e',
-            b'a',
-            b'l',
-            b'e',
-            b'd',
-            b' ',
-            b'b',
-            b'y',
-            b' ',
-            b'p',
-            b'a',
-            b'n',
-            b'd',
-            b'a',
-            b'p',
-            b'a',
-            b's',
-            b's',
-            b'>',
-            0x00,
+            0xff, 0xfe, b'<', b'c', b'o', b'n', b'c', b'e', b'a', b'l', b'e', b'd', b' ', b'b',
+            b'y', b' ', b'p', b'a', b'n', b'd', b'a', b'p', b'a', b's', b's', b'>', 0x00,
         ];
         assert_eq!(mask_output(&data, &secrets), expected);
     }

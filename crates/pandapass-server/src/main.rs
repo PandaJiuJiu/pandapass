@@ -1,6 +1,7 @@
 use anyhow::Context;
-use pandapass_db::{DbAuditLogger, connect, migrate};
+use pandapass_db::{connect, migrate, DbAuditLogger};
 use pandapass_server::dynamic_proxy;
+use pandapass_server::dynamic_proxy_redis;
 use pandapass_server::state::{AppState, Config};
 use pandapass_server::{bootstrap, build_router};
 use std::process::ExitCode;
@@ -8,7 +9,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{info, warn};
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -121,7 +122,8 @@ async fn run() -> anyhow::Result<()> {
             }
         } else if let Some(identity) = &config.server_age_identity {
             use sha2::{Digest, Sha256};
-            let key = Sha256::digest(format!("pandapass-audit-chain:{identity}").as_bytes()).to_vec();
+            let key =
+                Sha256::digest(format!("pandapass-audit-chain:{identity}").as_bytes()).to_vec();
             (
                 Arc::new(DbAuditLogger::with_chain_key(db.clone(), key.clone()))
                     as Arc<dyn pandapass_core::AuditLogger>,
@@ -208,6 +210,55 @@ async fn run() -> anyhow::Result<()> {
             server_age_identity,
         };
         tokio::spawn(dynamic_proxy::run_proxy(listener, proxy_config));
+    }
+
+    // Start the Redis dynamic credential proxy if configured. It shares the
+    // database with the HTTP API, so the TTL and revocation state the proxy
+    // enforces at the handshake is the same state the API exposes.
+    if let (Some(listen), Some(upstream)) = (
+        &config.dynamic_proxy_redis_listen,
+        &config.dynamic_proxy_redis_upstream,
+    ) {
+        let listen_addr = listen.parse().map_err(|_| {
+            anyhow::anyhow!("invalid PANDAPASS_DYNAMIC_PROXY_REDIS_LISTEN: {listen}")
+        })?;
+        let upstream_addr = upstream.parse().map_err(|_| {
+            anyhow::anyhow!("invalid PANDAPASS_DYNAMIC_PROXY_REDIS_UPSTREAM: {upstream}")
+        })?;
+
+        // Require server_age_identity for the proxy to decrypt credential passwords.
+        let server_age_identity = match config.server_age_identity.as_deref() {
+            Some(s) if !s.is_empty() => s.to_string(),
+            Some(_) => {
+                anyhow::bail!(
+                    "PANDAPASS_SERVER_AGE_IDENTITY is set but empty; the Redis dynamic proxy cannot decrypt credentials without a valid age identity"
+                );
+            }
+            None => {
+                anyhow::bail!(
+                    "PANDAPASS_SERVER_AGE_IDENTITY must be set when PANDAPASS_DYNAMIC_PROXY_REDIS_LISTEN/UPSTREAM are configured; the Redis dynamic proxy needs it to decrypt credential passwords"
+                );
+            }
+        };
+
+        // Bind first so a port conflict fails fast at startup.
+        let listener = TcpListener::bind(listen_addr)
+            .await
+            .context("bind Redis dynamic proxy listener")?;
+        info!(
+            "Dynamic credential Redis proxy listening on {listen_addr} (upstream {upstream_addr})"
+        );
+
+        let redis_proxy_config = dynamic_proxy_redis::RedisProxyConfig {
+            listen_addr,
+            db: state.db.clone(),
+            upstream_addr,
+            server_age_identity,
+        };
+        tokio::spawn(dynamic_proxy_redis::run_redis_proxy(
+            listener,
+            redis_proxy_config,
+        ));
     }
 
     // Start server
@@ -301,7 +352,6 @@ async fn health_check() -> anyhow::Result<()> {
     let (bind_host, port) = config
         .listen_addr
         .rsplit_once(':')
-        .map(|(h, p)| (h, p))
         .unwrap_or(("0.0.0.0", "8233"));
 
     let port: u16 = port
