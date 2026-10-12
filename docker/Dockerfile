@@ -17,7 +17,7 @@
 #     ghcr.io/pandajiujiu/pandapass:0.0.1
 
 # ── builder: server + cli ────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/rust:1.88-slim AS server-builder
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.88-slim AS server-builder
 ARG TARGETARCH
 
 RUN apt-get update \
@@ -47,7 +47,7 @@ RUN find crates -name "*.rs" -exec touch {} + \
       --bin pandapass-server --bin pandapass-cli
 
 # ── builder: web UI ──────────────────────────────────────────────────────────
-FROM node:22-alpine AS web-builder
+FROM docker.io/library/node:22-alpine AS web-builder
 
 WORKDIR /app
 
