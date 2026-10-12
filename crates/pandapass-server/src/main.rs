@@ -36,11 +36,12 @@ async fn run() -> anyhow::Result<()> {
     }
 
     // `--init` generates the server's age identity on first boot, before any
-    // config is read. It lives here rather than in a compose entrypoint script
-    // because the runtime image is distroless and has no shell to run one.
+    // config is read, then falls through into the normal server startup so a
+    // fresh container comes up ready to serve. It lives here rather than in a
+    // compose entrypoint script because the runtime image is distroless and
+    // has no shell to run one.
     if std::env::args().any(|a| a == "--init") {
         init_storage()?;
-        return Ok(());
     }
 
     // Initialize tracing
