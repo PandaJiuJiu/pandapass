@@ -171,16 +171,10 @@ pub fn sign_x509_from_csr(
     Ok((pem, serial))
 }
 
-/// Generate a new self-signed root CA (for bootstrap / testing).
-/// Returns (cert_pem, key_pem).
-pub fn generate_root_ca(
-    subject_dn: &str,
-    not_before: chrono::DateTime<chrono::Utc>,
-    not_after: chrono::DateTime<chrono::Utc>,
-) -> Result<(String, String)> {
-    let mut params = CertificateParams::default();
-
-    // Parse DN
+/// Parse a comma-separated DN string (`CN=...,O=...`) into rcgen's
+/// `DistinguishedName`. Unknown attributes fall back to CommonName so a typo
+/// never fails the whole generation.
+fn parse_dn(subject_dn: &str) -> rcgen::DistinguishedName {
     let mut dn = rcgen::DistinguishedName::new();
     for part in subject_dn.split(',') {
         let part = part.trim();
@@ -199,7 +193,18 @@ pub fn generate_root_ca(
             dn.push(dn_type, DnValue::Utf8String(v.to_string()));
         }
     }
-    params.distinguished_name = dn;
+    dn
+}
+
+/// Generate a new self-signed root CA (for bootstrap / testing).
+/// Returns (cert_pem, key_pem).
+pub fn generate_root_ca(
+    subject_dn: &str,
+    not_before: chrono::DateTime<chrono::Utc>,
+    not_after: chrono::DateTime<chrono::Utc>,
+) -> Result<(String, String)> {
+    let mut params = CertificateParams::default();
+    params.distinguished_name = parse_dn(subject_dn);
 
     // Validity
     let not_before_ts = not_before.timestamp();
@@ -220,6 +225,67 @@ pub fn generate_root_ca(
     // Generate and self-sign
     let key_pair = KeyPair::generate().map_err(|e| PkiError::Rcgen(e.to_string()))?;
     let cert = params.self_signed(&key_pair)
+        .map_err(|e| PkiError::Rcgen(e.to_string()))?;
+
+    Ok((
+        cert.pem(),
+        key_pair.serialize_pem(),
+    ))
+}
+
+/// Generate a new intermediate CA signed by an existing root CA.
+///
+/// The parent CA's private key is age-encrypted; it is decrypted in-memory
+/// for the signing operation only, exactly like `sign_x509_from_csr`. The
+/// fresh intermediate key pair is returned as PEM so the caller can encrypt it
+/// and store it the same way — the private key never appears in a browser or
+/// on a CLI transcript.
+///
+/// Returns (cert_pem, key_pem).
+pub fn generate_intermediate_ca(
+    parent_ca_key_enc: &EncryptedSecret,
+    parent_ca_cert_pem: &str,
+    parent_master_key: &MasterKey,
+    subject_dn: &str,
+    not_before: chrono::DateTime<chrono::Utc>,
+    not_after: chrono::DateTime<chrono::Utc>,
+) -> Result<(String, String)> {
+    // 1. Decrypt parent CA private key
+    use secrecy::ExposeSecret;
+    let parent_key_pem = parent_ca_key_enc
+        .decrypt_with_purpose(parent_master_key, crate::crypto::key_purpose::CA_X509_KEY)
+        .map_err(|e| PkiError::KeyDecode(e.to_string()))?
+        .expose_secret()
+        .to_string();
+    let parent_key_pair = KeyPair::from_pem(&parent_key_pem)
+        .map_err(|e| PkiError::KeyDecode(e.to_string()))?;
+    let issuer = Issuer::from_ca_cert_pem(parent_ca_cert_pem, parent_key_pair)
+        .map_err(|e| PkiError::CertDecode(e.to_string()))?;
+
+    // 2. Build intermediate CA params
+    let mut params = CertificateParams::default();
+    params.distinguished_name = parse_dn(subject_dn);
+
+    let not_before_ts = not_before.timestamp();
+    let not_after_ts = not_after.timestamp();
+    params.not_before = OffsetDateTime::from_unix_timestamp(not_before_ts)
+        .map_err(|e| PkiError::Rcgen(e.to_string()))?;
+    params.not_after = OffsetDateTime::from_unix_timestamp(not_after_ts)
+        .map_err(|e| PkiError::Rcgen(e.to_string()))?;
+
+    // Intermediate CA: constrained by default (pathLen 0 — it may not issue
+    // further subordinate CAs).
+    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::CrlSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+
+    // 3. Generate fresh key pair and have the parent sign it
+    let key_pair = KeyPair::generate().map_err(|e| PkiError::Rcgen(e.to_string()))?;
+    let cert = params
+        .signed_by(&key_pair, &issuer)
         .map_err(|e| PkiError::Rcgen(e.to_string()))?;
 
     Ok((
@@ -440,6 +506,109 @@ mod tests {
             &ca_cert_pem,
             &MasterKey::generate(),
             &req.csr_pem,
+            not_before,
+            not_after,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PkiError::KeyDecode(_)), "got {err:?}");
+    }
+
+    /// The server-side CA generation path: a root CA and an intermediate
+    /// chained to it. The intermediate must be a CA, must be signed by the
+    /// root, and its fresh private key must actually pair with the certificate
+    /// the caller stores — the key never leaves the process that generated it.
+    #[test]
+    fn server_generated_intermediate_chains_to_the_root() {
+        let not_before = utc(1_700_000_000);
+        let not_after = utc(2_000_000_000);
+
+        let (root_cert_pem, root_key_pem) =
+            generate_root_ca("CN=PandaPass Root,O=PandaPass", not_before, not_after).unwrap();
+        let mk = MasterKey::generate();
+        let root_key_enc = EncryptedSecret::encrypt_with_purpose(
+            &root_key_pem,
+            &mk,
+            crate::crypto::key_purpose::CA_X509_KEY,
+        )
+        .unwrap();
+
+        let (int_cert_pem, int_key_pem) = generate_intermediate_ca(
+            &root_key_enc,
+            &root_cert_pem,
+            &mk,
+            "CN=PandaPass Issuing,O=PandaPass",
+            not_before,
+            not_after,
+        )
+        .unwrap();
+
+        let int_der = pem_decode(&int_cert_pem);
+        let (_, int_cert) = X509Certificate::from_der(&int_der).unwrap();
+
+        // An intermediate is still a CA, and its subject/issuer are as asked.
+        assert!(int_cert.is_ca(), "intermediate must be a CA");
+        assert!(int_cert.subject().to_string().contains("PandaPass Issuing"));
+        assert!(int_cert.issuer().to_string().contains("PandaPass Root"));
+        assert_eq!(int_cert.validity().not_after.timestamp(), not_after.timestamp());
+
+        // Signature verifies against the root's public key.
+        let root_der = pem_decode(&root_cert_pem);
+        let (_, root_cert) = X509Certificate::from_der(&root_der).unwrap();
+        int_cert.verify_signature(Some(root_cert.public_key())).unwrap();
+
+        // The returned key pairs with the returned certificate — rcgen can
+        // use it as an issuer to actually sign an end-entity cert, proving
+        // the stored intermediate works end-to-end.
+        let key_pair = KeyPair::from_pem(&int_key_pem).unwrap();
+        Issuer::from_ca_cert_pem(&int_cert_pem, key_pair).unwrap();
+
+        let req = create_client_csr("alice@prod", &["alice.example.com".to_string()]).unwrap();
+        let signed = sign_x509_from_csr(
+            &EncryptedSecret::encrypt_with_purpose(
+                &int_key_pem,
+                &mk,
+                crate::crypto::key_purpose::CA_X509_KEY,
+            )
+            .unwrap(),
+            &int_cert_pem,
+            &mk,
+            &req.csr_pem,
+            not_before,
+            not_after,
+        )
+        .unwrap();
+        let ee_der = pem_decode(&signed.0);
+        let (_, ee_cert) = X509Certificate::from_der(&ee_der).unwrap();
+        assert!(!ee_cert.is_ca(), "end-entity cert must not be a CA");
+        assert!(
+            ee_cert.issuer().to_string().contains("PandaPass Issuing"),
+            "end-entity must be issued by the intermediate, got {}",
+            ee_cert.issuer()
+        );
+        // And the chain verifies: EE ← intermediate ← root.
+        ee_cert.verify_signature(Some(int_cert.public_key())).unwrap();
+    }
+
+    /// Wrong master key ⇒ the parent key never decrypts, so generation of the
+    /// intermediate never starts.
+    #[test]
+    fn intermediate_generation_with_wrong_master_key_fails() {
+        let not_before = utc(1_700_000_000);
+        let not_after = utc(2_000_000_000);
+        let (root_cert_pem, root_key_pem) =
+            generate_root_ca("CN=PandaPass Root", not_before, not_after).unwrap();
+        let root_key_enc = EncryptedSecret::encrypt_with_purpose(
+            &root_key_pem,
+            &MasterKey::generate(),
+            crate::crypto::key_purpose::CA_X509_KEY,
+        )
+        .unwrap();
+
+        let err = generate_intermediate_ca(
+            &root_key_enc,
+            &root_cert_pem,
+            &MasterKey::generate(),
+            "CN=PandaPass Issuing",
             not_before,
             not_after,
         )

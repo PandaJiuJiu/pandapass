@@ -2,7 +2,7 @@ use axum::{extract::{Path, Query, State}, Json};
 use base64::{engine::general_purpose, Engine};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::models::*;
-use pandapass_core::pki::{sign_x509_from_csr, sign_ssh_cert, PkiError};
+use pandapass_core::pki::{sign_x509_from_csr, sign_ssh_cert, generate_root_ca, generate_intermediate_ca, PkiError};
 use pandapass_core::policy::{PolicyDecision, PolicyInput};
 use pandapass_db as db;
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,17 @@ pub struct CreateCaKeyRequest {
     pub cert_pem: String,
     pub not_before: chrono::DateTime<chrono::Utc>,
     pub not_after: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Deserialize)]
+pub struct GenerateCaKeyRequest {
+    pub kind: CaKeyType,
+    pub subject_dn: String,
+    pub not_before: chrono::DateTime<chrono::Utc>,
+    pub not_after: chrono::DateTime<chrono::Utc>,
+    /// Required when `kind == intermediate`: the id of an existing,
+    /// non-revoked root CA to chain the new intermediate to.
+    pub parent_ca_id: Option<uuid::Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -76,6 +87,83 @@ pub async fn create_ca_key(
 
     let mut audit = AuditContext::new(&auth, AuditAction::CaCreate);
     audit = audit.with_meta(serde_json::json!({ "ca_id": ca_key.id, "kind": req.kind.as_str() }));
+    state.audit.log_success(&mut audit).await.ok();
+
+    Ok(Json(ca_key))
+}
+
+/// Server-side CA generation (D9): the CA key pair is created inside the
+/// server process and the private key is encrypted at rest immediately — it
+/// never passes through a browser textarea or a CLI transcript. The client
+/// only supplies the subject DN and validity window.
+pub async fn generate_ca_key(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Json(req): Json<GenerateCaKeyRequest>,
+) -> Result<Json<CaKey>, ApiError> {
+    if !auth.can(Permission::ManageUsers) {
+        return Err(ApiError::Forbidden("Admin only".into()));
+    }
+
+    if req.subject_dn.trim().is_empty() {
+        return Err(ApiError::BadRequest("subject_dn is required".into()));
+    }
+
+    // Policy evaluation (global scope — CA keys are not project-bound)
+    let input = PolicyInput::for_context(&auth, "", "", Permission::ManageUsers, None);
+    if let PolicyDecision::Deny { policy_id, message } =
+        state.policy_engine.evaluate(None, None, &input).await?
+    {
+        let mut denied = AuditContext::new(&auth, AuditAction::CaCreate);
+        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
+        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+    }
+
+    // Get the user's master key to encrypt the CA private key
+    let mk = crate::routes::secrets::get_master_key(&state, auth.user.id).await?;
+
+    let (cert_pem, key_pem) = match req.kind {
+        CaKeyType::Root => {
+            generate_root_ca(&req.subject_dn, req.not_before, req.not_after)
+                .map_err(|e| ApiError::Internal(e.to_string()))?
+        }
+        CaKeyType::Intermediate => {
+            let parent_id = req.parent_ca_id
+                .ok_or_else(|| ApiError::BadRequest("parent_ca_id is required for an intermediate CA".into()))?;
+            let parent = db::get_ca_key(&state.db, parent_id).await?;
+            if parent.revoked_at.is_some() {
+                return Err(ApiError::BadRequest("parent CA is revoked".into()));
+            }
+            generate_intermediate_ca(
+                &parent.key_enc,
+                &parent.cert_pem,
+                &mk,
+                &req.subject_dn,
+                req.not_before,
+                req.not_after,
+            )
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+        }
+    };
+
+    let key_enc = pandapass_core::crypto::EncryptedSecret::encrypt_with_purpose(
+        &key_pem,
+        &mk,
+        pandapass_core::crypto::key_purpose::CA_X509_KEY,
+    )?;
+
+    let ca_key = db::create_ca_key(
+        &state.db,
+        req.kind,
+        &key_enc,
+        &cert_pem,
+        req.not_before,
+        req.not_after,
+        auth.user.id,
+    ).await?;
+
+    let mut audit = AuditContext::new(&auth, AuditAction::CaCreate);
+    audit = audit.with_meta(serde_json::json!({ "ca_id": ca_key.id, "kind": req.kind.as_str(), "generated": true }));
     state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(ca_key))

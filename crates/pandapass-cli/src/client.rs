@@ -538,6 +538,29 @@ impl ApiClient {
         self.get(&format!("/ca/{id}")).await
     }
 
+    /// Generate a CA key pair entirely on the server (D9). The private key is
+    /// created inside the server process and encrypted at rest; it never
+    /// passes through the CLI, so no key material is ever in a transcript.
+    pub async fn generate_ca_key(
+        &self,
+        kind: CaKeyType,
+        subject_dn: &str,
+        not_before: chrono::DateTime<chrono::Utc>,
+        not_after: chrono::DateTime<chrono::Utc>,
+        parent_ca_id: Option<uuid::Uuid>,
+    ) -> Result<CaKey> {
+        let mut req = serde_json::json!({
+            "kind": kind.as_str(),
+            "subject_dn": subject_dn,
+            "not_before": not_before.to_rfc3339(),
+            "not_after": not_after.to_rfc3339(),
+        });
+        if let Some(id) = parent_ca_id {
+            req["parent_ca_id"] = serde_json::json!(id.to_string());
+        }
+        self.post("/ca/generate", &req).await
+    }
+
     pub async fn revoke_ca_key(&self, id: uuid::Uuid) -> Result<()> {
         let _: serde_json::Value = self.delete(&format!("/ca/{id}")).await?;
         Ok(())

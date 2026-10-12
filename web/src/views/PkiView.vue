@@ -23,7 +23,10 @@ const showCreateSshCertModal = ref(false)
 const creating = ref(false)
 
 const caForm = ref({
+  mode: 'generate' as 'generate' | 'upload',
   kind: 'intermediate' as CaKeyType,
+  subject_dn: '',
+  parent_ca_id: '',
   key_pem: '',
   cert_pem: '',
   not_before: '',
@@ -63,21 +66,46 @@ async function loadSshCerts() {
 
 async function handleCreateCa() {
   caFormError.value = ''
-  if (!caForm.value.key_pem.trim() || !caForm.value.cert_pem.trim()) {
-    caFormError.value = t('pki.caRequired')
-    return
+  const notBefore = caForm.value.not_before || new Date().toISOString()
+  const notAfter = caForm.value.not_after || new Date(Date.now() + 365 * 86_400_000).toISOString()
+
+  if (caForm.value.mode === 'generate') {
+    if (!caForm.value.subject_dn.trim()) {
+      caFormError.value = t('pki.subjectDnRequired')
+      return
+    }
+    if (caForm.value.kind === 'intermediate' && !caForm.value.parent_ca_id) {
+      caFormError.value = t('pki.parentCaRequired')
+      return
+    }
+  } else {
+    if (!caForm.value.key_pem.trim() || !caForm.value.cert_pem.trim()) {
+      caFormError.value = t('pki.caRequired')
+      return
+    }
   }
+
   creating.value = true
   try {
-    await api.createCaKey(
-      caForm.value.kind,
-      caForm.value.key_pem,
-      caForm.value.cert_pem,
-      caForm.value.not_before || new Date().toISOString(),
-      caForm.value.not_after || new Date(Date.now() + 365 * 86_400_000).toISOString(),
-    )
+    if (caForm.value.mode === 'generate') {
+      await api.generateCaKey(
+        caForm.value.kind,
+        caForm.value.subject_dn,
+        notBefore,
+        notAfter,
+        caForm.value.parent_ca_id || undefined,
+      )
+    } else {
+      await api.createCaKey(
+        caForm.value.kind,
+        caForm.value.key_pem,
+        caForm.value.cert_pem,
+        notBefore,
+        notAfter,
+      )
+    }
     showCreateCaModal.value = false
-    caForm.value = { kind: 'intermediate', key_pem: '', cert_pem: '', not_before: '', not_after: '' }
+    caForm.value = { mode: 'generate', kind: 'intermediate', subject_dn: '', parent_ca_id: '', key_pem: '', cert_pem: '', not_before: '', not_after: '' }
     await loadCaKeys()
   } catch (e: any) {
     caFormError.value = e.message ?? t('pki.caCreateFailed')
@@ -171,7 +199,12 @@ onMounted(() => {
 
     <!-- Certificate Authorities -->
     <UiCard variant="outlined" padding>
-      <h2 class="section-title">{{ t('pki.cas') }}</h2>
+      <div class="ssh-head">
+        <h2 class="section-title" style="margin: 0">{{ t('pki.cas') }}</h2>
+        <UiButton variant="primary" size="sm" @click="showCreateCaModal = true">
+          {{ t('pki.addCa') }}
+        </UiButton>
+      </div>
       <UiTable :loading="loading" :empty="!caKeys.length" :empty-text="t('pki.noCas')" :colspan="6">
         <template #head>
           <tr>
@@ -249,24 +282,71 @@ onMounted(() => {
 
     <!-- Create CA Modal -->
     <UiModal :open="showCreateCaModal" :title="t('pki.addCa')" size="lg" @close="showCreateCaModal = false">
+      <div class="segmented">
+        <button
+          type="button"
+          class="segmented-btn"
+          :class="{ active: caForm.mode === 'generate' }"
+          @click="caForm.mode = 'generate'"
+        >
+          {{ t('pki.generateMode') }}
+        </button>
+        <button
+          type="button"
+          class="segmented-btn"
+          :class="{ active: caForm.mode === 'upload' }"
+          @click="caForm.mode = 'upload'"
+        >
+          {{ t('pki.uploadMode') }}
+        </button>
+      </div>
+
       <UiSelect v-model="caForm.kind" :label="t('pki.caKind')">
         <option value="root">{{ t('pki.root') }}</option>
         <option value="intermediate">{{ t('pki.intermediate') }}</option>
       </UiSelect>
-      <UiTextarea
-        v-model="caForm.key_pem"
-        :label="t('pki.privateKeyPem')"
-        :rows="6"
-        mono
-        placeholder="-----BEGIN PRIVATE KEY-----"
-      />
-      <UiTextarea
-        v-model="caForm.cert_pem"
-        :label="t('pki.certPem')"
-        :rows="6"
-        mono
-        placeholder="-----BEGIN CERTIFICATE-----"
-      />
+
+      <template v-if="caForm.mode === 'generate'">
+        <UiInput
+          v-model="caForm.subject_dn"
+          :label="t('pki.subjectDn')"
+          placeholder="CN=PandaPass Root,O=Example"
+        />
+        <UiSelect
+          v-if="caForm.kind === 'intermediate'"
+          v-model="caForm.parent_ca_id"
+          :label="t('pki.parentCa')"
+        >
+          <option value="" disabled>{{ t('pki.selectParentCa') }}</option>
+          <option
+            v-for="ca in caKeys.filter((k) => k.kind === 'root' && !k.revoked_at)"
+            :key="ca.id"
+            :value="ca.id"
+          >
+            Root · {{ ca.id.slice(0, 8) }}…
+          </option>
+        </UiSelect>
+        <p class="hint">{{ t('pki.generateHint') }}</p>
+      </template>
+
+      <template v-else>
+        <UiTextarea
+          v-model="caForm.key_pem"
+          :label="t('pki.privateKeyPem')"
+          :rows="6"
+          mono
+          placeholder="-----BEGIN PRIVATE KEY-----"
+        />
+        <UiTextarea
+          v-model="caForm.cert_pem"
+          :label="t('pki.certPem')"
+          :rows="6"
+          mono
+          placeholder="-----BEGIN CERTIFICATE-----"
+        />
+        <p class="hint">{{ t('pki.uploadHint') }}</p>
+      </template>
+
       <div class="row-fields">
         <UiInput v-model="caForm.not_before" :label="t('pki.notBeforeLabel')" type="datetime-local" />
         <UiInput v-model="caForm.not_after" :label="t('pki.notAfterLabel')" type="datetime-local" />
@@ -352,5 +432,35 @@ onMounted(() => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0 var(--space-4);
+}
+
+.segmented {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.segmented-btn {
+  flex: 1;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.segmented-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.hint {
+  margin: var(--space-2) 0 0;
+  font-size: 12px;
+  color: var(--text-faint);
 }
 </style>

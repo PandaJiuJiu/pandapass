@@ -88,6 +88,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/policies/bindings", get(policies::list_policy_bindings).post(policies::bind_policy))
         .route("/api/v1/policies/bindings/{id}", delete(policies::unbind_policy))
         .route("/api/v1/ca", get(pki::list_ca_keys).post(pki::create_ca_key))
+        .route("/api/v1/ca/generate", post(pki::generate_ca_key))
         .route("/api/v1/ca/{id}", get(pki::get_ca_key).delete(pki::revoke_ca_key))
         .route("/api/v1/ca/{id}/sign", post(pki::sign_csr))
         .route("/api/v1/ca/{id}/sign-ssh", post(pki::sign_ssh_cert_route))

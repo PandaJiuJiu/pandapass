@@ -444,6 +444,14 @@ export const api = {
 
   createCaKey: (kind: CaKeyType, keyPem: string, certPem: string, notBefore: string, notAfter: string) =>
     post<CaKey>('/ca', { kind, key_pem: keyPem, cert_pem: certPem, not_before: notBefore, not_after: notAfter }),
+  generateCaKey: (kind: CaKeyType, subjectDn: string, notBefore: string, notAfter: string, parentCaId?: string) =>
+    post<CaKey>('/ca/generate', {
+      kind,
+      subject_dn: subjectDn,
+      not_before: notBefore,
+      not_after: notAfter,
+      ...(parentCaId ? { parent_ca_id: parentCaId } : {}),
+    }),
 
   getCaKey: (id: string) => get<CaKey>(`/ca/${id}`),
 

@@ -194,10 +194,24 @@ pub enum CaCmd {
     List { #[arg(long)] include_revoked: bool },
     Create {
         kind: String,
-        key_pem: String,
-        cert_pem: String,
         not_before: String,
         not_after: String,
+        /// Generate the key pair on the server (D9) instead of uploading a
+        /// private key. The private key never leaves the server process.
+        #[arg(long)]
+        generate: bool,
+        /// Subject DN (e.g. `CN=PandaPass Root,O=PandaPass`) when generating.
+        #[arg(long)]
+        subject_dn: Option<String>,
+        /// Parent CA id (required when generating an intermediate).
+        #[arg(long)]
+        parent_ca_id: Option<Uuid>,
+        /// PEM private key (required when not using --generate).
+        #[arg(long)]
+        key_pem: Option<String>,
+        /// PEM certificate (required when not using --generate).
+        #[arg(long)]
+        cert_pem: Option<String>,
     },
     Get { id: Uuid },
     Revoke { id: Uuid },
@@ -2027,7 +2041,7 @@ async fn run_ca(api: &ApiClient, cmd: CaCmd) -> Result<()> {
                 println!("{}  {}  {}  revoked: {}", k.id, k.kind.as_str(), k.not_after.format("%Y-%m-%d"), k.revoked_at.map_or("no", |_| "yes"));
             }
         }
-        CaCmd::Create { kind, key_pem, cert_pem, not_before, not_after } => {
+        CaCmd::Create { kind, key_pem, cert_pem, subject_dn, parent_ca_id, generate, not_before, not_after } => {
             let kind = match kind.as_str() {
                 "root" => pandapass_core::models::CaKeyType::Root,
                 "intermediate" => pandapass_core::models::CaKeyType::Intermediate,
@@ -2035,7 +2049,21 @@ async fn run_ca(api: &ApiClient, cmd: CaCmd) -> Result<()> {
             };
             let not_before = chrono::DateTime::parse_from_rfc3339(&not_before)?.with_timezone(&chrono::Utc);
             let not_after = chrono::DateTime::parse_from_rfc3339(&not_after)?.with_timezone(&chrono::Utc);
-            let ca = api.create_ca_key(kind, &key_pem, &cert_pem, not_before, not_after).await?;
+
+            let ca = if generate {
+                let subject_dn = subject_dn
+                    .ok_or_else(|| anyhow::anyhow!("--subject-dn is required with --generate"))?;
+                if kind == pandapass_core::models::CaKeyType::Intermediate && parent_ca_id.is_none() {
+                    anyhow::bail!("--parent-ca-id is required when generating an intermediate CA");
+                }
+                api.generate_ca_key(kind, &subject_dn, not_before, not_after, parent_ca_id).await?
+            } else {
+                let key_pem = key_pem
+                    .ok_or_else(|| anyhow::anyhow!("--key-pem is required unless --generate is set"))?;
+                let cert_pem = cert_pem
+                    .ok_or_else(|| anyhow::anyhow!("--cert-pem is required unless --generate is set"))?;
+                api.create_ca_key(kind, &key_pem, &cert_pem, not_before, not_after).await?
+            };
             println!("Created CA key: {} ({})", ca.kind.as_str(), ca.id);
         }
         CaCmd::Get { id } => {

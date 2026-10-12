@@ -1076,6 +1076,114 @@ async fn policy_bindings_admin_only() {
 
 // ── PKI/CA and SSH (M4) ───────────────────────────────────────────────────────
 
+/// Server-side CA generation (D9): a CA key pair is created inside the
+/// server, the private key never leaves it, and an intermediate can be
+/// chained to a generated root. The API must reject intermediate generation
+/// without a parent, and non-admins must not be able to generate at all.
+#[tokio::test]
+async fn server_can_generate_ca_keys_without_the_private_key_ever_reaching_the_client() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+
+    // 1. Generate a root CA — no key_pem/cert_pem in the request.
+    let gen_root = h
+        .post(
+            "/api/v1/ca/generate",
+            &admin,
+            json!({
+                "kind": "root",
+                "subject_dn": "CN=PandaPass Test Root,O=PandaPass",
+                "not_before": "2024-01-01T00:00:00Z",
+                "not_after": "2034-01-01T00:00:00Z",
+            }),
+        )
+        .await;
+    assert!(
+        gen_root.ok(),
+        "generate root CA failed: {:?}",
+        gen_root.body
+    );
+    assert_eq!(gen_root.body["kind"], "root");
+    let root_cert = gen_root.body["cert_pem"].as_str().unwrap();
+    assert!(
+        root_cert.contains("BEGIN CERTIFICATE"),
+        "generated root must carry a certificate"
+    );
+    // The response must not leak the private key.
+    assert!(
+        gen_root.body.get("key_pem").is_none(),
+        "response must not contain the private key"
+    );
+    let root_id = gen_root.body["id"].as_str().unwrap().to_string();
+
+    // 2. Chain an intermediate to the generated root.
+    let gen_int = h
+        .post(
+            "/api/v1/ca/generate",
+            &admin,
+            json!({
+                "kind": "intermediate",
+                "subject_dn": "CN=PandaPass Issuing,O=PandaPass",
+                "not_before": "2024-01-01T00:00:00Z",
+                "not_after": "2034-01-01T00:00:00Z",
+                "parent_ca_id": root_id,
+            }),
+        )
+        .await;
+    assert!(
+        gen_int.ok(),
+        "generate intermediate CA failed: {:?}",
+        gen_int.body
+    );
+    assert_eq!(gen_int.body["kind"], "intermediate");
+
+    // 3. Intermediate generation without a parent is a client error.
+    let no_parent = h
+        .post(
+            "/api/v1/ca/generate",
+            &admin,
+            json!({
+                "kind": "intermediate",
+                "subject_dn": "CN=Orphan,O=PandaPass",
+                "not_before": "2024-01-01T00:00:00Z",
+                "not_after": "2034-01-01T00:00:00Z",
+            }),
+        )
+        .await;
+    assert_eq!(
+        no_parent.status,
+        StatusCode::BAD_REQUEST,
+        "intermediate without parent_ca_id must be a 400"
+    );
+
+    // 4. Non-admin cannot generate.
+    let writer = h.token(&admin, &["write:secret"]).await;
+    let denied = h
+        .post(
+            "/api/v1/ca/generate",
+            &writer,
+            json!({
+                "kind": "root",
+                "subject_dn": "CN=Evil,O=PandaPass",
+                "not_before": "2024-01-01T00:00:00Z",
+                "not_after": "2034-01-01T00:00:00Z",
+            }),
+        )
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    // 5. The generated root can be listed/read like any other CA key.
+    let list = h.get("/api/v1/ca?include_revoked=true", &admin).await;
+    assert!(list.ok());
+    let ids: Vec<&str> = list.body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|k| k["id"].as_str())
+        .collect();
+    assert!(ids.contains(&root_id.as_str()), "generated root must be listed");
+}
+
 /// Only admins can manage CA keys.
 #[tokio::test]
 async fn ca_keys_admin_only() {
