@@ -1,10 +1,10 @@
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::response::IntoResponse;
-use pandapass_core::models::*;
-use pandapass_db as db;
 use pandapass_core::crypto::{generate_token, hash_token};
+use pandapass_core::models::*;
 use pandapass_core::CoreError;
+use pandapass_db as db;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 
@@ -30,7 +30,11 @@ pub fn parse_trusted_cidrs(raw: &[String]) -> Vec<(IpAddr, u8)> {
             match s.parse::<ipnet::IpNet>() {
                 Ok(n) => Some((n.network(), n.prefix_len())),
                 Err(e) => {
-                    tracing::warn!("PANDAPASS_TRUSTED_PROXY_CIDRS: ignoring bad entry {:?}: {}", s, e);
+                    tracing::warn!(
+                        "PANDAPASS_TRUSTED_PROXY_CIDRS: ignoring bad entry {:?}: {}",
+                        s,
+                        e
+                    );
                     None
                 }
             }
@@ -45,14 +49,30 @@ fn ip_in_trusted(ip: IpAddr, trusted: &[(IpAddr, u8)]) -> bool {
             0 => return true, // /0 covers the whole address space
             n if *n <= 32 => {
                 if ip.is_ipv4() && net.is_ipv4() {
-                    let ip_v = u32::from(ip.to_string().parse::<std::net::Ipv4Addr>().unwrap_or(Ipv4Addr::UNSPECIFIED));
-                    let net_v = u32::from(net.to_string().parse::<std::net::Ipv4Addr>().unwrap_or(Ipv4Addr::UNSPECIFIED));
-                    let mask_v = if *prefix == 0 { 0u32 } else { !0u32 << (32 - *prefix) };
+                    let ip_v = u32::from(
+                        ip.to_string()
+                            .parse::<std::net::Ipv4Addr>()
+                            .unwrap_or(Ipv4Addr::UNSPECIFIED),
+                    );
+                    let net_v = u32::from(
+                        net.to_string()
+                            .parse::<std::net::Ipv4Addr>()
+                            .unwrap_or(Ipv4Addr::UNSPECIFIED),
+                    );
+                    let mask_v = if *prefix == 0 {
+                        0u32
+                    } else {
+                        !0u32 << (32 - *prefix)
+                    };
                     (ip_v & mask_v) == (net_v & mask_v)
                 } else if ip.is_ipv6() && net.is_ipv6() {
                     let ip_v = u128::from_str(&ip.to_string()).unwrap_or(0);
                     let net_v = u128::from_str(&net.to_string()).unwrap_or(0);
-                    let mask_v = if *prefix == 0 { 0u128 } else { !0u128 << (128 - *prefix) };
+                    let mask_v = if *prefix == 0 {
+                        0u128
+                    } else {
+                        !0u128 << (128 - *prefix)
+                    };
                     (ip_v & mask_v) == (net_v & mask_v)
                 } else {
                     false
@@ -174,7 +194,10 @@ impl Auth {
         state: &AppState,
     ) -> Result<Option<AuthContext>, ApiError> {
         let hash = hash_token(token).map_err(ApiError::from)?;
-        let Some(svc) = db::get_token_by_hash(&state.db, &hash).await.map_err(ApiError::from)? else {
+        let Some(svc) = db::get_token_by_hash(&state.db, &hash)
+            .await
+            .map_err(ApiError::from)?
+        else {
             return Ok(None);
         };
 
@@ -218,7 +241,10 @@ impl Auth {
         state: &AppState,
     ) -> Result<Option<AuthContext>, ApiError> {
         let hash = hash_token(token).map_err(ApiError::from)?;
-        let Some(session) = db::get_session_by_hash(&state.db, &hash).await.map_err(ApiError::from)? else {
+        let Some(session) = db::get_session_by_hash(&state.db, &hash)
+            .await
+            .map_err(ApiError::from)?
+        else {
             return Ok(None);
         };
 
@@ -273,19 +299,13 @@ where
         // inserted earlier by the outer client_ip_middleware.
         let app_state = AppState::from_ref(state);
         let mut ctx = Auth::from_headers(&parts.headers, &app_state).await?;
-        ctx.client_ip = parts
-            .extensions
-            .get::<ClientIp>()
-            .map(|c| c.0.to_string());
+        ctx.client_ip = parts.extensions.get::<ClientIp>().map(|c| c.0.to_string());
         ctx.user_agent = parts
             .headers
             .get(http::header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        ctx.request_id = parts
-            .extensions
-            .get::<String>()
-            .cloned();
+        ctx.request_id = parts.extensions.get::<String>().cloned();
         Ok(Auth(ctx))
     }
 }
@@ -306,7 +326,10 @@ pub async fn require_csrf(
     headers: &axum::http::HeaderMap,
     method: &http::Method,
 ) -> Result<(), ApiError> {
-    if method == http::Method::GET || method == http::Method::HEAD || method == http::Method::OPTIONS {
+    if method == http::Method::GET
+        || method == http::Method::HEAD
+        || method == http::Method::OPTIONS
+    {
         return Ok(());
     }
 
@@ -329,7 +352,9 @@ pub async fn require_csrf(
 
     match (cookie_token, header_token) {
         (Some(a), Some(b)) if a == b && !a.is_empty() => Ok(()),
-        _ => Err(ApiError::Forbidden("CSRF token missing or mismatched".into())),
+        _ => Err(ApiError::Forbidden(
+            "CSRF token missing or mismatched".into(),
+        )),
     }
 }
 
@@ -396,10 +421,12 @@ impl From<CoreError> for ApiError {
 impl From<pandapass_core::rbac::RbacError> for ApiError {
     fn from(e: pandapass_core::rbac::RbacError) -> Self {
         match e {
-            pandapass_core::rbac::RbacError::NotMember | pandapass_core::rbac::RbacError::InsufficientRole => {
+            pandapass_core::rbac::RbacError::NotMember
+            | pandapass_core::rbac::RbacError::InsufficientRole => {
                 ApiError::Forbidden(e.to_string())
             }
-            pandapass_core::rbac::RbacError::ProjectNotFound | pandapass_core::rbac::RbacError::EnvironmentNotFound => {
+            pandapass_core::rbac::RbacError::ProjectNotFound
+            | pandapass_core::rbac::RbacError::EnvironmentNotFound => {
                 ApiError::NotFound(e.to_string())
             }
         }
@@ -421,9 +448,15 @@ impl From<sqlx::Error> for ApiError {
 impl From<pandapass_core::policy::PolicyError> for ApiError {
     fn from(e: pandapass_core::policy::PolicyError) -> Self {
         match e {
-            pandapass_core::policy::PolicyError::Compile(m) => ApiError::Internal(format!("Policy compile error: {}", m)),
-            pandapass_core::policy::PolicyError::Engine(m) => ApiError::Internal(format!("Policy engine error: {}", m)),
-            pandapass_core::policy::PolicyError::NotInitialized => ApiError::Internal("Policy engine not initialized".into()),
+            pandapass_core::policy::PolicyError::Compile(m) => {
+                ApiError::Internal(format!("Policy compile error: {}", m))
+            }
+            pandapass_core::policy::PolicyError::Engine(m) => {
+                ApiError::Internal(format!("Policy engine error: {}", m))
+            }
+            pandapass_core::policy::PolicyError::NotInitialized => {
+                ApiError::Internal("Policy engine not initialized".into())
+            }
         }
     }
 }

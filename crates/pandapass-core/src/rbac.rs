@@ -1,5 +1,5 @@
-use crate::models::{AuthContext, ProjectRole, GlobalRole};
 pub use crate::models::Permission;
+use crate::models::{AuthContext, GlobalRole, ProjectRole};
 
 /// RBAC service for permission checks
 pub struct Rbac;
@@ -23,12 +23,18 @@ impl Rbac {
         if ctx.user.global_role == GlobalRole::Admin {
             return true;
         }
-        ctx.project_id == Some(project_id) && ctx.env_id == Some(env_id) && ctx.project_role.is_some()
+        ctx.project_id == Some(project_id)
+            && ctx.env_id == Some(env_id)
+            && ctx.project_role.is_some()
     }
 
     /// Get required permission for secret operations
     pub fn secret_perm(read: bool) -> Permission {
-        if read { Permission::ReadSecret } else { Permission::WriteSecret }
+        if read {
+            Permission::ReadSecret
+        } else {
+            Permission::WriteSecret
+        }
     }
 
     /// Check secret access with project/env validation
@@ -74,7 +80,10 @@ impl Rbac {
     }
 
     /// Check if service token has scope
-    pub fn token_has_scope(token: &crate::models::ServiceToken, scope: crate::models::TokenScope) -> bool {
+    pub fn token_has_scope(
+        token: &crate::models::ServiceToken,
+        scope: crate::models::TokenScope,
+    ) -> bool {
         token.scopes.contains(&scope)
     }
 }
@@ -129,10 +138,7 @@ pub struct AuditContext<'a> {
 }
 
 impl<'a> AuditContext<'a> {
-    pub fn new(
-        auth: &'a AuthContext,
-        action: crate::models::AuditAction,
-    ) -> Self {
+    pub fn new(auth: &'a AuthContext, action: crate::models::AuditAction) -> Self {
         Self {
             auth,
             action,
@@ -190,23 +196,21 @@ impl<'a> AuditContext<'a> {
     }
 
     pub fn user_id(&self) -> Option<uuid::Uuid> {
-        self.auth.session.as_ref().map(|s| s.user_id)
-            .or(self.auth.service_token.as_ref().map(|t| t.created_by))
+        self.auth.session.as_ref().map(|s| s.user_id).or(self
+            .auth
+            .service_token
+            .as_ref()
+            .map(|t| t.created_by))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{
-        GlobalRole, ServiceToken, TokenScope, UserPublic,
-    };
+    use crate::models::{GlobalRole, ServiceToken, TokenScope, UserPublic};
     use chrono::{Duration, Utc};
 
-    fn ctx_with_token(
-        scopes: Vec<TokenScope>,
-        token_project: Option<uuid::Uuid>,
-    ) -> AuthContext {
+    fn ctx_with_token(scopes: Vec<TokenScope>, token_project: Option<uuid::Uuid>) -> AuthContext {
         AuthContext {
             user: UserPublic {
                 id: uuid::Uuid::now_v7(),
@@ -253,7 +257,10 @@ mod tests {
         assert!(ctx.can(Permission::ReadSecret), "read should be allowed");
         assert!(!ctx.can(Permission::WriteSecret), "write must be denied");
         assert!(!ctx.can(Permission::DeleteSecret), "delete must be denied");
-        assert!(!ctx.can(Permission::ListSecrets), "list needs its own scope");
+        assert!(
+            !ctx.can(Permission::ListSecrets),
+            "list needs its own scope"
+        );
     }
 
     /// A write token should not imply read. They are separate scopes on
@@ -289,13 +296,25 @@ mod tests {
         let mut ctx = ctx_with_token(vec![TokenScope::ReadSecret, TokenScope::WriteSecret], None);
 
         ctx.service_token.as_mut().unwrap().revoked_at = Some(Utc::now());
-        assert!(!ctx.can(Permission::ReadSecret), "revoked token must not read");
-        assert!(!ctx.can(Permission::WriteSecret), "revoked token must not write");
+        assert!(
+            !ctx.can(Permission::ReadSecret),
+            "revoked token must not read"
+        );
+        assert!(
+            !ctx.can(Permission::WriteSecret),
+            "revoked token must not write"
+        );
 
         ctx.service_token.as_mut().unwrap().revoked_at = None;
         ctx.service_token.as_mut().unwrap().expires_at = Some(Utc::now() - Duration::seconds(1));
-        assert!(!ctx.can(Permission::ReadSecret), "expired token must not read");
-        assert!(!ctx.can(Permission::WriteSecret), "expired token must not write");
+        assert!(
+            !ctx.can(Permission::ReadSecret),
+            "expired token must not read"
+        );
+        assert!(
+            !ctx.can(Permission::WriteSecret),
+            "expired token must not write"
+        );
     }
 
     /// A token must not be able to widen its own authority. If it could mint or
@@ -364,10 +383,7 @@ mod tests {
     /// Both scopes are independent and stack when both are granted.
     #[test]
     fn read_and_run_scopes_compose() {
-        let ctx = ctx_with_token(
-            vec![TokenScope::ReadSecret, TokenScope::RunSecret],
-            None,
-        );
+        let ctx = ctx_with_token(vec![TokenScope::ReadSecret, TokenScope::RunSecret], None);
         assert!(ctx.can(Permission::ReadSecret));
         assert!(ctx.can(Permission::RunSecret));
     }

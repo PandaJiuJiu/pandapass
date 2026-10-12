@@ -54,7 +54,8 @@ impl RateLimiter {
         bucket.count += 1;
 
         if bucket.count > self.max_requests {
-            let retry_after = self.window
+            let retry_after = self
+                .window
                 .saturating_sub(now.duration_since(bucket.window_start))
                 .as_secs()
                 .max(1);

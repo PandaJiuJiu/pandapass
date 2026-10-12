@@ -1,17 +1,22 @@
 use anyhow::Result;
-use reqwest::{header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue}, Client, Method};
+use reqwest::{
+    header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE},
+    Client, Method,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use pandapass_core::models::{
-    AuditLog, CaKey, CaKeyType, CreateEnvRequest, CreateProjectRequest, DynamicCred, DynamicCredKind, PaginatedResponse, Policy, PolicyBinding,
-    ProjectRole, ProjectWithRole, SshCert, SshKeyType, ServiceToken, UpdateMemberRequest,
+    AuditLog, CaKey, CaKeyType, CreateEnvRequest, CreateProjectRequest, DynamicCred,
+    DynamicCredKind, PaginatedResponse, Policy, PolicyBinding, ProjectRole, ProjectWithRole,
+    ServiceToken, SshCert, SshKeyType, UpdateMemberRequest,
 };
 
 use crate::model::{
-    AddMemberRequest, CreateTokenRequest, CreateTokenResponse, LoginResponse, ProjectMemberDetail, SecretValueResponse,
+    AddMemberRequest, CreateTokenRequest, CreateTokenResponse, LoginResponse, ProjectMemberDetail,
+    SecretValueResponse,
 };
 
 /// CLI configuration stored in ~/.pandapass/config.json
@@ -96,13 +101,17 @@ impl ApiClient {
         let url = format!("{}/api/v1{}", self.base_url.trim_end_matches('/'), path);
         let token = self.auth_token.read().await.clone();
 
-        let mut req = self.client
+        let mut req = self
+            .client
             .request(method, &url)
             .header(CONTENT_TYPE, "application/json")
             .header("x-pandapass-agent", "cli");
 
         if let Some(t) = token {
-            req = req.header(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {t}"))?);
+            req = req.header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {t}"))?,
+            );
         }
         if let Some(b) = body {
             req = req.json(b);
@@ -231,7 +240,10 @@ impl ApiClient {
         Ok(self.get_project(slug).await?.project.id)
     }
 
-    pub async fn list_envs(&self, project_slug: &str) -> Result<Vec<pandapass_core::models::Environment>> {
+    pub async fn list_envs(
+        &self,
+        project_slug: &str,
+    ) -> Result<Vec<pandapass_core::models::Environment>> {
         self.get(&format!("/projects/{project_slug}/envs")).await
     }
 
@@ -278,16 +290,14 @@ impl ApiClient {
             key: key.to_string(),
             value: value.to_string(),
         };
-        self.post(&format!("/projects/{project_slug}/envs/{env_slug}/secrets"), &req)
-            .await
+        self.post(
+            &format!("/projects/{project_slug}/envs/{env_slug}/secrets"),
+            &req,
+        )
+        .await
     }
 
-    pub async fn delete_secret(
-        &self,
-        project_slug: &str,
-        env_slug: &str,
-        key: &str,
-    ) -> Result<()> {
+    pub async fn delete_secret(&self, project_slug: &str, env_slug: &str, key: &str) -> Result<()> {
         let _: serde_json::Value = self
             .delete(&format!(
                 "/projects/{project_slug}/envs/{env_slug}/secrets/{key}"
@@ -298,10 +308,7 @@ impl ApiClient {
 
     // ─────────────────────────── members ───────────────────────────
 
-    pub async fn list_members(
-        &self,
-        project_slug: &str,
-    ) -> Result<Vec<ProjectMemberDetail>> {
+    pub async fn list_members(&self, project_slug: &str) -> Result<Vec<ProjectMemberDetail>> {
         self.get(&format!("/projects/{project_slug}/members")).await
     }
 
@@ -326,18 +333,11 @@ impl ApiClient {
         role: ProjectRole,
     ) -> Result<serde_json::Value> {
         let req = UpdateMemberRequest { role };
-        self.patch(
-            &format!("/projects/{project_slug}/members/{user_id}"),
-            &req,
-        )
-        .await
+        self.patch(&format!("/projects/{project_slug}/members/{user_id}"), &req)
+            .await
     }
 
-    pub async fn remove_member(
-        &self,
-        project_slug: &str,
-        user_id: uuid::Uuid,
-    ) -> Result<()> {
+    pub async fn remove_member(&self, project_slug: &str, user_id: uuid::Uuid) -> Result<()> {
         let _: serde_json::Value = self
             .delete(&format!("/projects/{project_slug}/members/{user_id}"))
             .await?;
@@ -404,7 +404,8 @@ impl ApiClient {
         project_slug: &str,
         env_slug: &str,
     ) -> Result<Vec<DynamicCred>> {
-        self.get(&format!("/projects/{project_slug}/envs/{env_slug}/creds")).await
+        self.get(&format!("/projects/{project_slug}/envs/{env_slug}/creds"))
+            .await
     }
 
     pub async fn create_dynamic_cred(
@@ -420,7 +421,11 @@ impl ApiClient {
             "username": username,
             "ttl_seconds": ttl_seconds,
         });
-        self.post(&format!("/projects/{project_slug}/envs/{env_slug}/creds"), &req).await
+        self.post(
+            &format!("/projects/{project_slug}/envs/{env_slug}/creds"),
+            &req,
+        )
+        .await
     }
 
     pub async fn revoke_dynamic_cred(
@@ -429,7 +434,11 @@ impl ApiClient {
         env_slug: &str,
         id: uuid::Uuid,
     ) -> Result<()> {
-        let _: serde_json::Value = self.delete(&format!("/projects/{project_slug}/envs/{env_slug}/creds/{id}")).await?;
+        let _: serde_json::Value = self
+            .delete(&format!(
+                "/projects/{project_slug}/envs/{env_slug}/creds/{id}"
+            ))
+            .await?;
         Ok(())
     }
 

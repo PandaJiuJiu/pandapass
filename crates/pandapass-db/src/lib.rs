@@ -154,10 +154,8 @@ fn row_to_user(row: &SqliteRow) -> User {
             .filter(|s| !s.is_empty())
             .map(|s| dec_json(&s)),
         totp_enabled: row.get::<i64, _>("totp_enabled") != 0,
-        recovery_codes_hash: serde_json::from_str(
-            &row.get::<String, _>("recovery_codes_hash"),
-        )
-        .unwrap_or_default(),
+        recovery_codes_hash: serde_json::from_str(&row.get::<String, _>("recovery_codes_hash"))
+            .unwrap_or_default(),
         global_role: parse_global_role(&row.get::<String, _>("global_role")),
         created_at: parse_ts(&row.get::<String, _>("created_at")),
         disabled_at: parse_opt_ts(row.get("disabled_at")),
@@ -296,10 +294,8 @@ fn row_to_project(row: &SqliteRow) -> Project {
         name: row.get("name"),
         slug: row.get("slug"),
         description: row.get("description"),
-        created_by: uuid::Uuid::parse_str(
-            row.get::<String, _>("created_by").as_str(),
-        )
-        .unwrap_or(uuid::Uuid::nil()),
+        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
         created_at: parse_ts(&row.get::<String, _>("created_at")),
         updated_at: parse_ts(&row.get::<String, _>("updated_at")),
     }
@@ -419,11 +415,12 @@ pub async fn get_member_role(
     project_id: uuid::Uuid,
     user_id: uuid::Uuid,
 ) -> Result<Option<ProjectRole>> {
-    let row = sqlx::query("SELECT role FROM project_members WHERE project_id = ?1 AND user_id = ?2")
-        .bind(project_id.to_string())
-        .bind(user_id.to_string())
-        .fetch_optional(db)
-        .await?;
+    let row =
+        sqlx::query("SELECT role FROM project_members WHERE project_id = ?1 AND user_id = ?2")
+            .bind(project_id.to_string())
+            .bind(user_id.to_string())
+            .fetch_optional(db)
+            .await?;
     Ok(row.map(|r| parse_project_role(&r.get::<String, _>("role"))))
 }
 
@@ -573,9 +570,7 @@ pub async fn upsert_secret(
             let id = uuid::Uuid::parse_str(row.get::<String, _>("id").as_str())
                 .unwrap_or(uuid::Uuid::nil());
             let version: i64 = row.get("version");
-            let was_deleted: bool = row
-                .get::<Option<String>, _>("deleted_at")
-                .is_some();
+            let was_deleted: bool = row.get::<Option<String>, _>("deleted_at").is_some();
 
             // Archive the old value into version history (only if there was a
             // live value worth preserving; a soft-deleted row still holds the
@@ -769,11 +764,7 @@ pub async fn all_secrets(db: &Db) -> Result<Vec<Secret>> {
 
 // ─────────────────────────── envelopes ───────────────────────────
 
-pub async fn put_envelope(
-    db: &Db,
-    user_id: uuid::Uuid,
-    ciphertext: &str,
-) -> Result<()> {
+pub async fn put_envelope(db: &Db, user_id: uuid::Uuid, ciphertext: &str) -> Result<()> {
     sqlx::query(
         "INSERT INTO envelopes (id, user_id, ciphertext, created_at)
          VALUES (?1, ?2, ?3, ?4)
@@ -871,20 +862,20 @@ fn row_to_token(row: &SqliteRow) -> ServiceToken {
 }
 
 pub async fn get_token_by_hash(db: &Db, hash: &str) -> Result<Option<ServiceToken>> {
-    let row = sqlx::query(
-        "SELECT * FROM service_tokens WHERE token_hash = ?1 AND revoked_at IS NULL",
-    )
-    .bind(hash)
-    .fetch_optional(db)
-    .await?;
+    let row =
+        sqlx::query("SELECT * FROM service_tokens WHERE token_hash = ?1 AND revoked_at IS NULL")
+            .bind(hash)
+            .fetch_optional(db)
+            .await?;
     Ok(row.as_ref().map(row_to_token))
 }
 
 pub async fn list_tokens(db: &Db, user_id: uuid::Uuid) -> Result<Vec<ServiceToken>> {
-    let rows = sqlx::query("SELECT * FROM service_tokens WHERE created_by = ?1 ORDER BY created_at DESC")
-        .bind(user_id.to_string())
-        .fetch_all(db)
-        .await?;
+    let rows =
+        sqlx::query("SELECT * FROM service_tokens WHERE created_by = ?1 ORDER BY created_at DESC")
+            .bind(user_id.to_string())
+            .fetch_all(db)
+            .await?;
     Ok(rows.iter().map(row_to_token).collect())
 }
 
@@ -1047,10 +1038,11 @@ fn row_to_audit(row: &SqliteRow) -> AuditLog {
 }
 
 pub async fn count_audit(db: &Db, project_id: Option<uuid::Uuid>) -> Result<i64> {
-    let row = sqlx::query("SELECT COUNT(*) as c FROM audit_log WHERE (?1 IS NULL OR project_id = ?1)")
-        .bind(project_id.map(|v| v.to_string()))
-        .fetch_one(db)
-        .await?;
+    let row =
+        sqlx::query("SELECT COUNT(*) as c FROM audit_log WHERE (?1 IS NULL OR project_id = ?1)")
+            .bind(project_id.map(|v| v.to_string()))
+            .fetch_one(db)
+            .await?;
     Ok(row.get::<i64, _>("c"))
 }
 
@@ -1068,7 +1060,10 @@ pub struct DbAuditLogger {
 
 impl DbAuditLogger {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool, chain_key: Vec::new() }
+        Self {
+            pool,
+            chain_key: Vec::new(),
+        }
     }
 
     /// Construct with a chain key, derived e.g. from the server's age identity.
@@ -1081,7 +1076,11 @@ impl DbAuditLogger {
     /// The field encodings here MUST match what `verify_audit_chain` reads
     /// back from the database — same strings, same order — or the chain
     /// would report tampering on entries that were written correctly.
-    fn compute_entry_hash(&self, prev_hash: &str, entry: &pandapass_core::models::AuditLog) -> String {
+    fn compute_entry_hash(
+        &self,
+        prev_hash: &str,
+        entry: &pandapass_core::models::AuditLog,
+    ) -> String {
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
         type HmacSha256 = Hmac<Sha256>;
@@ -1093,14 +1092,32 @@ impl DbAuditLogger {
             pandapass_core::models::AuditOutcome::Error => "error",
         };
 
-        let mut mac = HmacSha256::new_from_slice(&self.chain_key)
-            .expect("HMAC accepts any key length");
+        let mut mac =
+            HmacSha256::new_from_slice(&self.chain_key).expect("HMAC accepts any key length");
         mac.update(prev_hash.as_bytes());
         mac.update(entry.ts.to_rfc3339().as_bytes());
-        mac.update(entry.user_id.map(|v| v.to_string()).unwrap_or_default().as_bytes());
+        mac.update(
+            entry
+                .user_id
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+                .as_bytes(),
+        );
         mac.update(entry.action.as_str().as_bytes());
-        mac.update(entry.project_id.map(|v| v.to_string()).unwrap_or_default().as_bytes());
-        mac.update(entry.env_id.map(|v| v.to_string()).unwrap_or_default().as_bytes());
+        mac.update(
+            entry
+                .project_id
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        mac.update(
+            entry
+                .env_id
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+                .as_bytes(),
+        );
         mac.update(entry.secret_key.as_deref().unwrap_or("").as_bytes());
         mac.update(entry.ip.as_deref().unwrap_or("").as_bytes());
         mac.update(entry.user_agent.as_deref().unwrap_or("").as_bytes());
@@ -1132,11 +1149,10 @@ impl pandapass_core::AuditLogger for DbAuditLogger {
         // here; the worst case is a forked chain, which verification reports
         // rather than silently accepting — that is the right failure mode for
         // tamper-evidence.
-        let prev_row = sqlx::query(
-            "SELECT entry_hash FROM audit_log ORDER BY ts DESC, rowid DESC LIMIT 1",
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let prev_row =
+            sqlx::query("SELECT entry_hash FROM audit_log ORDER BY ts DESC, rowid DESC LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await?;
         let prev_hash: String = prev_row
             .map(|r| r.get::<String, _>("entry_hash"))
             .unwrap_or_default();
@@ -1175,10 +1191,7 @@ impl pandapass_core::AuditLogger for DbAuditLogger {
 ///
 /// Legacy rows (empty `entry_hash`, from before the chain existed) are
 /// skipped: the chain effectively begins at the first entry that has one.
-pub async fn verify_audit_chain(
-    db: &Db,
-    chain_key: &[u8],
-) -> Result<ChainVerification> {
+pub async fn verify_audit_chain(db: &Db, chain_key: &[u8]) -> Result<ChainVerification> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     type HmacSha256 = Hmac<Sha256>;
@@ -1216,17 +1229,40 @@ pub async fn verify_audit_chain(
         }
 
         // Recompute the entry's own hash.
-        let mut mac = HmacSha256::new_from_slice(chain_key)
-            .expect("HMAC accepts any key length");
+        let mut mac = HmacSha256::new_from_slice(chain_key).expect("HMAC accepts any key length");
         mac.update(prev_hash.as_bytes());
         mac.update(row.get::<String, _>("ts").as_bytes());
-        mac.update(row.try_get::<String, _>("user_id").unwrap_or_default().as_bytes());
+        mac.update(
+            row.try_get::<String, _>("user_id")
+                .unwrap_or_default()
+                .as_bytes(),
+        );
         mac.update(row.get::<String, _>("action").as_bytes());
-        mac.update(row.try_get::<String, _>("project_id").unwrap_or_default().as_bytes());
-        mac.update(row.try_get::<String, _>("env_id").unwrap_or_default().as_bytes());
-        mac.update(row.try_get::<String, _>("secret_key").unwrap_or_default().as_bytes());
-        mac.update(row.try_get::<String, _>("ip").unwrap_or_default().as_bytes());
-        mac.update(row.try_get::<String, _>("user_agent").unwrap_or_default().as_bytes());
+        mac.update(
+            row.try_get::<String, _>("project_id")
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        mac.update(
+            row.try_get::<String, _>("env_id")
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        mac.update(
+            row.try_get::<String, _>("secret_key")
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        mac.update(
+            row.try_get::<String, _>("ip")
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        mac.update(
+            row.try_get::<String, _>("user_agent")
+                .unwrap_or_default()
+                .as_bytes(),
+        );
         mac.update(row.get::<String, _>("outcome").as_bytes());
         let meta: Option<String> = row.get("meta");
         mac.update(meta.as_deref().unwrap_or("").as_bytes());
@@ -1244,7 +1280,9 @@ pub async fn verify_audit_chain(
         checked += 1;
     }
 
-    Ok(ChainVerification::Intact { entries_checked: checked })
+    Ok(ChainVerification::Intact {
+        entries_checked: checked,
+    })
 }
 
 /// Result of [`verify_audit_chain`].
@@ -1367,8 +1405,10 @@ fn row_to_dynamic_cred(row: &SqliteRow) -> DynamicCred {
     let enc_s: String = row.get("password_enc");
     DynamicCred {
         id: uuid::Uuid::parse_str(row.get::<String, _>("id").as_str()).unwrap_or(uuid::Uuid::nil()),
-        project_id: uuid::Uuid::parse_str(row.get::<String, _>("project_id").as_str()).unwrap_or(uuid::Uuid::nil()),
-        env_id: uuid::Uuid::parse_str(row.get::<String, _>("env_id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        project_id: uuid::Uuid::parse_str(row.get::<String, _>("project_id").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
+        env_id: uuid::Uuid::parse_str(row.get::<String, _>("env_id").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
         kind: parse_kind(&row.get::<String, _>("kind")),
         username: row.get("username"),
         password_enc: dec_json(&enc_s),
@@ -1376,7 +1416,8 @@ fn row_to_dynamic_cred(row: &SqliteRow) -> DynamicCred {
         issued_at: parse_ts(&row.get::<String, _>("issued_at")),
         expires_at: parse_ts(&row.get::<String, _>("expires_at")),
         revoked_at: parse_opt_ts(row.get("revoked_at")),
-        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str()).unwrap_or(uuid::Uuid::nil()),
+        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
     }
 }
 
@@ -1460,7 +1501,8 @@ fn row_to_policy(row: &SqliteRow) -> Policy {
         name: row.get("name"),
         rego_source: row.get("rego_source"),
         enabled: row.get::<i64, _>("enabled") != 0,
-        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str()).unwrap_or(uuid::Uuid::nil()),
+        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
         created_at: parse_ts(&row.get::<String, _>("created_at")),
         updated_at: parse_ts(&row.get::<String, _>("updated_at")),
     }
@@ -1522,9 +1564,14 @@ pub async fn delete_policy_binding(db: &Db, id: uuid::Uuid) -> Result<()> {
 fn row_to_policy_binding(row: &SqliteRow) -> PolicyBinding {
     PolicyBinding {
         id: uuid::Uuid::parse_str(row.get::<String, _>("id").as_str()).unwrap_or(uuid::Uuid::nil()),
-        policy_id: uuid::Uuid::parse_str(row.get::<String, _>("policy_id").as_str()).unwrap_or(uuid::Uuid::nil()),
-        project_id: row.get::<Option<String>, _>("project_id").and_then(|s| uuid::Uuid::parse_str(&s).ok()),
-        env_id: row.get::<Option<String>, _>("env_id").and_then(|s| uuid::Uuid::parse_str(&s).ok()),
+        policy_id: uuid::Uuid::parse_str(row.get::<String, _>("policy_id").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
+        project_id: row
+            .get::<Option<String>, _>("project_id")
+            .and_then(|s| uuid::Uuid::parse_str(&s).ok()),
+        env_id: row
+            .get::<Option<String>, _>("env_id")
+            .and_then(|s| uuid::Uuid::parse_str(&s).ok()),
         created_at: parse_ts(&row.get::<String, _>("created_at")),
     }
 }
@@ -1613,7 +1660,8 @@ fn row_to_ca_key(row: &SqliteRow) -> CaKey {
         cert_pem: row.get("cert_pem"),
         not_before: parse_ts(&row.get::<String, _>("not_before")),
         not_after: parse_ts(&row.get::<String, _>("not_after")),
-        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str()).unwrap_or(uuid::Uuid::nil()),
+        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
         created_at: parse_ts(&row.get::<String, _>("created_at")),
         revoked_at: parse_opt_ts(row.get("revoked_at")),
     }
@@ -1705,15 +1753,19 @@ pub async fn revoke_ssh_cert(db: &Db, id: uuid::Uuid) -> Result<()> {
 fn row_to_ssh_cert(row: &SqliteRow) -> SshCert {
     SshCert {
         id: uuid::Uuid::parse_str(row.get::<String, _>("id").as_str()).unwrap_or(uuid::Uuid::nil()),
-        user_id: uuid::Uuid::parse_str(row.get::<String, _>("user_id").as_str()).unwrap_or(uuid::Uuid::nil()),
-        project_id: row.get::<Option<String>, _>("project_id").and_then(|s| uuid::Uuid::parse_str(&s).ok()),
+        user_id: uuid::Uuid::parse_str(row.get::<String, _>("user_id").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
+        project_id: row
+            .get::<Option<String>, _>("project_id")
+            .and_then(|s| uuid::Uuid::parse_str(&s).ok()),
         principal: row.get("principal"),
         cert_pem: row.get("cert_pem"),
         key_type: parse_ssh_key_type(&row.get::<String, _>("key_type")),
         valid_before: parse_ts(&row.get::<String, _>("valid_before")),
         valid_after: parse_ts(&row.get::<String, _>("valid_after")),
         revoked_at: parse_opt_ts(row.get("revoked_at")),
-        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str()).unwrap_or(uuid::Uuid::nil()),
+        created_by: uuid::Uuid::parse_str(row.get::<String, _>("created_by").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
         created_at: parse_ts(&row.get::<String, _>("created_at")),
     }
 }
@@ -1750,12 +1802,11 @@ fn row_to_scan_finding(row: &SqliteRow) -> ScanFindingRecord {
 /// A scan run is a snapshot: the `scan_findings` table always holds the latest
 /// scan's output, so re-scanning overwrites (rather than appends to) the
 /// previous run. This is the "每次扫描覆盖旧结果" contract.
-pub async fn replace_scan_findings(
-    db: &Db,
-    findings: &[ScanFindingRecord],
-) -> Result<()> {
+pub async fn replace_scan_findings(db: &Db, findings: &[ScanFindingRecord]) -> Result<()> {
     let mut tx = db.begin().await?;
-    sqlx::query("DELETE FROM scan_findings").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM scan_findings")
+        .execute(&mut *tx)
+        .await?;
 
     for f in findings {
         sqlx::query(
@@ -1829,12 +1880,10 @@ pub async fn count_scan_findings(
 /// master-key rotation path to re-encrypt every secret the user owns
 /// under a new MK without touching other users' data.
 pub async fn all_secrets_for_user(db: &Db, user_id: uuid::Uuid) -> Result<Vec<Secret>> {
-    let rows = sqlx::query(
-        "SELECT * FROM secrets WHERE deleted_at IS NULL AND created_by = ?1",
-    )
-    .bind(user_id.to_string())
-    .fetch_all(db)
-    .await?;
+    let rows = sqlx::query("SELECT * FROM secrets WHERE deleted_at IS NULL AND created_by = ?1")
+        .bind(user_id.to_string())
+        .fetch_all(db)
+        .await?;
     Ok(rows
         .iter()
         .map(|r| {
@@ -1849,30 +1898,32 @@ pub async fn all_secrets_for_user(db: &Db, user_id: uuid::Uuid) -> Result<Vec<Se
 
 /// All non-revoked dynamic credentials issued by `user_id`.
 pub async fn all_dynamic_creds_for_user(db: &Db, user_id: uuid::Uuid) -> Result<Vec<DynamicCred>> {
-    let rows = sqlx::query(
-        "SELECT * FROM dynamic_creds WHERE created_by = ?1 AND revoked_at IS NULL",
-    )
-    .bind(user_id.to_string())
-    .fetch_all(db)
-    .await?;
+    let rows =
+        sqlx::query("SELECT * FROM dynamic_creds WHERE created_by = ?1 AND revoked_at IS NULL")
+            .bind(user_id.to_string())
+            .fetch_all(db)
+            .await?;
     Ok(rows.iter().map(row_to_dynamic_cred).collect())
 }
 
 /// All CA keys (including revoked) uploaded by `user_id`. Used by the
 /// master-key rotation path.
 pub async fn list_ca_keys_for_user(db: &Db, user_id: uuid::Uuid) -> Result<Vec<CaKey>> {
-    let rows = sqlx::query(
-        "SELECT * FROM ca_keys WHERE created_by = ?1",
-    )
-    .bind(user_id.to_string())
-    .fetch_all(db)
-    .await?;
+    let rows = sqlx::query("SELECT * FROM ca_keys WHERE created_by = ?1")
+        .bind(user_id.to_string())
+        .fetch_all(db)
+        .await?;
     Ok(rows.iter().map(row_to_ca_key).collect())
 }
 
 /// Increment the consecutive-failed-login counter. When it reaches
 /// `max_failures`, set a lockout window of `lockout_secs`.
-pub async fn record_login_failure(db: &Db, user_id: uuid::Uuid, max_failures: i64, lockout_secs: i64) -> Result<()> {
+pub async fn record_login_failure(
+    db: &Db,
+    user_id: uuid::Uuid,
+    max_failures: i64,
+    lockout_secs: i64,
+) -> Result<()> {
     sqlx::query(
         "UPDATE users SET failed_login_count = failed_login_count + 1, \
          locked_until = CASE \
@@ -1882,7 +1933,9 @@ pub async fn record_login_failure(db: &Db, user_id: uuid::Uuid, max_failures: i6
     )
     .bind(user_id.to_string())
     .bind(max_failures)
-    .bind(ts(chrono::Utc::now() + chrono::Duration::seconds(lockout_secs)))
+    .bind(ts(
+        chrono::Utc::now() + chrono::Duration::seconds(lockout_secs)
+    ))
     .execute(db)
     .await?;
     Ok(())
@@ -1919,7 +1972,8 @@ pub async fn list_sessions_for_user(db: &Db, user_id: uuid::Uuid) -> Result<Vec<
 fn row_to_session(r: &SqliteRow) -> Session {
     Session {
         id: uuid::Uuid::parse_str(r.get::<String, _>("id").as_str()).unwrap_or(uuid::Uuid::nil()),
-        user_id: uuid::Uuid::parse_str(r.get::<String, _>("user_id").as_str()).unwrap_or(uuid::Uuid::nil()),
+        user_id: uuid::Uuid::parse_str(r.get::<String, _>("user_id").as_str())
+            .unwrap_or(uuid::Uuid::nil()),
         token_hash: r.get("token_hash"),
         ip: r.get("ip"),
         user_agent: r.get("user_agent"),
@@ -1981,7 +2035,11 @@ pub async fn revoke_issued_cert(db: &Db, id: uuid::Uuid) -> Result<()> {
 }
 
 /// List certificates issued by a given CA, optionally including revoked.
-pub async fn list_issued_certs(db: &Db, ca_id: uuid::Uuid, include_revoked: bool) -> Result<Vec<serde_json::Value>> {
+pub async fn list_issued_certs(
+    db: &Db,
+    ca_id: uuid::Uuid,
+    include_revoked: bool,
+) -> Result<Vec<serde_json::Value>> {
     let sql = if include_revoked {
         "SELECT * FROM issued_certs WHERE ca_id = ?1 ORDER BY created_at DESC"
     } else {

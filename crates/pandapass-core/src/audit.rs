@@ -1,8 +1,8 @@
-use crate::models::{AuditLog, AuthContext};
-pub use crate::models::{AuditAction, AuditOutcome};
-pub use crate::rbac::AuditContext;
-use crate::error::Result;
 use crate::crypto::generate_token;
+use crate::error::Result;
+pub use crate::models::{AuditAction, AuditOutcome};
+use crate::models::{AuditLog, AuthContext};
+pub use crate::rbac::AuditContext;
 use chrono::Utc;
 use http::HeaderMap;
 use serde_json::json;
@@ -24,7 +24,9 @@ pub struct MemoryAuditLogger {
 
 impl MemoryAuditLogger {
     pub fn new() -> Self {
-        Self { logs: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            logs: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     pub async fn get_logs(&self) -> Vec<AuditLog> {
@@ -61,7 +63,10 @@ impl AuditService {
                 Some(m) => {
                     let mut combined = m.clone();
                     if let Some(obj) = combined.as_object_mut() {
-                        obj.insert("request_id".to_string(), serde_json::Value::String(rid.clone()));
+                        obj.insert(
+                            "request_id".to_string(),
+                            serde_json::Value::String(rid.clone()),
+                        );
                     }
                     Some(combined)
                 }
@@ -196,7 +201,10 @@ impl AuditService {
 }
 
 /// Middleware helper to extract client IP
-pub fn extract_client_ip(headers: &HeaderMap, remote_addr: Option<std::net::SocketAddr>) -> Option<String> {
+pub fn extract_client_ip(
+    headers: &HeaderMap,
+    remote_addr: Option<std::net::SocketAddr>,
+) -> Option<String> {
     // Check X-Forwarded-For first (for reverse proxy)
     if let Some(forwarded) = headers.get("x-forwarded-for") {
         if let Ok(s) = forwarded.to_str() {
@@ -288,9 +296,12 @@ mod tests {
         let service = AuditService::new(logger.clone());
         let auth = auth_ctx();
 
-        let mut ctx = AuditContext::new(&auth, AuditAction::SecretRead)
-            .with_secret_key("DB_URL".into());
-        service.log_failure(&mut ctx, "decryption failed").await.unwrap();
+        let mut ctx =
+            AuditContext::new(&auth, AuditAction::SecretRead).with_secret_key("DB_URL".into());
+        service
+            .log_failure(&mut ctx, "decryption failed")
+            .await
+            .unwrap();
 
         let logs = logger.get_logs().await;
         assert_eq!(logs[0].outcome, AuditOutcome::Failure);

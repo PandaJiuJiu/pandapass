@@ -40,13 +40,19 @@ pub struct DiffReport {
 
 impl DiffReport {
     pub fn only_local(&self) -> impl Iterator<Item = &DiffEntry> {
-        self.entries.iter().filter(|e| e.state == SecretDiffState::OnlyLocal)
+        self.entries
+            .iter()
+            .filter(|e| e.state == SecretDiffState::OnlyLocal)
     }
     pub fn only_remote(&self) -> impl Iterator<Item = &DiffEntry> {
-        self.entries.iter().filter(|e| e.state == SecretDiffState::OnlyRemote)
+        self.entries
+            .iter()
+            .filter(|e| e.state == SecretDiffState::OnlyRemote)
     }
     pub fn modified(&self) -> impl Iterator<Item = &DiffEntry> {
-        self.entries.iter().filter(|e| e.state == SecretDiffState::Modified)
+        self.entries
+            .iter()
+            .filter(|e| e.state == SecretDiffState::Modified)
     }
 }
 
@@ -65,10 +71,8 @@ pub fn diff_metadata(
     remote: &[SecretMeta],
     sync_state: &SyncState,
 ) -> DiffReport {
-    let remote_by_key: HashMap<&str, &SecretMeta> = remote
-        .iter()
-        .map(|m| (m.key.as_str(), m))
-        .collect();
+    let remote_by_key: HashMap<&str, &SecretMeta> =
+        remote.iter().map(|m| (m.key.as_str(), m)).collect();
 
     let mut entries: Vec<DiffEntry> = Vec::new();
 
@@ -147,10 +151,7 @@ mod tests {
             ("A".to_string(), "1".to_string()),
             ("B".to_string(), "2".to_string()),
         ]);
-        let remote = vec![
-            meta("B", 3, ts(100)),
-            meta("C", 1, ts(50)),
-        ];
+        let remote = vec![meta("B", 3, ts(100)), meta("C", 1, ts(50))];
         let state = SyncState {
             project_id: None,
             env_id: None,

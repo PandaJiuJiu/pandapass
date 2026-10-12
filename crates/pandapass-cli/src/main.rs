@@ -3,8 +3,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::error;
 
-use pandapass_cli::commands;
 use pandapass_cli::client::{ApiClient, CliConfig};
+use pandapass_cli::commands;
 use pandapass_cli::commands::run_command;
 
 #[derive(Parser, Debug)]
@@ -171,7 +171,9 @@ async fn main() -> Result<()> {
             content
                 .trim()
                 .parse::<age::x25519::Identity>()
-                .map_err(|e| anyhow::anyhow!("invalid age identity in {}: {}", path.display(), e))?,
+                .map_err(|e| {
+                    anyhow::anyhow!("invalid age identity in {}: {}", path.display(), e)
+                })?,
         )
     } else {
         None
@@ -213,7 +215,11 @@ async fn main() -> Result<()> {
     // cannot leave a truncated config that silently resets to defaults.
     let save_result = save_config(&config_path, &config).await;
     if let Err(e) = &save_result {
-        eprintln!("warning: could not save config to {}: {}", config_path.display(), e);
+        eprintln!(
+            "warning: could not save config to {}: {}",
+            config_path.display(),
+            e
+        );
         if result.is_ok() {
             // The command the user asked for worked; losing the session is a
             // real problem, but not a reason to report their command as failed.

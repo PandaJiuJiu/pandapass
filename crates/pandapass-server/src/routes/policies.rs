@@ -1,11 +1,14 @@
-use axum::{extract::{Path, Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::models::*;
 use pandapass_db as db;
 use serde::Deserialize;
 
+use crate::middleware::auth::{ApiError, Auth};
 use crate::state::AppState;
-use crate::middleware::auth::{Auth, ApiError};
 
 #[derive(Deserialize)]
 pub struct CreatePolicyRequest {
@@ -78,7 +81,14 @@ pub async fn update_policy(
     if !auth.can(Permission::ManageUsers) {
         return Err(ApiError::Forbidden("Admin only".into()));
     }
-    db::update_policy(&state.db, id, req.name.as_deref(), req.rego_source.as_deref(), req.enabled).await?;
+    db::update_policy(
+        &state.db,
+        id,
+        req.name.as_deref(),
+        req.rego_source.as_deref(),
+        req.enabled,
+    )
+    .await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::PolicyUpdate);
     audit = audit.with_meta(serde_json::json!({ "policy_id": id }));
@@ -148,7 +158,8 @@ pub async fn bind_policy(
     let mut audit = AuditContext::new(&auth, AuditAction::PolicyBind);
     audit = audit.with_project(req.project_id.unwrap_or(uuid::Uuid::nil()));
     audit = audit.with_env(req.env_id.unwrap_or(uuid::Uuid::nil()));
-    audit = audit.with_meta(serde_json::json!({ "binding_id": binding.id, "policy_id": req.policy_id }));
+    audit = audit
+        .with_meta(serde_json::json!({ "binding_id": binding.id, "policy_id": req.policy_id }));
     state.audit.log_success(&mut audit).await.ok();
 
     // Reload policy engine

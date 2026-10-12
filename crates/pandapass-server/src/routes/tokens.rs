@@ -1,4 +1,7 @@
-use axum::{extract::{Path, Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::crypto::{generate_token, hash_password, hash_token, validate_password_policy};
 use pandapass_core::models::*;
@@ -6,8 +9,8 @@ use pandapass_core::policy::{PolicyDecision, PolicyInput};
 use pandapass_db as db;
 use serde::{Deserialize, Serialize};
 
+use crate::middleware::auth::{ApiError, Auth};
 use crate::state::AppState;
-use crate::middleware::auth::{Auth, ApiError};
 
 #[derive(Deserialize)]
 pub struct CreateTokenRequest {
@@ -38,11 +41,15 @@ pub async fn create_token(
     Json(req): Json<CreateTokenRequest>,
 ) -> Result<Json<CreateTokenResponse>, ApiError> {
     // Validate scopes
-    let scopes: Vec<TokenScope> = req.scopes.iter()
+    let scopes: Vec<TokenScope> = req
+        .scopes
+        .iter()
         .filter_map(|s| TokenScope::from_str(s))
         .collect();
     if scopes.is_empty() {
-        return Err(ApiError::BadRequest("At least one valid scope required".into()));
+        return Err(ApiError::BadRequest(
+            "At least one valid scope required".into(),
+        ));
     }
 
     // A service token must not be able to mint tokens. The scopes requested here
@@ -70,7 +77,9 @@ pub async fn create_token(
     if let (Some(project_id), Some(env_id)) = (req.project_id, req.env_id) {
         let env = db::get_env(&state.db, env_id).await?;
         if env.project_id != project_id {
-            return Err(ApiError::BadRequest("Environment does not belong to project".into()));
+            return Err(ApiError::BadRequest(
+                "Environment does not belong to project".into(),
+            ));
         }
     }
 
@@ -93,32 +102,44 @@ pub async fn create_token(
 
     // Policy evaluation in the token's scope (global if not project-scoped)
     let project_slug = if let Some(pid) = req.project_id {
-        db::get_project(&state.db, pid).await.map(|p| p.slug).ok().unwrap_or_default()
+        db::get_project(&state.db, pid)
+            .await
+            .map(|p| p.slug)
+            .ok()
+            .unwrap_or_default()
     } else {
         String::new()
     };
     let input = PolicyInput::for_context(&auth, &project_slug, "", Permission::CreateToken, None);
-    if let PolicyDecision::Deny { policy_id, message } =
-        state.policy_engine.evaluate(req.project_id, req.env_id, &input).await?
+    if let PolicyDecision::Deny { policy_id, message } = state
+        .policy_engine
+        .evaluate(req.project_id, req.env_id, &input)
+        .await?
     {
         let mut denied = AuditContext::new(&auth, AuditAction::TokenCreate);
         if let Some(pid) = req.project_id {
             denied = denied.with_project(pid);
         }
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     db::create_service_token(&state.db, &token).await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::TokenCreate);
-    audit = audit.with_meta(serde_json::json!({ "token_id": token.id, "name": token.name, "scopes": req.scopes }));
+    audit = audit.with_meta(
+        serde_json::json!({ "token_id": token.id, "name": token.name, "scopes": req.scopes }),
+    );
     state.audit.log_success(&mut audit).await.ok();
 
-    Ok(Json(CreateTokenResponse {
-        token,
-        plain_token,
-    }))
+    Ok(Json(CreateTokenResponse { token, plain_token }))
 }
 
 pub async fn revoke_token(
@@ -138,25 +159,40 @@ pub async fn revoke_token(
 
     // Verify ownership
     let tokens = db::list_tokens(&state.db, auth.user.id).await?;
-    let token = tokens.iter().find(|t| t.id == id)
+    let token = tokens
+        .iter()
+        .find(|t| t.id == id)
         .ok_or_else(|| ApiError::NotFound("Token not found".into()))?;
 
     // Policy evaluation in the token's scope
     let project_slug = if let Some(pid) = token.project_id {
-        db::get_project(&state.db, pid).await.map(|p| p.slug).ok().unwrap_or_default()
+        db::get_project(&state.db, pid)
+            .await
+            .map(|p| p.slug)
+            .ok()
+            .unwrap_or_default()
     } else {
         String::new()
     };
     let input = PolicyInput::for_context(&auth, &project_slug, "", Permission::RevokeToken, None);
-    if let PolicyDecision::Deny { policy_id, message } =
-        state.policy_engine.evaluate(token.project_id, token.env_id, &input).await?
+    if let PolicyDecision::Deny { policy_id, message } = state
+        .policy_engine
+        .evaluate(token.project_id, token.env_id, &input)
+        .await?
     {
         let mut denied = AuditContext::new(&auth, AuditAction::TokenRevoke);
         if let Some(pid) = token.project_id {
             denied = denied.with_project(pid);
         }
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     db::revoke_token(&state.db, id).await?;
@@ -195,7 +231,9 @@ pub async fn list_audit(
     // *token* had `read:audit`. `can` answers that, and a session-only admin
     // still passes.
     if !auth.can(Permission::ReadAudit) {
-        return Err(ApiError::Forbidden("Insufficient permissions to view audit".into()));
+        return Err(ApiError::Forbidden(
+            "Insufficient permissions to view audit".into(),
+        ));
     }
 
     // Reading a single project's log additionally requires membership, unless
@@ -204,16 +242,24 @@ pub async fn list_audit(
         if let Some(project_id) = query.project_id {
             let role = db::get_member_role(&state.db, project_id, auth.user.id).await?;
             if !matches!(role, Some(ProjectRole::Owner) | Some(ProjectRole::Editor)) {
-                return Err(ApiError::Forbidden("Insufficient permissions to view audit".into()));
+                return Err(ApiError::Forbidden(
+                    "Insufficient permissions to view audit".into(),
+                ));
             }
         } else {
-            return Err(ApiError::Forbidden("Admin access required for global audit".into()));
+            return Err(ApiError::Forbidden(
+                "Admin access required for global audit".into(),
+            ));
         }
     }
 
     // Policy evaluation for audit access
     let project_slug = if let Some(pid) = query.project_id {
-        db::get_project(&state.db, pid).await.map(|p| p.slug).ok().unwrap_or_default()
+        db::get_project(&state.db, pid)
+            .await
+            .map(|p| p.slug)
+            .ok()
+            .unwrap_or_default()
     } else {
         String::new()
     };
@@ -225,15 +271,24 @@ pub async fn list_audit(
             .unwrap_or(None);
     }
     let input = PolicyInput::for_context(&ctx, &project_slug, "", Permission::ReadAudit, None);
-    if let PolicyDecision::Deny { policy_id, message } =
-        state.policy_engine.evaluate(query.project_id, None, &input).await?
+    if let PolicyDecision::Deny { policy_id, message } = state
+        .policy_engine
+        .evaluate(query.project_id, None, &input)
+        .await?
     {
         let mut denied = AuditContext::new(&ctx, AuditAction::AuditRead);
         if let Some(pid) = query.project_id {
             denied = denied.with_project(pid);
         }
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     let page = query.page.unwrap_or(1);
@@ -336,9 +391,9 @@ pub async fn server_age_show(
         .server_age_identity
         .as_deref()
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| ApiError::NotImplemented(
-            "This server has no age identity configured.".into(),
-        ))?;
+        .ok_or_else(|| {
+            ApiError::NotImplemented("This server has no age identity configured.".into())
+        })?;
     let age = pandapass_core::crypto::AgeIdentity::parse(identity)
         .map_err(|e| ApiError::Internal(format!("server age identity: {e}")))?;
     let public = age
@@ -366,7 +421,11 @@ pub async fn list_users_admin(
     if !auth.can(Permission::ManageUsers) {
         return Err(ApiError::Forbidden("Admin only".into()));
     }
-    let users: Vec<UserPublic> = db::list_users(&state.db).await?.into_iter().map(Into::into).collect();
+    let users: Vec<UserPublic> = db::list_users(&state.db)
+        .await?
+        .into_iter()
+        .map(Into::into)
+        .collect();
     Ok(Json(AdminListUsersResponse { users }))
 }
 
@@ -416,7 +475,9 @@ pub async fn disable_user_admin(
     // Refuse to disable yourself — there is no way back without a live
     // account.
     if user_id == auth.user.id {
-        return Err(ApiError::BadRequest("You cannot disable your own account".into()));
+        return Err(ApiError::BadRequest(
+            "You cannot disable your own account".into(),
+        ));
     }
     db::disable_user(&state.db, user_id).await?;
     // Kill all active sessions so the disabled user is signed out everywhere.
@@ -451,28 +512,56 @@ pub async fn enable_user_admin(
 /// prometheus crate. Returns counters for the things a dashboard needs
 /// (request rate is approximated by the cumulative counters; the
 /// scraper is expected to compute deltas).
-pub async fn metrics(
-    State(state): State<AppState>,
-) -> Result<axum::response::Response, ApiError> {
+pub async fn metrics(State(state): State<AppState>) -> Result<axum::response::Response, ApiError> {
     use std::fmt::Write;
     let mut out = String::new();
     let mut s = state.metrics.snapshot();
     // audit_log_size is a gauge; query it at scrape time so it tracks
     // the live table even if the snapshot was taken long ago.
     s.audit_log_size = db::count_audit_log(&state.db).await.unwrap_or(-1);
-    writeln!(out, "# HELP pandapass_auth_login_total Total login attempts.").unwrap();
+    writeln!(
+        out,
+        "# HELP pandapass_auth_login_total Total login attempts."
+    )
+    .unwrap();
     writeln!(out, "# TYPE pandapass_auth_login_total counter").unwrap();
     writeln!(out, "pandapass_auth_login_total {{}} {}", s.login_attempts).unwrap();
-    writeln!(out, "# HELP pandapass_auth_login_failures_total Total failed login attempts.").unwrap();
+    writeln!(
+        out,
+        "# HELP pandapass_auth_login_failures_total Total failed login attempts."
+    )
+    .unwrap();
     writeln!(out, "# TYPE pandapass_auth_login_failures_total counter").unwrap();
-    writeln!(out, "pandapass_auth_login_failures_total {{}} {}", s.login_failures).unwrap();
-    writeln!(out, "# HELP pandapass_auth_account_lockouts Total accounts locked out.").unwrap();
+    writeln!(
+        out,
+        "pandapass_auth_login_failures_total {{}} {}",
+        s.login_failures
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "# HELP pandapass_auth_account_lockouts Total accounts locked out."
+    )
+    .unwrap();
     writeln!(out, "# TYPE pandapass_auth_account_lockouts counter").unwrap();
-    writeln!(out, "pandapass_auth_account_lockouts {{}} {}", s.account_lockouts).unwrap();
-    writeln!(out, "# HELP pandapass_secret_reads_total Total secret reads.").unwrap();
+    writeln!(
+        out,
+        "pandapass_auth_account_lockouts {{}} {}",
+        s.account_lockouts
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "# HELP pandapass_secret_reads_total Total secret reads."
+    )
+    .unwrap();
     writeln!(out, "# TYPE pandapass_secret_reads_total counter").unwrap();
     writeln!(out, "pandapass_secret_reads_total {{}} {}", s.secret_reads).unwrap();
-    writeln!(out, "# HELP pandapass_audit_log_size Current audit log row count.").unwrap();
+    writeln!(
+        out,
+        "# HELP pandapass_audit_log_size Current audit log row count."
+    )
+    .unwrap();
     writeln!(out, "# TYPE pandapass_audit_log_size gauge").unwrap();
     writeln!(out, "pandapass_audit_log_size {}", s.audit_log_size).unwrap();
     Ok(axum::response::Response::builder()

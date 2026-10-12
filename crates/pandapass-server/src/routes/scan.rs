@@ -1,4 +1,7 @@
-use axum::{extract::{Query, State}, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::models::*;
 use pandapass_core::policy::{PolicyDecision, PolicyInput};
@@ -9,7 +12,7 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::middleware::auth::{Auth, ApiError};
+use crate::middleware::auth::{ApiError, Auth};
 use crate::state::AppState;
 
 /// A scan run's aggregate summary, stored in the audit meta.
@@ -57,8 +60,15 @@ pub async fn trigger_scan(
         state.policy_engine.evaluate(None, None, &input).await?
     {
         let mut denied = AuditContext::new(&auth, AuditAction::SecretScan);
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     // Cache of user_id -> master key, so a user with many secrets is only
@@ -154,14 +164,8 @@ pub async fn list_results(
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(50).clamp(1, 200);
 
-    let items = db::list_scan_findings(
-        &state.db,
-        query.project_id,
-        query.env_id,
-        page,
-        per_page,
-    )
-    .await?;
+    let items =
+        db::list_scan_findings(&state.db, query.project_id, query.env_id, page, per_page).await?;
     let total = db::count_scan_findings(&state.db, query.project_id, query.env_id).await?;
 
     Ok(Json(PaginatedResponse::new(items, total, page, per_page)))

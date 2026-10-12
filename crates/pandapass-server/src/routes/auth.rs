@@ -3,10 +3,10 @@ use axum::{
     Json,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
-use pandapass_core::audit::{AuditContext, AuditAction, AuditOutcome};
+use pandapass_core::audit::{AuditAction, AuditContext, AuditOutcome};
 use pandapass_core::crypto::{
-    generate_totp_secret, hash_password, totp_uri, verify_password,
-    verify_totp, AgeIdentity, AgePublicKey, EncryptedSecret, Envelope, MasterKey, SealOptions,
+    generate_totp_secret, hash_password, totp_uri, verify_password, verify_totp, AgeIdentity,
+    AgePublicKey, EncryptedSecret, Envelope, MasterKey, SealOptions,
 };
 use pandapass_core::models::*;
 use pandapass_db as db;
@@ -14,38 +14,46 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::middleware::auth::{issue_session, ApiError, Auth, CSRF_COOKIE, SESSION_COOKIE};
 use crate::state::AppState;
-use crate::middleware::auth::{Auth, issue_session, ApiError, SESSION_COOKIE, CSRF_COOKIE};
 
 /// The server's own age public key — the recipient it accepts envelopes under.
 /// `None` when no identity is configured, which means the server is locked out
 /// of every envelope and can only store ciphertext it cannot read back.
 fn server_recipient(state: &AppState) -> Option<AgePublicKey> {
-    let identity = state.config.server_age_identity.as_deref().filter(|s| !s.is_empty())?;
+    let identity = state
+        .config
+        .server_age_identity
+        .as_deref()
+        .filter(|s| !s.is_empty())?;
     AgeIdentity::parse(identity).ok()?.public_key().ok()
 }
 
 /// The server's own age identity, without which it cannot unwrap any envelope.
 fn server_identity(state: &AppState) -> Result<&str, ApiError> {
-    state.config.server_age_identity.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
-        ApiError::Forbidden(
-            "This server has no age identity, so it cannot operate on secrets. \
+    state
+        .config
+        .server_age_identity
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ApiError::Forbidden(
+                "This server has no age identity, so it cannot operate on secrets. \
              Configure PANDAPASS_SERVER_AGE_IDENTITY."
-                .into(),
-        )
-    })
+                    .into(),
+            )
+        })
 }
 
 /// Unwrap a user's master key from their age envelope using the server's identity.
-async fn get_master_key_for_user(
-    state: &AppState,
-    user_id: Uuid,
-) -> Result<MasterKey, ApiError> {
+async fn get_master_key_for_user(state: &AppState, user_id: Uuid) -> Result<MasterKey, ApiError> {
     let envelope = db::get_envelope(&state.db, user_id)
         .await?
         .ok_or_else(|| ApiError::Forbidden("No master-key envelope for this account".into()))?;
 
-    envelope.decrypt(server_identity(state)?).map_err(ApiError::from)
+    envelope
+        .decrypt(server_identity(state)?)
+        .map_err(ApiError::from)
 }
 
 /// Decrypt a user's TOTP secret using their master key.
@@ -55,10 +63,8 @@ async fn decrypt_totp_secret(state: &AppState, user: &User) -> Result<String, Ap
         .as_ref()
         .ok_or_else(|| ApiError::BadRequest("TOTP not set up".into()))?;
     let mk = get_master_key_for_user(state, user.id).await?;
-    let secret_str = totp_secret_enc.decrypt_with_purpose(
-        &mk,
-        pandapass_core::crypto::key_purpose::TOTP_SECRET,
-    )?;
+    let secret_str = totp_secret_enc
+        .decrypt_with_purpose(&mk, pandapass_core::crypto::key_purpose::TOTP_SECRET)?;
     Ok(secret_str.expose_secret().to_string())
 }
 
@@ -83,7 +89,9 @@ pub async fn setup_status(
     State(state): State<AppState>,
 ) -> Result<Json<SetupStatusResponse>, ApiError> {
     let user_count = db::count_users(&state.db).await?;
-    Ok(Json(SetupStatusResponse { needs_setup: user_count == 0 }))
+    Ok(Json(SetupStatusResponse {
+        needs_setup: user_count == 0,
+    }))
 }
 
 #[derive(Serialize)]
@@ -102,13 +110,19 @@ pub async fn login(
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<(CookieJar, Json<LoginResponse>), ApiError> {
     // Extract client IP from request extensions (set by auth_middleware)
-    let client_ip = req.extensions().get::<crate::middleware::auth::ClientIp>().map(|c| c.0);
+    let client_ip = req
+        .extensions()
+        .get::<crate::middleware::auth::ClientIp>()
+        .map(|c| c.0);
 
     // Extract cookies and JSON body manually
     let (parts, body) = req.into_parts();
     let jar = CookieJar::from_headers(&parts.headers);
-    let body_bytes = axum::body::to_bytes(body, usize::MAX).await.map_err(|_| ApiError::BadRequest("Failed to read body".into()))?;
-    let login_req: LoginRequest = serde_json::from_slice(&body_bytes).map_err(|_| ApiError::BadRequest("Invalid JSON".into()))?;
+    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .map_err(|_| ApiError::BadRequest("Failed to read body".into()))?;
+    let login_req: LoginRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|_| ApiError::BadRequest("Invalid JSON".into()))?;
 
     // Rate limit check happens before credential verification so a valid
     // password doesn't bypass the limit.
@@ -136,7 +150,8 @@ pub async fn login(
     if let Some(until) = user.locked_until {
         if until > chrono::Utc::now() {
             return Err(ApiError::Unauthorized(
-                "Account temporarily locked after too many failed attempts. Try again later.".into(),
+                "Account temporarily locked after too many failed attempts. Try again later."
+                    .into(),
             ));
         }
         // Lockout expired: clear it so the next failure starts fresh.
@@ -157,7 +172,9 @@ pub async fn login(
 
     // TOTP check
     if user.totp_enabled {
-        let code = login_req.totp_code.ok_or_else(|| ApiError::Unauthorized("TOTP required".into()))?;
+        let code = login_req
+            .totp_code
+            .ok_or_else(|| ApiError::Unauthorized("TOTP required".into()))?;
         let totp_secret = decrypt_totp_secret(&state, &user).await?;
         if !verify_totp(&totp_secret, &code) {
             db::record_login_failure(&state.db, user.id, MAX_FAILURES, LOCKOUT_SECS).await?;
@@ -174,22 +191,26 @@ pub async fn login(
     let (session_token, csrf) = issue_session(&state, user.id, None, None).await?;
 
     let mut jar = jar;
-    jar = jar.add(Cookie::build((SESSION_COOKIE, session_token.clone()))
-        .http_only(true)
-        .secure(state.config.cookie_secure)
-        .same_site(axum_extra::extract::cookie::SameSite::Lax)
-        .path("/")
-        .build());
+    jar = jar.add(
+        Cookie::build((SESSION_COOKIE, session_token.clone()))
+            .http_only(true)
+            .secure(state.config.cookie_secure)
+            .same_site(axum_extra::extract::cookie::SameSite::Lax)
+            .path("/")
+            .build(),
+    );
     // Deliberately NOT HttpOnly: the web UI reads this cookie from
     // document.cookie and echoes it in the x-csrf-token header (double-submit
     // pattern). The CSRF token is not a secret — an attacker who can read it
     // still cannot craft a cross-site request because SameSite=Lax + the
     // custom header requirement block the cross-site send.
-    jar = jar.add(Cookie::build((CSRF_COOKIE, csrf))
-        .secure(state.config.cookie_secure)
-        .same_site(axum_extra::extract::cookie::SameSite::Lax)
-        .path("/")
-        .build());
+    jar = jar.add(
+        Cookie::build((CSRF_COOKIE, csrf))
+            .secure(state.config.cookie_secure)
+            .same_site(axum_extra::extract::cookie::SameSite::Lax)
+            .path("/")
+            .build(),
+    );
 
     let auth_ctx = AuthContext {
         user: user.clone().into(),
@@ -198,9 +219,9 @@ pub async fn login(
         project_role: None,
         project_id: None,
         env_id: None,
-            client_ip: None,
-            user_agent: None,
-            request_id: None,
+        client_ip: None,
+        user_agent: None,
+        request_id: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::Login);
     let (ip, ua) = client_ip_and_ua(&parts.headers);
@@ -247,7 +268,9 @@ fn create_envelope(
         user_id,
         &mk,
         recipient,
-        &SealOptions { server: server_recipient(state) },
+        &SealOptions {
+            server: server_recipient(state),
+        },
     )
     .map_err(ApiError::from)
 }
@@ -261,7 +284,10 @@ pub async fn register(
     // JSON body. Doing this by hand keeps the rate-limit gate before the
     // registration rule check, so the limit holds even when registration is
     // open for the bootstrap admin.
-    let client_ip = req.extensions().get::<crate::middleware::auth::ClientIp>().map(|c| c.0);
+    let client_ip = req
+        .extensions()
+        .get::<crate::middleware::auth::ClientIp>()
+        .map(|c| c.0);
     let (_parts, body) = req.into_parts();
     let body_bytes = axum::body::to_bytes(body, usize::MAX)
         .await
@@ -289,7 +315,11 @@ pub async fn register(
         ));
     }
 
-    let global_role = if is_first { GlobalRole::Admin } else { GlobalRole::User };
+    let global_role = if is_first {
+        GlobalRole::Admin
+    } else {
+        GlobalRole::User
+    };
     pandapass_core::crypto::validate_password_policy(&req.password)?;
     let password_hash = hash_password(&req.password)?;
 
@@ -328,22 +358,26 @@ pub async fn register(
     let (session_token, csrf) = issue_session(&state, user.id, None, None).await?;
 
     let mut jar = jar;
-    jar = jar.add(Cookie::build((SESSION_COOKIE, session_token.clone()))
-        .http_only(true)
-        .secure(state.config.cookie_secure)
-        .same_site(axum_extra::extract::cookie::SameSite::Lax)
-        .path("/")
-        .build());
+    jar = jar.add(
+        Cookie::build((SESSION_COOKIE, session_token.clone()))
+            .http_only(true)
+            .secure(state.config.cookie_secure)
+            .same_site(axum_extra::extract::cookie::SameSite::Lax)
+            .path("/")
+            .build(),
+    );
     // Deliberately NOT HttpOnly: the web UI reads this cookie from
     // document.cookie and echoes it in the x-csrf-token header (double-submit
     // pattern). The CSRF token is not a secret — an attacker who can read it
     // still cannot craft a cross-site request because SameSite=Lax + the
     // custom header requirement block the cross-site send.
-    jar = jar.add(Cookie::build((CSRF_COOKIE, csrf))
-        .secure(state.config.cookie_secure)
-        .same_site(axum_extra::extract::cookie::SameSite::Lax)
-        .path("/")
-        .build());
+    jar = jar.add(
+        Cookie::build((CSRF_COOKIE, csrf))
+            .secure(state.config.cookie_secure)
+            .same_site(axum_extra::extract::cookie::SameSite::Lax)
+            .path("/")
+            .build(),
+    );
 
     let auth_ctx = AuthContext {
         user: user.clone().into(),
@@ -352,9 +386,9 @@ pub async fn register(
         project_role: None,
         project_id: None,
         env_id: None,
-            client_ip: None,
-            user_agent: None,
-            request_id: None,
+        client_ip: None,
+        user_agent: None,
+        request_id: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::Register);
     let (ip, ua) = client_ip_and_ua(&_parts.headers);
@@ -451,7 +485,9 @@ pub async fn totp_setup(
                 auth.user.id,
                 &mk,
                 &server_pub,
-                &SealOptions { server: Some(server_pub.clone()) },
+                &SealOptions {
+                    server: Some(server_pub.clone()),
+                },
             )
             .map_err(ApiError::from)?;
             db::put_envelope(&state.db, auth.user.id, &env.ciphertext).await?;
@@ -468,14 +504,22 @@ pub async fn totp_setup(
     // Store encrypted TOTP secret (not enabled yet - user must verify)
     db::set_user_totp(&state.db, auth.user.id, Some(&secret_enc), false).await?;
 
-    Ok(Json(TotpSetupResponse { secret, uri, qr_code_svg }))
+    Ok(Json(TotpSetupResponse {
+        secret,
+        uri,
+        qr_code_svg,
+    }))
 }
 
 fn qr_code_svg(uri: &str) -> String {
-    use qrcode::QrCode;
     use qrcode::render::svg;
+    use qrcode::QrCode;
     let code = QrCode::new(uri).unwrap();
-    code.render::<svg::Color>().min_dimensions(200, 200).dark_color(svg::Color("#000")).light_color(svg::Color("#fff")).build()
+    code.render::<svg::Color>()
+        .min_dimensions(200, 200)
+        .dark_color(svg::Color("#000"))
+        .light_color(svg::Color("#fff"))
+        .build()
 }
 
 #[derive(Deserialize)]
@@ -493,8 +537,8 @@ pub async fn totp_verify(
     let totp_secret = decrypt_totp_secret(&state, &user).await?;
 
     if !verify_totp(&totp_secret, &req.code) {
-        let audit = AuditContext::new(&auth, AuditAction::TotpVerify)
-            .with_outcome(AuditOutcome::Failure);
+        let audit =
+            AuditContext::new(&auth, AuditAction::TotpVerify).with_outcome(AuditOutcome::Failure);
         state.audit.log(&audit).await.ok();
         return Err(ApiError::Unauthorized("Invalid TOTP code".into()));
     }
@@ -505,7 +549,9 @@ pub async fn totp_verify(
     let mut audit = AuditContext::new(&auth, AuditAction::TotpSetup);
     state.audit.log_success(&mut audit).await.ok();
 
-    Ok(Json(serde_json::json!({ "success": true, "enabled": true })))
+    Ok(Json(
+        serde_json::json!({ "success": true, "enabled": true }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -533,8 +579,8 @@ pub async fn totp_disable(
     let totp_secret = decrypt_totp_secret(&state, &user).await?;
 
     if !verify_totp(&totp_secret, &req.code) {
-        let audit = AuditContext::new(&auth, AuditAction::TotpDisable)
-            .with_outcome(AuditOutcome::Failure);
+        let audit =
+            AuditContext::new(&auth, AuditAction::TotpDisable).with_outcome(AuditOutcome::Failure);
         state.audit.log(&audit).await.ok();
         return Err(ApiError::Unauthorized("Invalid TOTP code".into()));
     }
@@ -620,7 +666,9 @@ pub async fn enroll_key(
                 auth.user.id,
                 &mk,
                 &recipient,
-                &SealOptions { server: server.clone() },
+                &SealOptions {
+                    server: server.clone(),
+                },
             )?;
             db::put_envelope(&state.db, auth.user.id, &env.ciphertext).await?;
             true
@@ -645,7 +693,10 @@ pub async fn enroll_key(
         .with_meta(serde_json::json!({ "enrolled_key": true, "rewrapped": rewrapped }));
     state.audit.log_success(&mut audit).await.ok();
 
-    Ok(Json(EnrollKeyResponse { key_enrolled: true, rewrapped }))
+    Ok(Json(EnrollKeyResponse {
+        key_enrolled: true,
+        rewrapped,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -746,13 +797,11 @@ pub async fn rotate_master_key(
             pandapass_core::crypto::key_purpose::SECRET_VALUE,
         )
         .map_err(ApiError::from)?;
-        sqlx::query(
-            "UPDATE secrets SET value_enc = ?2 WHERE id = ?1",
-        )
-        .bind(secret.meta.id.to_string())
-        .bind(serde_json::to_string(&value_enc).unwrap())
-        .execute(&state.db)
-        .await?;
+        sqlx::query("UPDATE secrets SET value_enc = ?2 WHERE id = ?1")
+            .bind(secret.meta.id.to_string())
+            .bind(serde_json::to_string(&value_enc).unwrap())
+            .execute(&state.db)
+            .await?;
         secrets_count += 1;
     }
 
@@ -761,7 +810,10 @@ pub async fn rotate_master_key(
     for cred in creds {
         let plaintext = cred
             .password_enc
-            .decrypt_with_purpose(&old_mk, pandapass_core::crypto::key_purpose::DYNAMIC_CRED_PASSWORD)
+            .decrypt_with_purpose(
+                &old_mk,
+                pandapass_core::crypto::key_purpose::DYNAMIC_CRED_PASSWORD,
+            )
             .map_err(ApiError::from)?
             .expose_secret()
             .to_string();
@@ -771,18 +823,18 @@ pub async fn rotate_master_key(
             pandapass_core::crypto::key_purpose::DYNAMIC_CRED_PASSWORD,
         )
         .map_err(ApiError::from)?;
-        sqlx::query(
-            "UPDATE dynamic_creds SET password_enc = ?2 WHERE id = ?1",
-        )
-        .bind(cred.id.to_string())
-        .bind(serde_json::to_string(&password_enc).unwrap())
-        .execute(&state.db)
-        .await?;
+        sqlx::query("UPDATE dynamic_creds SET password_enc = ?2 WHERE id = ?1")
+            .bind(cred.id.to_string())
+            .bind(serde_json::to_string(&password_enc).unwrap())
+            .execute(&state.db)
+            .await?;
         creds_count += 1;
     }
 
     // Re-encrypt CA private keys this user uploaded.
-    let cas = db::list_ca_keys_for_user(&state.db, user.id).await.unwrap_or_default();
+    let cas = db::list_ca_keys_for_user(&state.db, user.id)
+        .await
+        .unwrap_or_default();
     for ca in cas {
         let plaintext = ca
             .key_enc
@@ -796,13 +848,11 @@ pub async fn rotate_master_key(
             pandapass_core::crypto::key_purpose::CA_X509_KEY,
         )
         .map_err(ApiError::from)?;
-        sqlx::query(
-            "UPDATE ca_keys SET key_enc = ?2 WHERE id = ?1",
-        )
-        .bind(ca.id.to_string())
-        .bind(serde_json::to_string(&key_enc).unwrap())
-        .execute(&state.db)
-        .await?;
+        sqlx::query("UPDATE ca_keys SET key_enc = ?2 WHERE id = ?1")
+            .bind(ca.id.to_string())
+            .bind(serde_json::to_string(&key_enc).unwrap())
+            .execute(&state.db)
+            .await?;
         cas_count += 1;
     }
 
@@ -828,12 +878,16 @@ pub async fn rotate_master_key(
         .server_age_identity
         .as_deref()
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| ApiError::Forbidden(
-            "This server has no age identity, so it cannot re-seal your master key.".into(),
-        ))?;
+        .ok_or_else(|| {
+            ApiError::Forbidden(
+                "This server has no age identity, so it cannot re-seal your master key.".into(),
+            )
+        })?;
     let identity = pandapass_core::crypto::AgeIdentity::parse(member)
         .map_err(|e| ApiError::Internal(format!("server age identity: {e}")))?;
-    let server_pub = identity.public_key().map_err(|e| ApiError::Internal(format!("server public key: {e}")))?;
+    let server_pub = identity
+        .public_key()
+        .map_err(|e| ApiError::Internal(format!("server public key: {e}")))?;
     let env = Envelope::create(
         user.id,
         &new_mk,
@@ -845,7 +899,9 @@ pub async fn rotate_master_key(
         // endpoint is to keep the server-side path alive, not to keep the
         // member-side path.
         &server_pub,
-        &SealOptions { server: Some(server_pub.clone()) },
+        &SealOptions {
+            server: Some(server_pub.clone()),
+        },
     )
     .map_err(ApiError::from)?;
     db::put_envelope(&state.db, user.id, &env.ciphertext).await?;
@@ -853,12 +909,11 @@ pub async fn rotate_master_key(
     // Invalidate sessions so a leaked cookie does not survive the rotation.
     db::delete_all_sessions(&state.db, user.id).await?;
 
-    let mut audit = AuditContext::new(&auth, AuditAction::MkRotate)
-        .with_meta(serde_json::json!({
-            "secrets_reencrypted": secrets_count,
-            "dynamic_creds_reencrypted": creds_count,
-            "cas_reencrypted": cas_count,
-        }));
+    let mut audit = AuditContext::new(&auth, AuditAction::MkRotate).with_meta(serde_json::json!({
+        "secrets_reencrypted": secrets_count,
+        "dynamic_creds_reencrypted": creds_count,
+        "cas_reencrypted": cas_count,
+    }));
     state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(MkRotateResponse {
@@ -935,7 +990,10 @@ pub async fn recovery_code_redeem(
     State(state): State<AppState>,
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<RecoveryCodeRedeemResponse>, ApiError> {
-    let client_ip = req.extensions().get::<crate::middleware::auth::ClientIp>().map(|c| c.0);
+    let client_ip = req
+        .extensions()
+        .get::<crate::middleware::auth::ClientIp>()
+        .map(|c| c.0);
     if let Some(ip) = client_ip {
         if let Err(retry_after) = state.rate_limiter.check(ip).await {
             return Err(ApiError::TooManyRequests(format!(
@@ -1026,12 +1084,14 @@ pub async fn recovery_code_redeem(
         .server_age_identity
         .as_deref()
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| ApiError::Forbidden(
-            "Server has no age identity; recovery rotation impossible.".into(),
-        ))?;
+        .ok_or_else(|| {
+            ApiError::Forbidden("Server has no age identity; recovery rotation impossible.".into())
+        })?;
     let age = AgeIdentity::parse(server_identity)
         .map_err(|e| ApiError::Internal(format!("server age: {e}")))?;
-    let server_pub = age.public_key().map_err(|e| ApiError::Internal(format!("server public: {e}")))?;
+    let server_pub = age
+        .public_key()
+        .map_err(|e| ApiError::Internal(format!("server public: {e}")))?;
     let member_recipient = with_email
         .age_public_key
         .as_deref()
@@ -1045,7 +1105,9 @@ pub async fn recovery_code_redeem(
         user.id,
         &new_mk,
         &member_recipient,
-        &SealOptions { server: Some(server_pub.clone()) },
+        &SealOptions {
+            server: Some(server_pub.clone()),
+        },
     )
     .map_err(ApiError::from)?;
     db::put_envelope(&state.db, user.id, &env.ciphertext).await?;
@@ -1060,9 +1122,9 @@ pub async fn recovery_code_redeem(
         project_role: None,
         project_id: None,
         env_id: None,
-            client_ip: None,
-            user_agent: None,
-            request_id: None,
+        client_ip: None,
+        user_agent: None,
+        request_id: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::Register);
     let meta = serde_json::json!({ "recovery_code_redeemed": true });
@@ -1095,7 +1157,10 @@ pub async fn password_reset(
     State(state): State<AppState>,
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<PasswordResetResponse>, ApiError> {
-    let client_ip = req.extensions().get::<crate::middleware::auth::ClientIp>().map(|c| c.0);
+    let client_ip = req
+        .extensions()
+        .get::<crate::middleware::auth::ClientIp>()
+        .map(|c| c.0);
     if let Some(ip) = client_ip {
         if let Err(retry_after) = state.rate_limiter.check(ip).await {
             return Err(ApiError::TooManyRequests(format!(
@@ -1156,9 +1221,9 @@ pub async fn password_reset(
         project_role: None,
         project_id: None,
         env_id: None,
-            client_ip: None,
-            user_agent: None,
-            request_id: None,
+        client_ip: None,
+        user_agent: None,
+        request_id: None,
     };
     let mut audit = AuditContext::new(&auth_ctx, AuditAction::PasswordChange);
     let meta = serde_json::json!({ "via": "recovery_code" });
@@ -1237,8 +1302,7 @@ pub async fn revoke_my_session(
 }
 
 fn client_ip_and_ua(headers: &axum::http::HeaderMap) -> (String, String) {
-    let ip = pandapass_core::audit::extract_client_ip(headers, None)
-        .unwrap_or_default();
+    let ip = pandapass_core::audit::extract_client_ip(headers, None).unwrap_or_default();
     let ua = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())

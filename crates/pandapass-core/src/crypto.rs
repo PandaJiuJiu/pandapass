@@ -1,15 +1,15 @@
 use crate::error::{CoreError, Result};
-use age::secrecy::{ExposeSecret, SecretString, SecretBox};
-use age::{Encryptor, x25519};
+use age::secrecy::{ExposeSecret, SecretBox, SecretString};
+use age::{x25519, Encryptor};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use base64::{engine::general_purpose, Engine};
 use chacha20poly1305::aead::{Aead, KeyInit, OsRng};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use rand::RngCore;
-use std::fmt;
-use zeroize::ZeroizeOnDrop;
-use totp_rs::{Algorithm, Secret, Builder as TotpBuilder};
-use base64::{Engine, engine::general_purpose};
 use sha2::{Digest, Sha256};
+use std::fmt;
+use totp_rs::{Algorithm, Builder as TotpBuilder, Secret};
+use zeroize::ZeroizeOnDrop;
 
 /// Master Key - 32 bytes, encrypted with age per user
 #[derive(ZeroizeOnDrop)]
@@ -47,7 +47,9 @@ impl AgePublicKey {
     }
 
     pub fn to_recipient(&self) -> Result<Box<dyn age::Recipient>> {
-        let recipient: age::x25519::Recipient = self.0.parse()
+        let recipient: age::x25519::Recipient = self
+            .0
+            .parse()
             .map_err(|e| CoreError::InvalidInput(format!("Invalid age recipient: {}", e)))?;
         Ok(Box::new(recipient))
     }
@@ -76,7 +78,9 @@ impl AgeIdentity {
 
     /// The corresponding public key, for wrapping envelopes.
     pub fn public_key(&self) -> Result<AgePublicKey> {
-        let id: x25519::Identity = self.as_str().parse()
+        let id: x25519::Identity = self
+            .as_str()
+            .parse()
             .map_err(|e| CoreError::InvalidInput(format!("Invalid age identity: {}", e)))?;
         Ok(AgePublicKey(id.to_public().to_string()))
     }
@@ -100,7 +104,9 @@ impl Clone for AgeIdentity {
 impl fmt::Debug for AgeIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Never print the private half.
-        f.debug_struct("AgeIdentity").field("public_key", &self.public_key().ok()).finish()
+        f.debug_struct("AgeIdentity")
+            .field("public_key", &self.public_key().ok())
+            .finish()
     }
 }
 
@@ -108,7 +114,7 @@ impl fmt::Debug for AgeIdentity {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Envelope {
     pub user_id: uuid::Uuid,
-    pub ciphertext: String,  // age encrypted master key
+    pub ciphertext: String, // age encrypted master key
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub rotated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -142,10 +148,7 @@ pub struct SealOptions {
 /// request handlers.
 pub trait EnvelopeBackend: Send + Sync {
     /// Unwrap the envelope ciphertext and return the master key plaintext.
-    fn unwrap_envelope<'a>(
-        &'a self,
-        envelope_ciphertext: &'a str,
-    ) -> Result<Vec<u8>>;
+    fn unwrap_envelope<'a>(&'a self, envelope_ciphertext: &'a str) -> Result<Vec<u8>>;
 }
 
 /// File-based envelope backend: parses the bech32 age identity at
@@ -174,10 +177,7 @@ impl FileAgeBackend {
 }
 
 impl EnvelopeBackend for FileAgeBackend {
-    fn unwrap_envelope<'a>(
-        &'a self,
-        envelope_ciphertext: &'a str,
-    ) -> Result<Vec<u8>> {
+    fn unwrap_envelope<'a>(&'a self, envelope_ciphertext: &'a str) -> Result<Vec<u8>> {
         let encrypted = general_purpose::STANDARD.decode(envelope_ciphertext)?;
         let decryptor = age::Decryptor::new_buffered(std::io::Cursor::new(&encrypted))
             .map_err(|e| CoreError::Internal(format!("Decryptor error: {e}")))?;
@@ -217,12 +217,15 @@ impl Envelope {
             .map_err(|e| CoreError::Internal(format!("Encryptor error: {}", e)))?;
         let mut encrypted = vec![];
         {
-            let mut writer = encryptor.wrap_output(&mut encrypted)
+            let mut writer = encryptor
+                .wrap_output(&mut encrypted)
                 .map_err(|e| CoreError::Internal(format!("Writer error: {}", e)))?;
             use std::io::Write;
-            writer.write_all(master_key.as_bytes())
+            writer
+                .write_all(master_key.as_bytes())
                 .map_err(|e| CoreError::Internal(format!("Write error: {}", e)))?;
-            writer.finish()
+            writer
+                .finish()
                 .map_err(|e| CoreError::Internal(format!("Finish error: {}", e)))?;
         }
         let ciphertext = general_purpose::STANDARD.encode(&encrypted);
@@ -259,7 +262,7 @@ impl Envelope {
 /// Secret value encrypted with master key using ChaCha20-Poly1305
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EncryptedSecret {
-    pub nonce: String,    // base64 encoded 12 bytes
+    pub nonce: String,      // base64 encoded 12 bytes
     pub ciphertext: String, // base64 encoded
 }
 
@@ -272,10 +275,7 @@ pub struct EncryptedSecret {
 ///
 /// Returns ASCII-armored age ciphertext (a `String`), suitable for storing as a
 /// `.yaml.age` file.
-pub fn age_encrypt_file(
-    content: &str,
-    recipients: &[AgePublicKey],
-) -> Result<String> {
+pub fn age_encrypt_file(content: &str, recipients: &[AgePublicKey]) -> Result<String> {
     if recipients.is_empty() {
         return Err(CoreError::InvalidInput(
             "age_encrypt_file requires at least one recipient".into(),
@@ -414,7 +414,8 @@ impl EncryptedSecret {
         OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let ciphertext = cipher.encrypt(nonce, value.as_bytes())
+        let ciphertext = cipher
+            .encrypt(nonce, value.as_bytes())
             .map_err(|_| CoreError::Internal("Encryption failed".into()))?;
 
         Ok(Self {
@@ -436,7 +437,8 @@ impl EncryptedSecret {
         let ciphertext = general_purpose::STANDARD.decode(&self.ciphertext)?;
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let plaintext = cipher.decrypt(nonce, ciphertext.as_ref())
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext.as_ref())
             .map_err(|_| CoreError::Internal("Decryption failed".into()))?;
 
         let plaintext_str = String::from_utf8(plaintext)
@@ -481,7 +483,8 @@ pub fn validate_password_policy(password: &str) -> Result<()> {
 /// Password hashing with Argon2id
 pub fn hash_password(password: &str) -> Result<String> {
     let argon2 = Argon2::default();
-    let hash = argon2.hash_password(password.as_bytes())
+    let hash = argon2
+        .hash_password(password.as_bytes())
         .map_err(|e| CoreError::Internal(format!("Argon2 error: {}", e)))?
         .to_string();
     Ok(hash)
@@ -491,7 +494,9 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
     let parsed_hash = PasswordHash::new(hash)
         .map_err(|e| CoreError::Internal(format!("Password hash parse error: {}", e)))?;
     let argon2 = Argon2::default();
-    Ok(argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok())
+    Ok(argon2
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_ok())
 }
 
 /// TOTP secret generation and verification (totp-rs 6.0 API)
@@ -636,12 +641,20 @@ mod tests {
             uuid::Uuid::now_v7(),
             &mk,
             &member.public_key().unwrap(),
-            &SealOptions { server: Some(server.public_key().unwrap()) },
+            &SealOptions {
+                server: Some(server.public_key().unwrap()),
+            },
         )
         .unwrap();
 
-        assert_eq!(env.decrypt(member.as_str()).unwrap().as_bytes(), mk.as_bytes());
-        assert_eq!(env.decrypt(server.as_str()).unwrap().as_bytes(), mk.as_bytes());
+        assert_eq!(
+            env.decrypt(member.as_str()).unwrap().as_bytes(),
+            mk.as_bytes()
+        );
+        assert_eq!(
+            env.decrypt(server.as_str()).unwrap().as_bytes(),
+            mk.as_bytes()
+        );
     }
 
     #[test]
@@ -709,7 +722,9 @@ mod tests {
         let a = generate_token(32);
         let b = generate_token(32);
         assert_ne!(a, b);
-        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     }
 
     #[test]
@@ -745,7 +760,9 @@ mod envelope_backend_tests {
             uuid::Uuid::now_v7(),
             &mk,
             &member.public_key().unwrap(),
-            &SealOptions { server: Some(server.public_key().unwrap()) },
+            &SealOptions {
+                server: Some(server.public_key().unwrap()),
+            },
         )
         .unwrap();
 
@@ -811,16 +828,23 @@ mod domain_separation_tests {
         let mk = MasterKey::generate();
         let plaintext = "shared value";
 
-        let enc_a = EncryptedSecret::encrypt_with_purpose(plaintext, &mk, key_purpose::SECRET_VALUE).unwrap();
-        let enc_b = EncryptedSecret::encrypt_with_purpose(plaintext, &mk, key_purpose::TOTP_SECRET).unwrap();
+        let enc_a =
+            EncryptedSecret::encrypt_with_purpose(plaintext, &mk, key_purpose::SECRET_VALUE)
+                .unwrap();
+        let enc_b = EncryptedSecret::encrypt_with_purpose(plaintext, &mk, key_purpose::TOTP_SECRET)
+            .unwrap();
 
         // Both encrypt the same plaintext but the ciphertexts must differ
         // (different AEAD keys via HKDF).
         assert_ne!(enc_a.ciphertext, enc_b.ciphertext);
 
         // Cross-decrypting must fail — that is the whole point.
-        assert!(enc_a.decrypt_with_purpose(&mk, key_purpose::TOTP_SECRET).is_err());
-        assert!(enc_b.decrypt_with_purpose(&mk, key_purpose::SECRET_VALUE).is_err());
+        assert!(enc_a
+            .decrypt_with_purpose(&mk, key_purpose::TOTP_SECRET)
+            .is_err());
+        assert!(enc_b
+            .decrypt_with_purpose(&mk, key_purpose::SECRET_VALUE)
+            .is_err());
     }
 
     /// Subkeys derived for the same purpose with the same MK are equal —

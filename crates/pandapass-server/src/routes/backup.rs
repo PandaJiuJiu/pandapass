@@ -3,7 +3,7 @@ use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::models::*;
 use serde::Serialize;
 
-use crate::middleware::auth::{Auth, ApiError};
+use crate::middleware::auth::{ApiError, Auth};
 use crate::state::AppState;
 
 /// A consistent snapshot of the SQLite database, returned as bytes so the CLI
@@ -49,10 +49,8 @@ pub async fn create_backup(
         .unwrap_or_else(|| std::env::temp_dir().display().to_string());
     std::fs::create_dir_all(&dir)
         .map_err(|e| ApiError::Internal(format!("backup dir {dir:?}: {e}")))?;
-    let path = std::path::PathBuf::from(dir).join(format!(
-        "pandapass-backup-{}.db",
-        uuid::Uuid::now_v7()
-    ));
+    let path =
+        std::path::PathBuf::from(dir).join(format!("pandapass-backup-{}.db", uuid::Uuid::now_v7()));
 
     // `VACUUM INTO` produces a consistent snapshot of the live database. It
     // must run as a raw SQL statement (sqlx has no helper for it).

@@ -1,4 +1,7 @@
-use axum::{extract::{Path, Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::crypto::{EncryptedSecret, MasterKey};
 use pandapass_core::models::*;
@@ -9,8 +12,8 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::middleware::auth::{ApiError, Auth};
 use crate::state::AppState;
-use crate::middleware::auth::{Auth, ApiError};
 
 #[derive(Deserialize)]
 pub struct SetSecretRequest {
@@ -77,7 +80,11 @@ async fn scope_auth(
 /// decrypt. The MCP `run_with_secret` path is what keeps secrets out of the
 /// agent's context.
 pub async fn get_master_key(state: &AppState, user_id: uuid::Uuid) -> Result<MasterKey, ApiError> {
-    let Some(identity) = state.config.server_age_identity.as_deref().filter(|s| !s.is_empty())
+    let Some(identity) = state
+        .config
+        .server_age_identity
+        .as_deref()
+        .filter(|s| !s.is_empty())
     else {
         // Not a server fault: this deployment simply cannot decrypt on a
         // member's behalf. Say so in a way the caller can act on, rather than
@@ -120,19 +127,24 @@ pub async fn list_secrets(
     Rbac::check_secret_access(&ctx, project.id, env.id, true)?;
 
     // Policy evaluation
-    let input = PolicyInput::for_context(
-        &ctx,
-        &slug,
-        &env_slug,
-        Permission::ListSecrets,
-        None,
-    );
-    if let PolicyDecision::Deny { policy_id, message } = state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await? {
+    let input = PolicyInput::for_context(&ctx, &slug, &env_slug, Permission::ListSecrets, None);
+    if let PolicyDecision::Deny { policy_id, message } = state
+        .policy_engine
+        .evaluate(Some(project.id), Some(env.id), &input)
+        .await?
+    {
         let mut denied = AuditContext::new(&ctx, AuditAction::SecretList)
             .with_project(project.id)
             .with_env(env.id);
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     let metas = db::list_secret_metas(&state.db, project.id, env.id).await?;
@@ -169,20 +181,26 @@ pub async fn get_secret(
     Rbac::check_secret_access(&ctx, project.id, env.id, true)?;
 
     // Policy evaluation
-    let input = PolicyInput::for_context(
-        &ctx,
-        &slug,
-        &env_slug,
-        Permission::ReadSecret,
-        Some(&key),
-    );
-    if let PolicyDecision::Deny { policy_id, message } = state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await? {
+    let input =
+        PolicyInput::for_context(&ctx, &slug, &env_slug, Permission::ReadSecret, Some(&key));
+    if let PolicyDecision::Deny { policy_id, message } = state
+        .policy_engine
+        .evaluate(Some(project.id), Some(env.id), &input)
+        .await?
+    {
         let mut denied = AuditContext::new(&ctx, AuditAction::SecretRead)
             .with_project(project.id)
             .with_env(env.id)
             .with_secret_key(key.clone());
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     let secret = db::get_secret(&state.db, project.id, env.id, &key).await?;
@@ -221,20 +239,25 @@ pub async fn get_secret_encrypted(
     Rbac::check_secret_access_with(&ctx, project.id, env.id, Permission::RunSecret)?;
 
     // Policy evaluation
-    let input = PolicyInput::for_context(
-        &ctx,
-        &slug,
-        &env_slug,
-        Permission::RunSecret,
-        Some(&key),
-    );
-    if let PolicyDecision::Deny { policy_id, message } = state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await? {
+    let input = PolicyInput::for_context(&ctx, &slug, &env_slug, Permission::RunSecret, Some(&key));
+    if let PolicyDecision::Deny { policy_id, message } = state
+        .policy_engine
+        .evaluate(Some(project.id), Some(env.id), &input)
+        .await?
+    {
         let mut denied = AuditContext::new(&ctx, AuditAction::SecretRead)
             .with_project(project.id)
             .with_env(env.id)
             .with_secret_key(key.clone());
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     let secret = db::get_secret(&state.db, project.id, env.id, &key).await?;
@@ -288,20 +311,25 @@ async fn write_secret(
     let ctx = scope_auth(state, auth, &project, &env).await;
 
     // Policy evaluation for write
-    let input = PolicyInput::for_context(
-        &ctx,
-        slug,
-        env_slug,
-        Permission::WriteSecret,
-        Some(&key),
-    );
-    if let PolicyDecision::Deny { policy_id, message } = state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await? {
+    let input = PolicyInput::for_context(&ctx, slug, env_slug, Permission::WriteSecret, Some(&key));
+    if let PolicyDecision::Deny { policy_id, message } = state
+        .policy_engine
+        .evaluate(Some(project.id), Some(env.id), &input)
+        .await?
+    {
         let mut denied = AuditContext::new(&ctx, AuditAction::SecretUpdate)
             .with_project(project.id)
             .with_env(env.id)
             .with_secret_key(key.clone());
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     // A refused write is the single most interesting event in a vault's audit
@@ -313,7 +341,11 @@ async fn write_secret(
             .with_project(project.id)
             .with_env(env.id)
             .with_secret_key(key.clone());
-        state.audit.log_denied(&mut denied, &e.to_string()).await.ok();
+        state
+            .audit
+            .log_denied(&mut denied, &e.to_string())
+            .await
+            .ok();
         return Err(e.into());
     }
 
@@ -321,7 +353,9 @@ async fn write_secret(
         return Err(ApiError::BadRequest("Key must be 1-256 characters".into()));
     }
 
-    let existed = db::get_secret(&state.db, project.id, env.id, &key).await.is_ok();
+    let existed = db::get_secret(&state.db, project.id, env.id, &key)
+        .await
+        .is_ok();
 
     let mk = get_master_key(state, ctx.user.id).await?;
     let value_enc = EncryptedSecret::encrypt(&value, &mk)?;
@@ -330,7 +364,11 @@ async fn write_secret(
 
     let secret = db::get_secret(&state.db, project.id, env.id, &key).await?;
 
-    let action = if existed { AuditAction::SecretUpdate } else { AuditAction::SecretCreate };
+    let action = if existed {
+        AuditAction::SecretUpdate
+    } else {
+        AuditAction::SecretCreate
+    };
     let mut audit = AuditContext::new(&ctx, action)
         .with_project(project.id)
         .with_env(env.id)
@@ -394,20 +432,26 @@ pub async fn delete_secret(
     let ctx = scope_auth(&state, &auth, &project, &env).await;
 
     // Policy evaluation for delete
-    let input = PolicyInput::for_context(
-        &ctx,
-        &slug,
-        &env_slug,
-        Permission::DeleteSecret,
-        Some(&key),
-    );
-    if let PolicyDecision::Deny { policy_id, message } = state.policy_engine.evaluate(Some(project.id), Some(env.id), &input).await? {
+    let input =
+        PolicyInput::for_context(&ctx, &slug, &env_slug, Permission::DeleteSecret, Some(&key));
+    if let PolicyDecision::Deny { policy_id, message } = state
+        .policy_engine
+        .evaluate(Some(project.id), Some(env.id), &input)
+        .await?
+    {
         let mut denied = AuditContext::new(&ctx, AuditAction::SecretDelete)
             .with_project(project.id)
             .with_env(env.id)
             .with_secret_key(key.clone());
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     Rbac::check_secret_access(&ctx, project.id, env.id, false)?;
@@ -453,8 +497,10 @@ pub fn server_identity_str(state: &AppState) -> Result<String, ApiError> {
         .server_age_identity
         .as_deref()
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| ApiError::Forbidden(
-            "This server has no age identity. Configure PANDAPASS_SERVER_AGE_IDENTITY.".into(),
-        ))?;
+        .ok_or_else(|| {
+            ApiError::Forbidden(
+                "This server has no age identity. Configure PANDAPASS_SERVER_AGE_IDENTITY.".into(),
+            )
+        })?;
     Ok(identity.to_string())
 }

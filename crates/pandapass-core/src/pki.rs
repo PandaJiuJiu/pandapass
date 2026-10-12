@@ -14,17 +14,16 @@
 //! SSH user certificates: TODO with `ssh-key` crate. Current API stores
 //! whatever `cert_pem` the client provides.
 
-use crate::models::*;
 use crate::crypto::{EncryptedSecret, MasterKey};
+use crate::models::*;
+use base64::{engine::general_purpose, Engine};
 use rcgen::{
-    CertificateParams, CertificateSigningRequestParams,
-    DnType, DnValue, KeyPair, KeyUsagePurpose, SanType, BasicConstraints, IsCa,
-    ExtendedKeyUsagePurpose, Issuer,
+    BasicConstraints, CertificateParams, CertificateSigningRequestParams, DnType, DnValue,
+    ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, SanType,
 };
-use time::OffsetDateTime;
 use thiserror::Error;
+use time::OffsetDateTime;
 use x509_parser::prelude::{FromDer, X509Certificate};
-use base64::{Engine, engine::general_purpose};
 
 /// PKI signing errors
 #[derive(Debug, Error)]
@@ -67,7 +66,10 @@ pub fn create_client_csr(subject_cn: &str, dns_names: &[String]) -> Result<Clien
     let mut params = CertificateParams::default();
     params.distinguished_name = {
         let mut dn = rcgen::DistinguishedName::new();
-        dn.push(DnType::CommonName, DnValue::Utf8String(subject_cn.to_string()));
+        dn.push(
+            DnType::CommonName,
+            DnValue::Utf8String(subject_cn.to_string()),
+        );
         dn
     };
     for name in dns_names {
@@ -118,8 +120,8 @@ pub fn sign_x509_from_csr(
         .expose_secret()
         .to_string();
 
-    let ca_key_pair = KeyPair::from_pem(&ca_key_pem)
-        .map_err(|e| PkiError::KeyDecode(e.to_string()))?;
+    let ca_key_pair =
+        KeyPair::from_pem(&ca_key_pem).map_err(|e| PkiError::KeyDecode(e.to_string()))?;
 
     // 2. Load CA certificate and build Issuer
     let issuer = Issuer::from_ca_cert_pem(ca_cert_pem, ca_key_pair)
@@ -144,7 +146,8 @@ pub fn sign_x509_from_csr(
     // when the cert is verified by an OpenSSH/openssl validator. The audit log records it.
 
     // 6. Sign the certificate using the CSR's public key
-    let cert = params.signed_by(&csr_params.public_key, &issuer)
+    let cert = params
+        .signed_by(&csr_params.public_key, &issuer)
         .map_err(|e| PkiError::Rcgen(e.to_string()))?;
 
     let pem = cert.pem();
@@ -152,7 +155,8 @@ pub fn sign_x509_from_csr(
     // alongside the cert and revoke it individually later. We base64-
     // decode the PEM body to get the DER, then run the existing
     // x509-parser. The serial is hex-encoded for storage.
-    let serial = pem.lines()
+    let serial = pem
+        .lines()
         .filter(|l| !l.starts_with("-----") && !l.is_empty())
         .collect::<Vec<_>>()
         .join("");
@@ -224,13 +228,11 @@ pub fn generate_root_ca(
 
     // Generate and self-sign
     let key_pair = KeyPair::generate().map_err(|e| PkiError::Rcgen(e.to_string()))?;
-    let cert = params.self_signed(&key_pair)
+    let cert = params
+        .self_signed(&key_pair)
         .map_err(|e| PkiError::Rcgen(e.to_string()))?;
 
-    Ok((
-        cert.pem(),
-        key_pair.serialize_pem(),
-    ))
+    Ok((cert.pem(), key_pair.serialize_pem()))
 }
 
 /// Generate a new intermediate CA signed by an existing root CA.
@@ -257,8 +259,8 @@ pub fn generate_intermediate_ca(
         .map_err(|e| PkiError::KeyDecode(e.to_string()))?
         .expose_secret()
         .to_string();
-    let parent_key_pair = KeyPair::from_pem(&parent_key_pem)
-        .map_err(|e| PkiError::KeyDecode(e.to_string()))?;
+    let parent_key_pair =
+        KeyPair::from_pem(&parent_key_pem).map_err(|e| PkiError::KeyDecode(e.to_string()))?;
     let issuer = Issuer::from_ca_cert_pem(parent_ca_cert_pem, parent_key_pair)
         .map_err(|e| PkiError::CertDecode(e.to_string()))?;
 
@@ -288,10 +290,7 @@ pub fn generate_intermediate_ca(
         .signed_by(&key_pair, &issuer)
         .map_err(|e| PkiError::Rcgen(e.to_string()))?;
 
-    Ok((
-        cert.pem(),
-        key_pair.serialize_pem(),
-    ))
+    Ok((cert.pem(), key_pair.serialize_pem()))
 }
 
 /// SSH certificate signing.
@@ -418,7 +417,12 @@ mod tests {
 
         // The CA key is stored the same way every other secret is.
         let mk = MasterKey::generate();
-        let ca_key_enc = EncryptedSecret::encrypt_with_purpose(&ca_key_pem, &mk, crate::crypto::key_purpose::CA_X509_KEY).unwrap();
+        let ca_key_enc = EncryptedSecret::encrypt_with_purpose(
+            &ca_key_pem,
+            &mk,
+            crate::crypto::key_purpose::CA_X509_KEY,
+        )
+        .unwrap();
 
         // Client side: key pair stays here, only the CSR travels.
         let req = create_client_csr("alice@build", &["alice.example.com".to_string()]).unwrap();
@@ -442,18 +446,21 @@ mod tests {
         let subject = cert.subject().to_string();
         let issuer = cert.issuer().to_string();
         assert!(subject.contains("alice@build"), "subject was {subject}");
-        assert!(issuer.contains("PandaPass Test Root"), "issuer was {issuer}");
+        assert!(
+            issuer.contains("PandaPass Test Root"),
+            "issuer was {issuer}"
+        );
 
         // An end-entity cert must not be a CA.
         assert!(!cert.is_ca(), "issued certificate must not be a CA");
 
         // Validity window is the one the caller asked for, not rcgen's default
         // (which would ignore the request entirely).
+        assert_eq!(cert.validity().not_after.timestamp(), not_after.timestamp());
         assert_eq!(
-            cert.validity().not_after.timestamp(),
-            not_after.timestamp()
+            cert.validity().not_before.timestamp(),
+            not_before.timestamp()
         );
-        assert_eq!(cert.validity().not_before.timestamp(), not_before.timestamp());
 
         // The signature actually verifies against the CA's public key — this is
         // the assertion that a hand-rolled DER assembly would most likely fail.
@@ -473,7 +480,12 @@ mod tests {
         let (ca_cert_pem, ca_key_pem) =
             generate_root_ca("CN=PandaPass Test Root", not_before, not_after).unwrap();
         let mk = MasterKey::generate();
-        let ca_key_enc = EncryptedSecret::encrypt_with_purpose(&ca_key_pem, &mk, crate::crypto::key_purpose::CA_X509_KEY).unwrap();
+        let ca_key_enc = EncryptedSecret::encrypt_with_purpose(
+            &ca_key_pem,
+            &mk,
+            crate::crypto::key_purpose::CA_X509_KEY,
+        )
+        .unwrap();
 
         let err = sign_x509_from_csr(
             &ca_key_enc,
@@ -497,8 +509,12 @@ mod tests {
         let not_after = utc(2_000_000_000);
         let (ca_cert_pem, ca_key_pem) =
             generate_root_ca("CN=PandaPass Test Root", not_before, not_after).unwrap();
-        let ca_key_enc =
-            EncryptedSecret::encrypt_with_purpose(&ca_key_pem, &MasterKey::generate(), crate::crypto::key_purpose::CA_X509_KEY).unwrap();
+        let ca_key_enc = EncryptedSecret::encrypt_with_purpose(
+            &ca_key_pem,
+            &MasterKey::generate(),
+            crate::crypto::key_purpose::CA_X509_KEY,
+        )
+        .unwrap();
         let req = create_client_csr("alice", &[]).unwrap();
 
         let err = sign_x509_from_csr(
@@ -549,12 +565,17 @@ mod tests {
         assert!(int_cert.is_ca(), "intermediate must be a CA");
         assert!(int_cert.subject().to_string().contains("PandaPass Issuing"));
         assert!(int_cert.issuer().to_string().contains("PandaPass Root"));
-        assert_eq!(int_cert.validity().not_after.timestamp(), not_after.timestamp());
+        assert_eq!(
+            int_cert.validity().not_after.timestamp(),
+            not_after.timestamp()
+        );
 
         // Signature verifies against the root's public key.
         let root_der = pem_decode(&root_cert_pem);
         let (_, root_cert) = X509Certificate::from_der(&root_der).unwrap();
-        int_cert.verify_signature(Some(root_cert.public_key())).unwrap();
+        int_cert
+            .verify_signature(Some(root_cert.public_key()))
+            .unwrap();
 
         // The returned key pairs with the returned certificate — rcgen can
         // use it as an issuer to actually sign an end-entity cert, proving
@@ -586,7 +607,9 @@ mod tests {
             ee_cert.issuer()
         );
         // And the chain verifies: EE ← intermediate ← root.
-        ee_cert.verify_signature(Some(int_cert.public_key())).unwrap();
+        ee_cert
+            .verify_signature(Some(int_cert.public_key()))
+            .unwrap();
     }
 
     /// Wrong master key ⇒ the parent key never decrypts, so generation of the
@@ -628,13 +651,20 @@ mod tests {
 
         // CA side: an ed25519 OpenSSH private key, stored encrypted.
         let mut rng = rand::rngs::OsRng;
-        let ca_private = ssh_key::private::PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
+        let ca_private =
+            ssh_key::private::PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
         let ca_pem = ca_private.to_openssh(ssh_key::LineEnding::LF).unwrap();
         let mk = MasterKey::generate();
-        let ca_key_enc = EncryptedSecret::encrypt_with_purpose(&ca_pem, &mk, crate::crypto::key_purpose::CA_X509_KEY).unwrap();
+        let ca_key_enc = EncryptedSecret::encrypt_with_purpose(
+            &ca_pem,
+            &mk,
+            crate::crypto::key_purpose::CA_X509_KEY,
+        )
+        .unwrap();
 
         // User side: a fresh ed25519 keypair. Only the public half travels.
-        let user_private = ssh_key::private::PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
+        let user_private =
+            ssh_key::private::PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
         let user_public_openssh = user_private.public_key().to_openssh().unwrap();
 
         let not_before = chrono::Utc::now() - chrono::Duration::hours(1);
@@ -650,7 +680,8 @@ mod tests {
             SshKeyType::Ed25519,
             not_before,
             not_after,
-        ).unwrap();
+        )
+        .unwrap();
 
         // The output must be an OpenSSH *certificate* line, not a plain key.
         assert!(
@@ -664,14 +695,14 @@ mod tests {
         assert_eq!(cert.cert_type(), ssh_key::certificate::CertType::User);
         // Compare public keys by their fingerprint (works for any KeyData).
         let cert_fp = cert.public_key().fingerprint(ssh_key::HashAlg::Sha256);
-        let user_fp = user_private.public_key().fingerprint(ssh_key::HashAlg::Sha256);
-        assert_eq!(
-            cert_fp,
-            user_fp,
-            "certified key must be the user's key"
-        );
+        let user_fp = user_private
+            .public_key()
+            .fingerprint(ssh_key::HashAlg::Sha256);
+        assert_eq!(cert_fp, user_fp, "certified key must be the user's key");
         // And the signature must verify against the CA's public key.
-        let ca_fingerprint = ca_private.public_key().fingerprint(ssh_key::HashAlg::Sha256);
+        let ca_fingerprint = ca_private
+            .public_key()
+            .fingerprint(ssh_key::HashAlg::Sha256);
         cert.validate(std::iter::once(&ca_fingerprint)).unwrap();
     }
 
@@ -680,7 +711,12 @@ mod tests {
     #[test]
     fn ssh_cert_signing_refuses_rsa() {
         let mk = MasterKey::generate();
-        let ca_key_enc = EncryptedSecret::encrypt_with_purpose("not a key", &mk, crate::crypto::key_purpose::CA_X509_KEY).unwrap();
+        let ca_key_enc = EncryptedSecret::encrypt_with_purpose(
+            "not a key",
+            &mk,
+            crate::crypto::key_purpose::CA_X509_KEY,
+        )
+        .unwrap();
         let err = sign_ssh_cert(
             &ca_key_enc,
             "",
@@ -691,7 +727,8 @@ mod tests {
             SshKeyType::Rsa,
             chrono::Utc::now(),
             chrono::Utc::now() + chrono::Duration::hours(1),
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(matches!(err, PkiError::SshKey(_)), "got {err:?}");
     }
 
@@ -703,6 +740,8 @@ mod tests {
             .filter(|l| !l.starts_with("-----"))
             .map(|l| l.trim())
             .collect();
-        base64::engine::general_purpose::STANDARD.decode(body).unwrap()
+        base64::engine::general_purpose::STANDARD
+            .decode(body)
+            .unwrap()
     }
 }

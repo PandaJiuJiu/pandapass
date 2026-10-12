@@ -1,15 +1,20 @@
-use axum::{extract::{Path, Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use base64::{engine::general_purpose, Engine};
 use pandapass_core::audit::{AuditAction, AuditContext};
 use pandapass_core::models::*;
-use pandapass_core::pki::{sign_x509_from_csr, sign_ssh_cert, generate_root_ca, generate_intermediate_ca, PkiError};
+use pandapass_core::pki::{
+    generate_intermediate_ca, generate_root_ca, sign_ssh_cert, sign_x509_from_csr, PkiError,
+};
 use pandapass_core::policy::{PolicyDecision, PolicyInput};
 use pandapass_db as db;
 use serde::{Deserialize, Serialize};
 use x509_parser::prelude::{FromDer, X509Certificate};
 
+use crate::middleware::auth::{ApiError, Auth};
 use crate::state::AppState;
-use crate::middleware::auth::{Auth, ApiError};
 
 #[derive(Deserialize)]
 pub struct CreateCaKeyRequest {
@@ -63,8 +68,15 @@ pub async fn create_ca_key(
         state.policy_engine.evaluate(None, None, &input).await?
     {
         let mut denied = AuditContext::new(&auth, AuditAction::CaCreate);
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     // Get the user's master key to encrypt the CA private key
@@ -83,7 +95,8 @@ pub async fn create_ca_key(
         req.not_before,
         req.not_after,
         auth.user.id,
-    ).await?;
+    )
+    .await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::CaCreate);
     audit = audit.with_meta(serde_json::json!({ "ca_id": ca_key.id, "kind": req.kind.as_str() }));
@@ -115,21 +128,27 @@ pub async fn generate_ca_key(
         state.policy_engine.evaluate(None, None, &input).await?
     {
         let mut denied = AuditContext::new(&auth, AuditAction::CaCreate);
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     // Get the user's master key to encrypt the CA private key
     let mk = crate::routes::secrets::get_master_key(&state, auth.user.id).await?;
 
     let (cert_pem, key_pem) = match req.kind {
-        CaKeyType::Root => {
-            generate_root_ca(&req.subject_dn, req.not_before, req.not_after)
-                .map_err(|e| ApiError::Internal(e.to_string()))?
-        }
+        CaKeyType::Root => generate_root_ca(&req.subject_dn, req.not_before, req.not_after)
+            .map_err(|e| ApiError::Internal(e.to_string()))?,
         CaKeyType::Intermediate => {
-            let parent_id = req.parent_ca_id
-                .ok_or_else(|| ApiError::BadRequest("parent_ca_id is required for an intermediate CA".into()))?;
+            let parent_id = req.parent_ca_id.ok_or_else(|| {
+                ApiError::BadRequest("parent_ca_id is required for an intermediate CA".into())
+            })?;
             let parent = db::get_ca_key(&state.db, parent_id).await?;
             if parent.revoked_at.is_some() {
                 return Err(ApiError::BadRequest("parent CA is revoked".into()));
@@ -160,10 +179,13 @@ pub async fn generate_ca_key(
         req.not_before,
         req.not_after,
         auth.user.id,
-    ).await?;
+    )
+    .await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::CaCreate);
-    audit = audit.with_meta(serde_json::json!({ "ca_id": ca_key.id, "kind": req.kind.as_str(), "generated": true }));
+    audit = audit.with_meta(
+        serde_json::json!({ "ca_id": ca_key.id, "kind": req.kind.as_str(), "generated": true }),
+    );
     state.audit.log_success(&mut audit).await.ok();
 
     Ok(Json(ca_key))
@@ -196,8 +218,15 @@ pub async fn revoke_ca_key(
         state.policy_engine.evaluate(None, None, &input).await?
     {
         let mut denied = AuditContext::new(&auth, AuditAction::CaRevoke);
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     db::revoke_ca_key(&state.db, id).await?;
@@ -240,8 +269,15 @@ pub async fn sign_csr(
     {
         let mut denied = AuditContext::new(&auth, AuditAction::CaSign)
             .with_meta(serde_json::json!({ "ca_id": ca_id }));
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     // Load CA key
@@ -262,7 +298,8 @@ pub async fn sign_csr(
         &req.csr_pem,
         req.not_before,
         req.not_after,
-    ).map_err(|e| match e {
+    )
+    .map_err(|e| match e {
         PkiError::CsrParse(m) => ApiError::BadRequest(format!("Invalid CSR: {m}")),
         other => ApiError::Internal(format!("PKI signing failed: {other}")),
     })?;
@@ -292,7 +329,8 @@ pub async fn sign_csr(
         req.not_after,
         &cert_pem,
         auth.user.id,
-    ).await?;
+    )
+    .await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::CaSign);
     audit = audit.with_meta(serde_json::json!({
@@ -346,21 +384,34 @@ pub async fn sign_ssh_cert_route(
     // Policy evaluation. SSH certs can be scoped to a project (for member-only
     // access rules), so pass project_id if present; otherwise global scope.
     let project_slug = if let Some(pid) = req.project_id {
-        db::get_project(&state.db, pid).await.map(|p| p.slug).ok().unwrap_or_default()
+        db::get_project(&state.db, pid)
+            .await
+            .map(|p| p.slug)
+            .ok()
+            .unwrap_or_default()
     } else {
         String::new()
     };
     let input = PolicyInput::for_context(&auth, &project_slug, "", Permission::ManageUsers, None);
-    if let PolicyDecision::Deny { policy_id, message } =
-        state.policy_engine.evaluate(req.project_id, None, &input).await?
+    if let PolicyDecision::Deny { policy_id, message } = state
+        .policy_engine
+        .evaluate(req.project_id, None, &input)
+        .await?
     {
         let mut denied = AuditContext::new(&auth, AuditAction::SshCertIssue)
             .with_meta(serde_json::json!({ "ca_id": ca_id, "user_id": req.user_id }));
         if let Some(pid) = req.project_id {
             denied = denied.with_project(pid);
         }
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     // Load CA key
@@ -382,7 +433,8 @@ pub async fn sign_ssh_cert_route(
         req.key_type,
         req.not_before,
         req.not_after,
-    ).map_err(|e| ApiError::Internal(format!("SSH signing failed: {e}")))?;
+    )
+    .map_err(|e| ApiError::Internal(format!("SSH signing failed: {e}")))?;
 
     // Store the signed certificate for tracking and later revocation
     let ssh_cert = db::create_ssh_cert(
@@ -395,7 +447,8 @@ pub async fn sign_ssh_cert_route(
         req.not_after,
         req.not_before,
         auth.user.id,
-    ).await?;
+    )
+    .await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::SshCertIssue);
     audit = audit.with_meta(serde_json::json!({
@@ -448,7 +501,8 @@ pub async fn list_ssh_certs(
         query.user_id,
         query.project_id,
         query.include_revoked.unwrap_or(false),
-    ).await?;
+    )
+    .await?;
     Ok(Json(certs))
 }
 
@@ -459,20 +513,28 @@ pub async fn create_ssh_cert(
 ) -> Result<Json<SshCert>, ApiError> {
     // Only admins or the user themselves can request certs for a user
     if !auth.can(Permission::ManageUsers) && req.user_id != auth.user.id {
-        return Err(ApiError::Forbidden("Cannot create SSH cert for another user".into()));
+        return Err(ApiError::Forbidden(
+            "Cannot create SSH cert for another user".into(),
+        ));
     }
 
     // Verify project access if provided
     if let Some(project_id) = req.project_id {
         let role = db::get_member_role(&state.db, project_id, req.user_id).await?;
         if role.is_none() && !auth.can(Permission::ManageUsers) {
-            return Err(ApiError::Forbidden("User is not a member of this project".into()));
+            return Err(ApiError::Forbidden(
+                "User is not a member of this project".into(),
+            ));
         }
     }
 
     // Policy evaluation — scoped to project if provided
     let project_slug = if let Some(pid) = req.project_id {
-        db::get_project(&state.db, pid).await.map(|p| p.slug).ok().unwrap_or_default()
+        db::get_project(&state.db, pid)
+            .await
+            .map(|p| p.slug)
+            .ok()
+            .unwrap_or_default()
     } else {
         String::new()
     };
@@ -484,16 +546,25 @@ pub async fn create_ssh_cert(
             .unwrap_or(None);
     }
     let input = PolicyInput::for_context(&ctx, &project_slug, "", Permission::ManageUsers, None);
-    if let PolicyDecision::Deny { policy_id, message } =
-        state.policy_engine.evaluate(req.project_id, None, &input).await?
+    if let PolicyDecision::Deny { policy_id, message } = state
+        .policy_engine
+        .evaluate(req.project_id, None, &input)
+        .await?
     {
         let mut denied = AuditContext::new(&ctx, AuditAction::SshCertIssue)
             .with_meta(serde_json::json!({ "user_id": req.user_id }));
         if let Some(pid) = req.project_id {
             denied = denied.with_project(pid);
         }
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     let ssh_cert = db::create_ssh_cert(
@@ -506,7 +577,8 @@ pub async fn create_ssh_cert(
         req.valid_before,
         req.valid_after,
         auth.user.id,
-    ).await?;
+    )
+    .await?;
 
     let mut audit = AuditContext::new(&auth, AuditAction::SshCertIssue);
     audit = audit.with_meta(serde_json::json!({
@@ -529,12 +601,18 @@ pub async fn revoke_ssh_cert(
 
     // Only admins or the cert owner can revoke
     if !auth.can(Permission::ManageUsers) && cert.user_id != auth.user.id {
-        return Err(ApiError::Forbidden("Cannot revoke another user's SSH cert".into()));
+        return Err(ApiError::Forbidden(
+            "Cannot revoke another user's SSH cert".into(),
+        ));
     }
 
     // Policy evaluation — scoped to the cert's project if any
     let project_slug = if let Some(pid) = cert.project_id {
-        db::get_project(&state.db, pid).await.map(|p| p.slug).ok().unwrap_or_default()
+        db::get_project(&state.db, pid)
+            .await
+            .map(|p| p.slug)
+            .ok()
+            .unwrap_or_default()
     } else {
         String::new()
     };
@@ -546,16 +624,25 @@ pub async fn revoke_ssh_cert(
             .unwrap_or(None);
     }
     let input = PolicyInput::for_context(&ctx, &project_slug, "", Permission::ManageUsers, None);
-    if let PolicyDecision::Deny { policy_id, message } =
-        state.policy_engine.evaluate(cert.project_id, None, &input).await?
+    if let PolicyDecision::Deny { policy_id, message } = state
+        .policy_engine
+        .evaluate(cert.project_id, None, &input)
+        .await?
     {
         let mut denied = AuditContext::new(&ctx, AuditAction::SshCertRevoke)
             .with_meta(serde_json::json!({ "ssh_cert_id": id }));
         if let Some(pid) = cert.project_id {
             denied = denied.with_project(pid);
         }
-        state.audit.log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message)).await.ok();
-        return Err(ApiError::Forbidden(format!("Policy {}: {}", policy_id, message)));
+        state
+            .audit
+            .log_denied(&mut denied, &format!("Policy {}: {}", policy_id, message))
+            .await
+            .ok();
+        return Err(ApiError::Forbidden(format!(
+            "Policy {}: {}",
+            policy_id, message
+        )));
     }
 
     db::revoke_ssh_cert(&state.db, id).await?;

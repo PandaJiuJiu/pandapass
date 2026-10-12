@@ -622,10 +622,7 @@ impl Permission {
     fn is_viewer_allowed(&self) -> bool {
         matches!(
             self,
-            Self::ReadProject
-                | Self::ReadSecret
-                | Self::ListSecrets
-                | Self::RunSecret
+            Self::ReadProject | Self::ReadSecret | Self::ListSecrets | Self::RunSecret
         )
     }
 
@@ -751,7 +748,6 @@ impl CaKeyType {
     }
 }
 
-
 /// API request/response types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginRequest {
@@ -847,7 +843,12 @@ pub struct PaginatedResponse<T> {
 
 impl<T> PaginatedResponse<T> {
     pub fn new(items: Vec<T>, total: i64, page: i64, per_page: i64) -> Self {
-        Self { items, total, page, per_page }
+        Self {
+            items,
+            total,
+            page,
+            per_page,
+        }
     }
 }
 

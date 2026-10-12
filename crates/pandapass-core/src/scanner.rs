@@ -52,7 +52,12 @@ pub struct ScanRule {
 }
 
 impl ScanRule {
-    pub fn new(id: &'static str, name: &'static str, severity: ScanSeverity, pattern: &str) -> Self {
+    pub fn new(
+        id: &'static str,
+        name: &'static str,
+        severity: ScanSeverity,
+        pattern: &str,
+    ) -> Self {
         Self {
             id,
             name,
@@ -96,7 +101,9 @@ impl RegexScanner {
 
     /// The scanner used by the server, backed by [`builtin_rules`].
     pub fn builtin() -> Self {
-        Self { rules: builtin_rules() }
+        Self {
+            rules: builtin_rules(),
+        }
     }
 }
 
@@ -130,7 +137,11 @@ impl Scanner for RegexScanner {
 /// scan results.
 fn is_placeholder(snippet: &str) -> bool {
     let lower = snippet.to_ascii_lowercase();
-    if lower.contains("example") || lower.contains("your-") || lower.contains("xxxx") || lower.contains("changeme") {
+    if lower.contains("example")
+        || lower.contains("your-")
+        || lower.contains("xxxx")
+        || lower.contains("changeme")
+    {
         return true;
     }
     // All-placeholder patterns like "..." or "___"
@@ -261,8 +272,13 @@ mod tests {
 
     #[test]
     fn detects_aws_secret_key_with_label() {
-        let findings = scanner().scan("AWS_SECRET", "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYABCDEFGHIJ");
-        assert!(findings.iter().any(|f| f.rule_id == "aws_secret_access_key"));
+        let findings = scanner().scan(
+            "AWS_SECRET",
+            "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYABCDEFGHIJ",
+        );
+        assert!(findings
+            .iter()
+            .any(|f| f.rule_id == "aws_secret_access_key"));
     }
 
     #[test]
@@ -285,7 +301,10 @@ mod tests {
 
     #[test]
     fn detects_private_key() {
-        let findings = scanner().scan("KEY", "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----");
+        let findings = scanner().scan(
+            "KEY",
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----",
+        );
         assert!(findings.iter().any(|f| f.rule_id == "private_key_pem"));
     }
 
@@ -311,7 +330,10 @@ mod tests {
         let findings = scanner().scan("AWS_SECRET", secret_value);
         for f in &findings {
             let rendered = format!("{:?}", f);
-            assert!(!rendered.contains("SUPERSEKRETVALUE"), "finding must not carry plaintext: {rendered}");
+            assert!(
+                !rendered.contains("SUPERSEKRETVALUE"),
+                "finding must not carry plaintext: {rendered}"
+            );
             assert!(f.match_start < f.match_end);
             assert!(f.match_end <= secret_value.len());
         }
@@ -320,13 +342,19 @@ mod tests {
     #[test]
     fn multi_match_reports_each() {
         let findings = scanner().scan("KEYS", "AKIA1111111111111111 AKIA2222222222222222");
-        let aws: Vec<_> = findings.iter().filter(|f| f.rule_id == "aws_access_key_id").collect();
+        let aws: Vec<_> = findings
+            .iter()
+            .filter(|f| f.rule_id == "aws_access_key_id")
+            .collect();
         assert!(aws.len() >= 2);
     }
 
     #[test]
     fn severity_round_trip() {
         assert_eq!(ScanSeverity::High.as_str(), "high");
-        assert_eq!(serde_json::to_string(&ScanSeverity::High).unwrap(), "\"high\"");
+        assert_eq!(
+            serde_json::to_string(&ScanSeverity::High).unwrap(),
+            "\"high\""
+        );
     }
 }
