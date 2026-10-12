@@ -77,7 +77,7 @@ pub fn diff_metadata(
     let mut entries: Vec<DiffEntry> = Vec::new();
 
     // Local keys.
-    for (key, _value) in local {
+    for key in local.keys() {
         match remote_by_key.get(key.as_str()) {
             None => entries.push(DiffEntry {
                 key: key.clone(),

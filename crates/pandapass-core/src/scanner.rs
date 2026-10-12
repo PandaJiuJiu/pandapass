@@ -317,7 +317,6 @@ mod tests {
     #[test]
     fn skips_placeholder_example_values() {
         // AWS docs use AKIAIOSFODNN7EXAMPLE — the EXAMPLE suffix is a placeholder.
-        let findings = scanner().scan("AWS_KEY", "AKIAIOSFODNN7EXAMPLE");
         // Actually the regex requires 16 chars after prefix; EXAMPLE is 7 so
         // this doesn't match at all. Use a real-length placeholder check below.
         let findings2 = scanner().scan("GH", "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");

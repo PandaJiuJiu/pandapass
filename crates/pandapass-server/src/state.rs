@@ -321,6 +321,12 @@ pub struct MetricsSnapshot {
     pub audit_log_size: i64,
 }
 
+impl Default for MetricsSnapshot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricsSnapshot {
     pub fn new() -> Self {
         Self {

@@ -180,7 +180,7 @@ pub async fn revoke_dynamic_cred(
     Auth(auth): Auth,
     State(state): State<AppState>,
     Path((project_slug, env_slug, cred_id)): Path<(String, String, uuid::Uuid)>,
-) -> Result<(), ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let project = db::get_project_by_slug(&state.db, &project_slug).await?;
     let env = db::get_env_by_slug(&state.db, project.id, &env_slug).await?;
 
@@ -237,5 +237,5 @@ pub async fn revoke_dynamic_cred(
     audit = audit.with_meta(serde_json::json!({ "cred_id": cred_id }));
     state.audit.log_success(&mut audit).await.ok();
 
-    Ok(())
+    Ok(Json(serde_json::json!({ "revoked": cred_id })))
 }

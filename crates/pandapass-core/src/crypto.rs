@@ -677,7 +677,7 @@ mod tests {
     fn identity_survives_string_round_trip() {
         let identity = AgeIdentity::generate();
         // Users store this in ~/.pandapass/age.key; it must reload verbatim.
-        let parsed = AgeIdentity::parse(&identity.as_str()).unwrap();
+        let parsed = AgeIdentity::parse(identity.as_str()).unwrap();
         assert_eq!(parsed.as_str(), identity.as_str());
         assert_eq!(
             parsed.public_key().unwrap().as_str(),

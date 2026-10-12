@@ -1744,9 +1744,7 @@ deny[msg] {
         denied.body
     );
 
-    let denied_delete = h
-        .del(&format!("/api/v1/projects/demo/envs/prod"), &reader)
-        .await;
+    let denied_delete = h.del("/api/v1/projects/demo/envs/prod", &reader).await;
     assert_eq!(denied_delete.status, StatusCode::FORBIDDEN);
 
     // Unbound project: allowed.
@@ -2679,7 +2677,7 @@ async fn register_rate_limit_fires_when_registration_is_open() {
     // two are 403 (closed), and *then* 429 once the limiter trips. The
     // precise order is not the point — what matters is that 429 shows up.
     assert!(
-        statuses.iter().any(|s| *s == 429),
+        statuses.contains(&429),
         "register rate limit must fire (got {statuses:?})"
     );
 }
@@ -2832,7 +2830,7 @@ async fn admin_server_age_show_returns_public_key_and_fingerprint() {
 #[tokio::test]
 async fn admin_server_age_show_requires_admin() {
     let h = Harness::start().await;
-    let admin = h.admin().await;
+    let _admin = h.admin().await;
     let alice_email = "alice@example.com";
     h.post(
         "/api/v1/auth/register",
@@ -3104,7 +3102,7 @@ async fn admin_cannot_disable_self() {
 #[tokio::test]
 async fn account_locks_after_repeated_failed_logins() {
     let h = Harness::start().await;
-    let admin = h.admin().await;
+    let _admin = h.admin().await;
     h.post(
         "/api/v1/auth/register",
         "",
@@ -3172,7 +3170,7 @@ async fn totp_setup_works_without_enrolled_key() {
 
     let setup = h.get("/api/v1/auth/totp/setup", &token).await;
     assert_eq!(setup.status, StatusCode::OK, "{:?}", setup.body);
-    assert!(setup.body["secret"].as_str().unwrap().len() > 0);
+    assert!(!setup.body["secret"].as_str().unwrap().is_empty());
 }
 
 /// The web client sends no `x-pandapass-agent` header. Its login response
@@ -3339,7 +3337,7 @@ async fn audit_entries_include_ip_and_user_agent() {
 #[tokio::test]
 async fn metrics_endpoint_exposes_counters() {
     let h = Harness::start().await;
-    let admin = h.admin().await;
+    let _admin = h.admin().await;
 
     // One failed login to bump the counter.
     let _ = h

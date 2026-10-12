@@ -365,7 +365,7 @@ pub fn sign_ssh_cert(
         .serial(serial)
         .map_err(|e| PkiError::SshKey(e.to_string()))?;
     builder
-        .key_id(&format!("pandapass-{user_id}"))
+        .key_id(format!("pandapass-{user_id}"))
         .map_err(|e| PkiError::SshKey(e.to_string()))?;
     builder
         .valid_principal(principal)

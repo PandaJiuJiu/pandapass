@@ -22,6 +22,12 @@ pub struct MemoryAuditLogger {
     logs: Arc<Mutex<Vec<AuditLog>>>,
 }
 
+impl Default for MemoryAuditLogger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MemoryAuditLogger {
     pub fn new() -> Self {
         Self {

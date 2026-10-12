@@ -23,17 +23,17 @@ impl std::error::Error for ChildExitStatus {}
 pub struct LoginArgs {
     /// Email address. Prompted for when omitted.
     #[arg(long)]
-    email: Option<String>,
+    pub email: Option<String>,
     /// Password. Prefer --password-stdin: an argument is visible in `ps` and
     /// in shell history.
     #[arg(long)]
-    password: Option<String>,
+    pub password: Option<String>,
     /// Read the password from stdin (one line). For scripts and agents.
     #[arg(long)]
-    password_stdin: bool,
+    pub password_stdin: bool,
     /// TOTP code. Prompted for only when the account actually requires it.
     #[arg(long)]
-    totp: Option<String>,
+    pub totp: Option<String>,
 }
 
 #[derive(Args, Debug)]

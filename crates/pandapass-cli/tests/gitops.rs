@@ -84,7 +84,7 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
 async fn make_cli(
     base_url: &str,
     token: &str,
-    age_identity_path: &PathBuf,
+    age_identity_path: &std::path::Path,
 ) -> (ApiClient, CliConfig) {
     let api = ApiClient::new(base_url.to_string(), false).expect("api client");
     api.set_auth_token(Some(token.to_string())).await;
@@ -93,7 +93,7 @@ async fn make_cli(
         auth_token: Some(token.to_string()),
         default_project: None,
         default_env: None,
-        age_identity_file: Some(age_identity_path.clone()),
+        age_identity_file: Some(age_identity_path.to_path_buf()),
         command_allowlist: vec![],
         command_timeout_secs: None,
     };
