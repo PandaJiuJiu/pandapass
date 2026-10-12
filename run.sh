@@ -106,14 +106,15 @@ init_storage() {
   # Clean up any orphan processes on the server port first.
   cleanup_port "$SERVER_PORT"
 
-  # `--init` now generates the age identity and exits immediately (since the
-  # Rust fix). We run it synchronously and wait for the file to appear.
+  # `--init-only` generates the age identity and exits immediately (unlike
+  # `--init`, which falls through into normal server startup for the Docker
+  # image). We run it synchronously and wait for the file to appear.
   log "generating server age identity at $SERVER_AGE_FILE"
   PANDAPASS_LISTEN="127.0.0.1:$SERVER_PORT" \
   PANDAPASS_DB_URL="sqlite://$DATA_DIR/pandapass.db?mode=rwc" \
   PANDAPASS_SERVER_AGE_IDENTITY_FILE="$SERVER_AGE_FILE" \
   PANDAPASS_PUBLIC_URL="http://localhost:$VITE_PORT" \
-  "$SERVER_BIN" --init >>"$SERVER_LOG" 2>&1
+  "$SERVER_BIN" --init-only >>"$SERVER_LOG" 2>&1
 
   if [ ! -f "$SERVER_AGE_FILE" ]; then
     err "server age identity was not written; check server logs"
@@ -166,7 +167,7 @@ port_free() {
 }
 
 # Kill any process listening on the server port that isn't ours.
-# This cleans up orphaned --init processes from previous runs.
+# This cleans up orphaned --init-only processes from previous runs.
 cleanup_port() {
   local port="$1"
   local pids

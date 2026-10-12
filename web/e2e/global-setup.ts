@@ -148,10 +148,11 @@ export default async function globalSetup(): Promise<void> {
     print.on('error', reject)
   })
 
-  // 1. Generate the server age identity (idempotent).
-  const initExit = await runAndExit(serverBin, ['--init'], baseEnv)
+  // 1. Generate the server age identity (idempotent). `--init-only` exits
+  // after writing the key; `--init` would fall through into server startup.
+  const initExit = await runAndExit(serverBin, ['--init-only'], baseEnv)
   if (initExit !== 0) {
-    throw new Error(`pandapass-server --init exited with ${initExit}`)
+    throw new Error(`pandapass-server --init-only exited with ${initExit}`)
   }
 
   // 2. Start the real server.

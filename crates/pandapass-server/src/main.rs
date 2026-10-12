@@ -40,6 +40,14 @@ async fn run() -> anyhow::Result<()> {
     // fresh container comes up ready to serve. It lives here rather than in a
     // compose entrypoint script because the runtime image is distroless and
     // has no shell to run one.
+    //
+    // `--init-only` is the same generation step but exits immediately after
+    // writing the identity. Local tooling (run.sh, the Playwright e2e setup)
+    // uses it to prepare a data directory without starting a server.
+    if std::env::args().any(|a| a == "--init-only") {
+        init_storage()?;
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--init") {
         init_storage()?;
     }
