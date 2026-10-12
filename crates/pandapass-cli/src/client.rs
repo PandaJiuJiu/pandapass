@@ -386,6 +386,17 @@ impl ApiClient {
         self.get("/admin/backup").await
     }
 
+    // ─────────────────────────── internal exec (D1) ───────────────────────────
+
+    /// Run a command on the server with secrets injected server-side.
+    /// Requires a token with `run:secret` scope.
+    pub async fn internal_exec(
+        &self,
+        req: &crate::model::InternalExecRequest,
+    ) -> Result<crate::model::CommandResult> {
+        self.post("/internal/exec", req).await
+    }
+
     // ─────────────────────────── dynamic credentials (M2) ───────────────────────────
 
     pub async fn list_dynamic_creds(

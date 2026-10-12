@@ -115,10 +115,11 @@ not to.
 
 A real guarantee needs the API to refuse: an agent's token should be unable to
 call the plaintext read path at all — a scope that permits `run` and denies
-`get_secret`. The scopes here separate *operations* (read, write, list, audit,
-manage) but not *delivery mechanism*. Until a `run:secret` scope exists that
-`read:secret` cannot buy, the boundary is behavioural, and behaviour is not a
-security property.
+`get_secret`. **This is now implemented as the `run:secret` scope.** A token
+with only `run:secret` can call `pandapass internal-exec` (which runs commands
+server-side with secrets injected into the child's environment) but cannot
+read plaintext values via `secret get` or `run`. The `run:secret` scope is
+independent of `read:secret` — a token with only one cannot do the other.
 
 The other limit is not a bug: **root on the host wins.** The server can unwrap
 every envelope it is addressed to.

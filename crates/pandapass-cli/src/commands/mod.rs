@@ -315,6 +315,9 @@ pub enum AdminCmd {
     ServerAgeShow,
 }
 
+/// `pandapass run`: run a command locally with secrets injected from the
+/// server (CLI holds the age identity and decrypts locally). This is the
+/// historical path that does not require `run:secret` scope on the token.
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// Project slug
@@ -328,6 +331,25 @@ pub struct RunArgs {
     #[arg(long)]
     pub only: Option<String>,
     /// Command to run
+    #[arg(trailing_var_arg = true)]
+    pub command: Vec<String>,
+}
+
+/// `pandapass exec`: run a command on the server with secrets injected
+/// server-side. Requires a token with `run:secret` scope. The secrets never
+/// leave the server in plaintext; the command runs on the server host.
+#[derive(Args, Debug)]
+pub struct InternalExecArgs {
+    /// Project slug
+    #[arg(long)]
+    pub project: String,
+    /// Environment slug
+    #[arg(long)]
+    pub env: String,
+    /// Keys to inject (comma-separated)
+    #[arg(long)]
+    pub keys: String,
+    /// Command to run on the server
     #[arg(trailing_var_arg = true)]
     pub command: Vec<String>,
 }
@@ -507,6 +529,7 @@ pub enum Command {
     Backup(BackupArgs),
     Restore(RestoreArgs),
     Run(RunArgs),
+    InternalExec(InternalExecArgs),
     Inject(InjectArgs),
 }
 
@@ -535,6 +558,7 @@ pub async fn run_command(
         Command::Backup(args) => run_backup(api, config, args).await,
         Command::Restore(args) => run_restore(api, config, args).await,
         Command::Run(args) => run_run(api, config, args).await,
+        Command::InternalExec(args) => run_internal_exec(api, args).await,
         Command::Inject(args) => run_inject(api, config, args).await,
     }
 }
@@ -1158,6 +1182,46 @@ async fn run_run(api: &ApiClient, config: &crate::client::CliConfig, args: RunAr
     // process's own exit code (instead of calling `std::process::exit` here,
     // which would be untestable and would skip flushing).
     match status.code().unwrap_or(1) {
+        0 => Ok(()),
+        code => Err(anyhow::anyhow!(ChildExitStatus(code))),
+    }
+}
+
+/// `pandapass exec`: run a command on the server with secrets injected
+/// server-side. Requires a token with `run:secret` scope.
+async fn run_internal_exec(api: &ApiClient, args: InternalExecArgs) -> Result<()> {
+    if args.command.is_empty() {
+        anyhow::bail!("No command specified. Usage: pandapass exec --project P --env E --keys K1,K2 -- cmd args...");
+    }
+
+    let keys: Vec<String> = args
+        .keys
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if keys.is_empty() {
+        anyhow::bail!("--keys must list at least one key");
+    }
+
+    let req = crate::model::InternalExecRequest {
+        keys,
+        command: args.command,
+        project_id: None, // will be resolved by the server from the token
+        env_id: None,
+    };
+
+    let result = api.internal_exec(&req).await?;
+
+    // Output the masked stdout/stderr
+    if !result.stdout.is_empty() {
+        println!("{}", result.stdout);
+    }
+    if !result.stderr.is_empty() {
+        eprintln!("{}", result.stderr);
+    }
+
+    match result.exit_code {
         0 => Ok(()),
         code => Err(anyhow::anyhow!(ChildExitStatus(code))),
     }

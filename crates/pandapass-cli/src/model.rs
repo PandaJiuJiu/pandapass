@@ -82,3 +82,22 @@ pub struct BackupDb {
     pub sha256: String,
     pub size_bytes: u64,
 }
+
+// ─────────────────────────── internal exec (D1) ───────────────────────────
+
+#[derive(Serialize)]
+pub struct InternalExecRequest {
+    pub keys: Vec<String>,
+    pub command: Vec<String>,
+    pub project_id: Option<uuid::Uuid>,
+    pub env_id: Option<uuid::Uuid>,
+}
+
+#[derive(Deserialize)]
+pub struct CommandResult {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub injected_keys: Vec<String>,
+    pub duration_ms: u64,
+}

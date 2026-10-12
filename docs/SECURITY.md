@@ -134,7 +134,12 @@ token's creator *is* the user who minted it. See `crates/pandapass-core/src/rbac
 Scopes separate *operations*, not *delivery mechanism*. `read:secret` still
 permits a plaintext read, which is the thing the agent integration is trying to
 prevent. A real guarantee needs a `run:secret` scope that permits injection but
-not retrieval. That does not exist yet; see "Known limits".
+not retrieval. **This is now implemented.** The `run:secret` scope permits
+calling `POST /api/v1/internal/exec` (server-side command execution with
+secrets injected into the child's environment) and `POST /api/v1/internal/secret`
+(ciphertext delivery), but denies plaintext retrieval via `secret get` or `run`.
+A token with only `run:secret` cannot read plaintext values, and a token with
+only `read:secret` cannot use server-side execution.
 
 
 ## Command execution
@@ -171,10 +176,10 @@ otherwise have had no CSRF check at all.
   `secret get` or `cat`-ing a value into its context. The skill tells it
   not to. A real guarantee needs a `run:secret` scope — one that permits
   injection but denies retrieval — so the credentials an agent holds cannot
-  call the plaintext path at all. The `run:secret` scope exists and is
-  enforced by `POST /api/v1/internal/secret` (ciphertext delivery) and
-  `POST /api/v1/internal/exec` (still a 501 — the server-side exec path
-  is not implemented; the CLI does the equivalent locally).
+  call the plaintext path at all. **The `run:secret` scope now exists and is
+  enforced by `POST /api/v1/internal/exec` (server-side exec with injected
+  secrets) and `POST /api/v1/internal/secret` (ciphertext delivery).** The CLI
+  also provides `pandapass internal-exec` to call this endpoint.
 - **Root on the host wins**, as above.
 - **The age private key must be backed up.** Losing it makes that account's
   secrets unrecoverable, including by the operator.

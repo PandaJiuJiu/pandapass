@@ -3216,3 +3216,224 @@ async fn admin_backup_returns_consistent_sqlite_snapshot() {
         items.iter().map(|i| i["action"].as_str().unwrap_or("")).collect::<Vec<_>>()
     );
 }
+
+/// internal_exec runs a command on the server with secrets injected
+/// server-side. The token needs `run:secret` scope.
+#[tokio::test]
+async fn internal_exec_injects_secrets_and_runs_command() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    let proj = h.project(&admin).await;
+    let proj_id = proj["id"].as_str().unwrap(); // UUID
+    let proj_slug = proj["slug"].as_str().unwrap(); // slug
+
+    // Get the prod env UUID
+    let envs_res = h
+        .get(&format!("/api/v1/projects/{proj_slug}/envs"), &admin)
+        .await;
+    assert!(envs_res.ok(), "list envs failed: {:?}", envs_res.body);
+    // The list_envs endpoint returns an array directly, not a paginated response
+    let envs = envs_res.body.as_array().unwrap();
+    let prod_env = envs
+        .iter()
+        .find(|e| e["slug"] == "prod")
+        .expect("prod env exists");
+    let env_id = prod_env["id"].as_str().unwrap();
+
+    h.set_secret(&admin, "API_KEY", "server-secret-value").await;
+
+    // Token with run:secret scope
+    let run_tok = h.token(&admin, &["run:secret"]).await;
+
+    let res = h
+        .post(
+            "/api/v1/internal/exec",
+            &run_tok,
+            json!({
+                "keys": ["API_KEY"],
+                "command": ["sh", "-c", "echo $API_KEY"],
+                "project_id": proj_id,
+                "env_id": env_id,
+            }),
+        )
+        .await;
+    assert!(res.ok(), "internal_exec failed: {:?}", res.body);
+    assert_eq!(res.body["exit_code"], 0);
+    // The secret value must be masked in output
+    let stdout = res.body["stdout"].as_str().unwrap();
+    assert!(stdout.contains("***"), "secret must be masked in stdout: {stdout}");
+    assert!(!stdout.contains("server-secret-value"), "raw secret must not appear: {stdout}");
+    assert_eq!(res.body["injected_keys"], json!(["API_KEY"]));
+}
+
+/// A token with only `read:secret` cannot call internal_exec.
+#[tokio::test]
+async fn internal_exec_requires_run_secret_scope() {
+    let h = Harness::start().await;
+    let admin = h.admin().await;
+    let proj = h.project(&admin).await;
+    let proj_id = proj["id"].as_str().unwrap();
+    let proj_slug = proj["slug"].as_str().unwrap();
+
+    // Get the prod env UUID
+    let envs_res = h
+        .get(&format!("/api/v1/projects/{proj_slug}/envs"), &admin)
+        .await;
+    assert!(envs_res.ok(), "list envs failed: {:?}", envs_res.body);
+    // The list_envs endpoint returns an array directly, not a paginated response
+    let envs = envs_res.body.as_array().unwrap();
+    let prod_env = envs
+        .iter()
+        .find(|e| e["slug"] == "prod")
+        .expect("prod env exists");
+    let env_id = prod_env["id"].as_str().unwrap();
+
+    let read_tok = h.token(&admin, &["read:secret"]).await;
+
+    let res = h
+        .post(
+            "/api/v1/internal/exec",
+            &read_tok,
+            json!({
+                "keys": ["API_KEY"],
+                "command": ["echo", "hi"],
+                "project_id": proj_id,
+                "env_id": env_id,
+            }),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "read:secret must not allow internal_exec");
+}
+
+/// Server-side allowlist blocks commands not in the list.
+#[tokio::test]
+async fn internal_exec_respects_server_allowlist() {
+    // Start a server with a restrictive allowlist
+    let dir = std::env::temp_dir().join(format!("pandapass-allowlist-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db_path = dir.join("test.db");
+
+    let identity = AgeIdentity::generate();
+
+    let config = Config {
+        listen_addr: "127.0.0.1:0".into(),
+        public_url: "http://localhost:8233".into(),
+        db_url: format!("sqlite://{}?mode=rwc", db_path.display()),
+        session_ttl_days: 30,
+        session_idle_timeout_secs: None,
+        allowed_origins: vec![],
+        bootstrap_admin_email: None,
+        bootstrap_enabled: false,
+        require_totp: false,
+        allow_registration: true,
+        max_concurrent_exec: 10,
+        command_timeout_secs: 120,
+        command_allowlist: vec!["/bin/echo".to_string()], // ONLY echo allowed
+        cookie_secure: false,
+        server_age_identity: Some(identity.as_str().to_string()),
+        auth_rate_limit_max: 100,
+        auth_rate_limit_window_secs: 60,
+        dynamic_proxy_listen: None,
+        dynamic_proxy_upstream: None,
+        trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
+        audit_chain_key_file: None,
+        backup_dir: None,
+    };
+
+    let db = connect(&config.db_url).await.expect("connect");
+    migrate(&db).await.expect("migrate");
+    let chain_key = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(format!("pandapass-audit-chain:{}", identity.as_str()).as_bytes()).to_vec()
+    };
+    let audit_logger: Arc<dyn AuditLogger> =
+        Arc::new(DbAuditLogger::with_chain_key(db.clone(), chain_key.clone()));
+    let audit = AuditService::new(audit_logger);
+    let state = AppState::new(db.clone(), audit, config).with_audit_chain_key(chain_key.clone());
+
+    let router = build_router(state);
+
+    // Helper to send requests against this router
+    async fn do_req(router: &axum::Router, token: &str, path: &str, body: Value, method: &str) -> Res {
+        let req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("x-pandapass-agent", "cli")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let res = router.clone().oneshot(req).await.expect("router");
+        let status = res.status();
+        let bytes = res.into_body().collect().await.expect("body").to_bytes();
+        let raw = bytes.to_vec();
+        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        Res { status, body, raw }
+    }
+
+    // Helper for GET requests
+    async fn do_get(router: &axum::Router, token: &str, path: &str) -> Res {
+        let req = Request::builder()
+            .method("GET")
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-pandapass-agent", "cli")
+            .body(Body::empty())
+            .unwrap();
+        let res = router.clone().oneshot(req).await.expect("router");
+        let status = res.status();
+        let bytes = res.into_body().collect().await.expect("body").to_bytes();
+        let raw = bytes.to_vec();
+        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        Res { status, body, raw }
+    }
+
+    // Create admin with age public key so they can store secrets
+    let admin_key = AgeIdentity::generate();
+    let admin_public = admin_key
+        .public_key()
+        .expect("derive public key")
+        .as_str()
+        .to_string();
+    let admin_res = do_req(&router, "", "/api/v1/auth/register", json!({"email": "a@example.com", "password": "password1234", "age_public_key": admin_public}), "POST").await;
+    assert!(admin_res.ok(), "admin register failed: {:?}", admin_res.body);
+    let login = do_req(&router, "", "/api/v1/auth/login", json!({"email": "a@example.com", "password": "password1234"}), "POST").await;
+    assert!(login.ok(), "admin login failed: {:?}", login.body);
+    let admin_tok = login.body["session_token"].as_str().unwrap().to_string();
+    let tok_res = do_req(&router, &admin_tok, "/api/v1/tokens", json!({"name": "runner", "scopes": ["run:secret"]}), "POST").await;
+    assert!(tok_res.ok(), "token create failed: {:?}", tok_res.body);
+    let run_tok = tok_res.body["plain_token"].as_str().unwrap().to_string();
+    let proj = do_req(&router, &admin_tok, "/api/v1/projects", json!({"name": "p", "slug": "p"}), "POST").await;
+    assert!(proj.ok(), "project create failed: {:?}", proj.body);
+    let proj_id = proj.body["id"].as_str().unwrap();
+    let proj_slug = proj.body["slug"].as_str().unwrap();
+    // Project already has a "prod" env created by default
+    let envs = do_get(&router, &admin_tok, &format!("/api/v1/projects/{proj_slug}/envs")).await;
+    assert!(envs.ok(), "list envs failed: {:?}", envs.body);
+    let envs_arr = envs.body.as_array().unwrap();
+    let prod_env = envs_arr.iter().find(|e| e["slug"] == "prod").expect("prod env exists");
+    let env_id = prod_env["id"].as_str().unwrap();
+    let env_slug = prod_env["slug"].as_str().unwrap();
+    let secret = do_req(&router, &admin_tok, &format!("/api/v1/projects/{proj_slug}/envs/{env_slug}/secrets"), json!({"key": "K", "value": "v"}), "POST").await;
+    assert!(secret.ok(), "secret create failed: {:?}", secret.body);
+
+    // Allowed command: echo
+    let ok = do_req(&router, &run_tok, "/api/v1/internal/exec", json!({
+        "keys": ["K"],
+        "command": ["/bin/echo", "hello"],
+        "project_id": proj_id,
+        "env_id": env_id,
+    }), "POST").await;
+    assert!(ok.ok(), "echo should be allowed: {:?}", ok.body);
+
+    // Disallowed command: /bin/sh
+    let denied = do_req(&router, &run_tok, "/api/v1/internal/exec", json!({
+        "keys": ["K"],
+        "command": ["/bin/sh", "-c", "echo hi"],
+        "project_id": proj_id,
+        "env_id": env_id,
+    }), "POST").await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "sh should be blocked by allowlist: {:?}", denied.body);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

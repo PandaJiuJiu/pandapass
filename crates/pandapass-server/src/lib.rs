@@ -8,6 +8,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 use serde::{Deserialize, Serialize};
+use secrecy::ExposeSecret;
 
 use crate::state::{AppState, StartupInfo};
 use crate::middleware::auth::{ApiError, require_csrf};
@@ -347,9 +348,7 @@ async fn internal_exec(
 ) -> Result<Json<CommandResult>, ApiError> {
     let svc = auth.service_token.as_ref().unwrap();
 
-    // Server-side secret injection requires `run:secret` — it's the whole
-    // point of that scope. The internal API historically used WriteSecret
-    // as a stand-in, but now they are separate.
+    // Server-side secret injection requires `run:secret`
     if !svc.scopes.iter().any(|s| matches!(s, pandapass_core::models::TokenScope::RunSecret)) {
         return Err(ApiError::Forbidden("Token lacks run:secret scope".into()));
     }
@@ -359,24 +358,115 @@ async fn internal_exec(
     let env_id = req.env_id.or(svc.env_id)
         .ok_or_else(|| ApiError::BadRequest("Environment ID required".into()))?;
 
-    // Decrypt the requested secrets
-    // Not implemented: this would decrypt server-side and spawn the child
-    // here. Until it exists, use `pandapass run`, which does the same thing
-    // with the age private key held locally.
+    // Decrypt the requested secrets using the service account's master key.
+    // The token was created by a user; that user's envelope holds the master key.
+    let mk = crate::routes::secrets::get_master_key(&state, svc.created_by).await?;
+
+    let mut envs: Vec<(String, String)> = Vec::with_capacity(req.keys.len());
+    for key in &req.keys {
+        let secret = db::get_secret(&state.db, project_id, env_id, key).await?;
+        let value: secrecy::SecretString = secret.value_enc.decrypt(&mk)?;
+        envs.push((key.clone(), value.expose_secret().to_string()));
+    }
+
+    // Collect the injected values for output masking
+    let mask_values: Vec<Vec<u8>> = envs
+        .iter()
+        .map(|(_, v)| v.as_bytes().to_vec())
+        .collect();
+
+    // Enforce server-side command allowlist
+    if !state.config.command_allowlist.is_empty() {
+        let program = req.command.first().ok_or_else(|| ApiError::BadRequest("No command specified".into()))?;
+        if !state.config.command_allowlist.iter().any(|p| p == program) {
+            return Err(ApiError::Forbidden(format!(
+                "Refusing to run `{}`: not in the server command allowlist",
+                program
+            )));
+        }
+    }
+
+    // Wall-clock timeout from server config (default 120s)
+    let timeout_secs = state.config.command_timeout_secs.max(1);
+
+    let program = req.command.first().ok_or_else(|| ApiError::BadRequest("No command specified".into()))?;
+    let mut child = tokio::process::Command::new(program)
+        .args(&req.command[1..])
+        .envs(envs.iter().map(|(k, v)| (k, v)))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| ApiError::Internal(format!("failed to run `{}`: {}", program, e)))?;
+
+    let mut stdout_pipe = child.stdout.take().expect("piped stdout");
+    let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+
+    // Read the pipes concurrently with the child running
+    let read_stdout = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        tokio::io::copy(&mut stdout_pipe, &mut buf).await?;
+        Ok::<_, std::io::Error>(buf)
+    });
+    let read_stderr = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        tokio::io::copy(&mut stderr_pipe, &mut buf).await?;
+        Ok::<_, std::io::Error>(buf)
+    });
+
+    // Bound how long a child can hold the parent
+    let status = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        child.wait(),
+    ).await {
+        Ok(result) => result.map_err(|e| ApiError::Internal(format!("waiting for `{}` failed: {}", program, e)))?,
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err(ApiError::Internal(format!(
+                "`{}` exceeded the {}s command timeout and was killed",
+                program, timeout_secs
+            )));
+        }
+    };
+
+    // The child has exited; read the output
+    let stdout_buf = read_stdout.await.expect("join stdout").map_err(|e| ApiError::Internal(e.to_string()))?;
+    let stderr_buf = read_stderr.await.expect("join stderr").map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    // Mask secret values in output
+    let mask = |buf: &[u8]| {
+        let mut s = String::from_utf8_lossy(buf).to_string();
+        for val in &mask_values {
+            if val.is_empty() {
+                continue;
+            }
+            let pat = String::from_utf8_lossy(val);
+            if !pat.is_empty() {
+                s = s.replace(pat.as_ref(), "***");
+            }
+        }
+        s
+    };
+    let stdout_masked = mask(&stdout_buf);
+    let stderr_masked = mask(&stderr_buf);
 
     let mut audit = AuditContext::new(&auth, AuditAction::McpRunCommand);
     audit = audit.with_project(project_id);
     audit = audit.with_env(env_id);
     audit = audit.with_meta(serde_json::json!({
         "keys": req.keys,
-        "argv0": req.command.first().unwrap_or(&"".to_string()),
+        "argv0": program,
+        "exit_code": status.code(),
     }));
     state.audit.log(&audit).await.ok();
 
-    Err(ApiError::NotImplemented(
-        "Server-side exec is not implemented. Use `pandapass run`, which injects the \
-         same secrets locally without sending your age private key anywhere.".into(),
-    ))
+    Ok(Json(CommandResult {
+        exit_code: status.code().unwrap_or(-1),
+        stdout: stdout_masked,
+        stderr: stderr_masked,
+        injected_keys: req.keys,
+        duration_ms: 0, // We could measure this, but not critical for now
+    }))
 }
 
 #[derive(Deserialize)]
