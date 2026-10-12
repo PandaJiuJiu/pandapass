@@ -7,7 +7,8 @@
 #   2. cargo clippy --workspace --all-targets -- -D warnings   (lints)
 #   3. cargo test --workspace         (Rust unit + integration tests)
 #   4. cd web && npm run build        (Vue type-check + Vite production build)
-#   5. Optional: Playwright browser e2e (web/e2e)
+#   5. Optional: integration e2e — CLI Rust tests (integration/cli) +
+#      Playwright browser tests (integration/web)
 #
 # Usage:
 #   ./scripts/regression-test.sh           # run steps 1-4
@@ -135,18 +136,29 @@ fi
 
 if [ "$RUN_E2E" -eq 1 ]; then
   echo
-  step "5 (optional) Playwright browser e2e"
-  require_cmd npx
-  if [ ! -d web/node_modules ]; then
-    step "  installing web dependencies (npm install)"
-    (cd web && npm install)
+  step "5 (optional) integration e2e"
+
+  # 5a. CLI Rust E2E (boots a real server per test).
+  require_cmd cargo
+  if cargo test --manifest-path integration/cli/Cargo.toml; then
+    pass "cli integration tests"
+  else
+    fail "cli integration tests failed"
+    exit 1
   fi
-  if (cd web && npx playwright install chromium >/dev/null 2>&1); then
+
+  # 5b. Web Playwright e2e.
+  require_cmd npx
+  if [ ! -d integration/web/node_modules ]; then
+    step "  installing integration/web dependencies (npm install)"
+    (cd integration/web && npm install)
+  fi
+  if (cd integration/web && npx playwright install chromium >/dev/null 2>&1); then
     :
   else
     echo "  (playwright browser already installed or install skipped)" >&2
   fi
-  if (cd web && npm run e2e); then
+  if (cd integration/web && npm run e2e); then
     pass "playwright e2e"
   else
     fail "playwright e2e failed"

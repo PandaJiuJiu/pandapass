@@ -17,7 +17,7 @@ import { defineConfig, devices } from '@playwright/test'
  */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const INFO_PATH = path.join(__dirname, 'e2e', '.server-info.json')
+const INFO_PATH = path.join(__dirname, '.server-info.json')
 
 // The baseURL is the Vite dev server started by global-setup on an ephemeral
 // port. Playwright loads this config before globalSetup runs, so we read the
@@ -40,7 +40,7 @@ function resolveBaseUrl(): string {
 }
 
 export default defineConfig({
-  testDir: './e2e',
+  testDir: '.',
   fullyParallel: false,
   workers: 1,
   // Each spec gets its own backend state via its own account. A single worker
@@ -61,6 +61,6 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  globalSetup: './e2e/global-setup',
-  globalTeardown: './e2e/global-teardown',
+  globalSetup: './global-setup',
+  globalTeardown: './global-teardown',
 })

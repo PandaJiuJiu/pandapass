@@ -84,23 +84,26 @@ jobs:
       - name: Build debug binaries (server + cli)
         run: cargo build -p pandapass-server -p pandapass-cli
 
+      - name: Run CLI integration tests (Rust)
+        run: cargo test --manifest-path integration/cli/Cargo.toml
+
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: integration/web/package-lock.json
 
       - name: npm ci
-        working-directory: web
+        working-directory: integration/web
         run: npm ci
 
       - name: Install Playwright chromium
-        working-directory: web
+        working-directory: integration/web
         run: npx playwright install --with-deps chromium
 
       - name: Run Playwright e2e
-        working-directory: web
+        working-directory: integration/web
         run: npm run e2e
 
       - name: Upload Playwright report on failure
@@ -108,5 +111,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: web/playwright-report/
+          path: integration/web/playwright-report/
           retention-days: 7

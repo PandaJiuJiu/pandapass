@@ -1,0 +1,38 @@
+# CLI end-to-end integration tests.
+#
+# Deliberately NOT a member of the root workspace: these tests boot a real
+# pandapass-server against a real SQLite database and drive the CLI through
+# its command handlers. They are slow and are meant to run in a dedicated
+# step (regression script / CI), not as part of `cargo test --workspace`.
+#
+# Run:
+#   cargo test --manifest-path integration/cli/Cargo.toml
+#
+# This package is standalone (empty [workspace] table): it cannot use
+# `{ workspace = true }` inheritance, so versions are written out explicitly.
+
+[package]
+name = "pandapass-integration-cli"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[dependencies]
+pandapass-cli = { path = "../../crates/pandapass-cli" }
+pandapass-core = { path = "../../crates/pandapass-core" }
+pandapass-db = { path = "../../crates/pandapass-db" }
+pandapass-server = { path = "../../crates/pandapass-server" }
+tokio = { version = "1.40", features = ["full"] }
+axum = "0.8"
+tower = "0.4"
+uuid = { version = "1.26", features = ["v7"] }
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+age = { version = "0.12", features = ["armor"] }
+base64 = "0.22"
+hex = "0.4"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
+
+[workspace]

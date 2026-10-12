@@ -28,9 +28,5 @@ dirs = "5.0"
 rpassword = "7.0"
 qrcode = { version = "0.14", features = ["svg"] }
 
-[dev-dependencies]
-pandapass-server = { path = "../pandapass-server" }
-axum = { workspace = true }
-tower = { workspace = true }
-sha2 = { workspace = true }
-sqlx = { workspace = true }
+# End-to-end integration tests live in `integration/cli` (a standalone crate,
+# not a workspace member) and bring their own dev-dependencies.

@@ -13,7 +13,7 @@ export default defineConfig({
       // Dev only. In the container, nginx proxies /api to the server instead;
       // keeping the paths identical means no code branches on the environment.
       // The target is overridable so the e2e suite can point the proxy at a
-      // throwaway backend on an ephemeral port (see e2e/global-setup.ts).
+      // throwaway backend on an ephemeral port (see ../integration/web/global-setup.ts).
       '/api': {
         target: process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:18233',
         changeOrigin: true,
