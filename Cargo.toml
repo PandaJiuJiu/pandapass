@@ -53,7 +53,10 @@ mime = "0.3"
 
 # CLI
 clap = { version = "4.6", features = ["derive", "env", "string"] }
-reqwest = { version = "0.12", features = ["json", "cookies", "rustls-tls", "multipart"] }
+# `default-features = false` keeps reqwest on rustls (no openssl/native-tls),
+# so the CLI can be statically linked against musl for portable release
+# binaries. The default `default-tls` feature would pull in openssl-sys.
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "rustls-tls", "multipart"] }
 
 # Utils
 url = "2.5"
