@@ -4,17 +4,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Global user role
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum GlobalRole {
     Admin,
+    #[default]
     User,
-}
-
-impl Default for GlobalRole {
-    fn default() -> Self {
-        Self::User
-    }
 }
 
 /// Project-scoped role
