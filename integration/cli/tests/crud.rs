@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use pandapass_cli::client::{ApiClient, CliConfig};
 use pandapass_cli::commands::run_command;
@@ -648,4 +649,522 @@ async fn ssh_sign_round_trip() {
         certs.iter().any(|c| c.principal == "alice@prod"),
         "signed cert should be listed: {certs:?}"
     );
+}
+
+// ── Recovery codes (B5) ────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_codes_generate_and_redeem() {
+    let (base_url, _server) = start_server().await;
+
+    // Register a user WITH an age public key so the account has an envelope
+    let age_identity = AgeIdentity::generate();
+    let pub_key = age_identity.public_key().expect("public key");
+
+    let api = ApiClient::new(base_url.clone(), false).expect("api client");
+    api.register("recovery@example.com", "correct horse battery staple", Some(pub_key.as_str()))
+        .await
+        .expect("register");
+
+    // Login to get a session
+    let login = api
+        .login("recovery@example.com", "correct horse battery staple", None)
+        .await
+        .expect("login");
+    let session_token = login.session_token.expect("session token");
+    api.set_auth_token(Some(session_token.clone())).await;
+
+    // Generate recovery codes - this should work even without an enrolled age key
+    let response: serde_json::Value = api
+        .post("/auth/recovery-codes", &serde_json::json!({}))
+        .await
+        .expect("generate recovery codes");
+    let codes = response["codes"].as_array().expect("codes array");
+    assert_eq!(codes.len(), 8, "should generate 8 recovery codes");
+    let first_code = codes[0].as_str().expect("first code").to_string();
+
+    // Verify the codes were stored
+    let _user: serde_json::Value = api.get("/auth/me").await.expect("get user");
+    // The user should have recovery codes now
+
+    // Redeem a recovery code - should work without password/TOTP
+    let redeem_resp: serde_json::Value = api
+        .post(
+            "/auth/recovery-code/redeem",
+            &serde_json::json!({ "email": "recovery@example.com", "code": first_code }),
+        )
+        .await
+        .expect("redeem recovery code");
+    assert_eq!(redeem_resp["rotated"], true);
+
+    // The redeemed code should no longer work
+    let redeem_again: Result<serde_json::Value, _> = api
+        .post(
+            "/auth/recovery-code/redeem",
+            &serde_json::json!({ "email": "recovery@example.com", "code": first_code }),
+        )
+        .await;
+    assert!(redeem_again.is_err(), "redeemed code should not work again");
+}
+
+// ── User disable/enable (B7) ───────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_disable_enable_admin() {
+    let (base_url, _server) = start_server().await;
+
+    // Create admin user
+    let admin_api = ApiClient::new(base_url.clone(), false).expect("admin api");
+    admin_api
+        .register("admin@example.com", "adminpass123", None)
+        .await
+        .expect("register admin");
+    let admin_login = admin_api
+        .login("admin@example.com", "adminpass123", None)
+        .await
+        .expect("login admin");
+    let admin_token = admin_login.session_token.expect("admin session");
+    admin_api.set_auth_token(Some(admin_token.clone())).await;
+
+    // Create a regular user
+    let user_api = ApiClient::new(base_url.clone(), false).expect("user api");
+    user_api
+        .register("user@example.com", "userpass12345", None)
+        .await
+        .expect("register user");
+
+    // Admin lists users
+    let users: serde_json::Value = admin_api.get("/admin/users").await.expect("list users");
+    let users_array = users["users"].as_array().expect("users array");
+    // Find the user by email
+    let user = users_array.iter().find(|u| u["email"].as_str() == Some("user@example.com")).expect("user not found");
+    let user_id = user["id"].as_str().expect("user id");
+
+    // Disable the user
+    let _: serde_json::Value = admin_api
+        .post(&format!("/admin/users/{user_id}/disable"), &serde_json::json!({}))
+        .await
+        .expect("disable user");
+
+    // Disabled user cannot login
+    let user_login = user_api
+        .login("user@example.com", "userpass12345", None)
+        .await;
+    assert!(user_login.is_err(), "disabled user should not be able to login");
+
+    // Enable the user
+    let _: serde_json::Value = admin_api
+        .post(&format!("/admin/users/{user_id}/enable"), &serde_json::json!({}))
+        .await
+        .expect("enable user");
+
+    // User can login again
+    let user_login = user_api
+        .login("user@example.com", "userpass12345", None)
+        .await
+        .expect("login after re-enable");
+    assert!(user_login.session_token.is_some());
+}
+
+// ── Session list/revoke (C2) ──────���────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_list_and_revoke() {
+    let (base_url, _server) = start_server().await;
+
+    let api = ApiClient::new(base_url.clone(), false).expect("api client");
+    api.register("session@example.com", "correct horse battery staple", None)
+        .await
+        .expect("register");
+
+    // Login multiple times to create multiple sessions
+    let login1 = api
+        .login("session@example.com", "correct horse battery staple", None)
+        .await
+        .expect("login 1");
+    let token1 = login1.session_token.expect("token 1");
+
+    let api2 = ApiClient::new(base_url.clone(), false).expect("api client 2");
+    let login2 = api2
+        .login("session@example.com", "correct horse battery staple", None)
+        .await
+        .expect("login 2");
+    let token2 = login2.session_token.expect("token 2");
+
+    let api3 = ApiClient::new(base_url.clone(), false).expect("api client 3");
+    let login3 = api3
+        .login("session@example.com", "correct horse battery staple", None)
+        .await
+        .expect("login 3");
+    let _token3 = login3.session_token.expect("token 3");
+
+    // List sessions with first token
+    api.set_auth_token(Some(token1.clone())).await;
+    let sessions: serde_json::Value = api.get("/auth/sessions").await.expect("list sessions");
+    let sessions_array = sessions.as_array().expect("sessions array");
+    // There are 4 sessions: register creates 1, then 3 logins = 4 total
+    // The list is ordered by last_seen_at DESC, so the session that just made
+    // this request (token1) is at index 0 (newest).
+    assert_eq!(sessions_array.len(), 4, "should have 4 active sessions (register + 3 logins)");
+
+    // Revoke the CURRENT session (index 0) — this is the one making the request
+    let current_session = &sessions_array[0];
+    let current_session_id = current_session["id"].as_str().expect("session id");
+    let _: serde_json::Value = api
+        .delete(&format!("/auth/sessions/{current_session_id}"))
+        .await
+        .expect("revoke session");
+
+    // Use a different client (api2 with token2) to list sessions after revoke
+    api2.set_auth_token(Some(token2.clone())).await;
+    let sessions: serde_json::Value = api2.get("/auth/sessions").await.expect("list sessions after revoke");
+    let sessions_array = sessions.as_array().expect("sessions array");
+    assert_eq!(sessions_array.len(), 3, "should have 3 active sessions after revoke");
+
+    // The revoked token (token1) should no longer work
+    let me: Result<serde_json::Value, _> = api.get("/auth/me").await;
+    assert!(me.is_err(), "revoked session should not work");
+}
+
+// ── Account lockout (C7) ───────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_lockout_on_failed_login() {
+    let (base_url, _server) = start_server().await;
+
+    let api = ApiClient::new(base_url.clone(), false).expect("api client");
+    api.register("lockout@example.com", "correct horse battery staple", None)
+        .await
+        .expect("register");
+
+    // Make 5 failed login attempts
+    for i in 0..5 {
+        let result = api
+            .login("lockout@example.com", &format!("wrong{}", i), None)
+            .await;
+        assert!(result.is_err(), "attempt {} should fail", i + 1);
+    }
+
+    // 6th attempt should be locked out
+    let result = api
+        .login("lockout@example.com", "wrong6", None)
+        .await;
+    assert!(result.is_err());
+    let err = result.err().unwrap().to_string();
+    assert!(
+        err.contains("locked") || err.contains("too many"),
+        "error should mention lockout: {}",
+        err
+    );
+
+    // Even correct password should fail while locked
+    let result = api
+        .login("lockout@example.com", "correct horse battery staple", None)
+        .await;
+    assert!(result.is_err(), "correct password should fail while locked");
+    let err = result.err().unwrap().to_string();
+    assert!(
+        err.contains("locked") || err.contains("too many"),
+        "error should mention lockout: {}",
+        err
+    );
+}
+
+// ── Idle timeout (C9) ──────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_idle_timeout() {
+    let (_base_url, _server) = start_server().await;
+
+    // Start server with 1 second idle timeout
+    let dir = std::env::temp_dir().join(format!("pandapass-idle-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db_path = dir.join("test.db");
+
+    let identity = AgeIdentity::generate();
+
+    let config = Config {
+        listen_addr: "127.0.0.1:0".into(),
+        public_url: "http://localhost:8233".into(),
+        db_url: format!("sqlite://{}?mode=rwc", db_path.display()),
+        session_ttl_days: 30,
+        session_idle_timeout_secs: Some(1), // 1 second idle timeout
+        allowed_origins: vec![],
+        bootstrap_admin_email: None,
+        bootstrap_enabled: false,
+        require_totp: false,
+        allow_registration: true,
+        max_concurrent_exec: 10,
+        command_timeout_secs: 120,
+        command_allowlist: vec![],
+        cookie_secure: false,
+        server_age_identity: Some(identity.as_str().to_string()),
+        auth_rate_limit_max: 100,
+        auth_rate_limit_window_secs: 60,
+        dynamic_proxy_listen: None,
+        dynamic_proxy_upstream: None,
+        dynamic_proxy_redis_listen: None,
+        dynamic_proxy_redis_upstream: None,
+        trusted_proxy_cidrs: vec![],
+        audit_chain_key_file: None,
+        backup_dir: None,
+    };
+
+    let db = connect(&config.db_url).await.expect("connect");
+    migrate(&db).await.expect("migrate");
+
+    let chain_key = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(format!("pandapass-audit-chain:{}", identity.as_str()).as_bytes()).to_vec()
+    };
+    let audit_logger: Arc<dyn AuditLogger> =
+        Arc::new(DbAuditLogger::with_chain_key(db.clone(), chain_key.clone()));
+    let audit = AuditService::new(audit_logger);
+    let state = AppState::new(db.clone(), audit, config).with_audit_chain_key(chain_key.clone());
+
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let base_url = format!("http://{}", addr);
+
+    let _handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let api = ApiClient::new(base_url.clone(), false).expect("api client");
+    api.register("idle@example.com", "correct horse battery staple", None)
+        .await
+        .expect("register");
+    let login = api
+        .login("idle@example.com", "correct horse battery staple", None)
+        .await
+        .expect("login");
+    let token = login.session_token.expect("session token");
+    api.set_auth_token(Some(token.clone())).await;
+
+    // Verify session works immediately
+    let _ = api.get::<serde_json::Value>("/auth/me").await.expect("immediate me");
+
+    // Wait for idle timeout to expire (1 sec + buffer)
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Session should now be expired
+    let result = api.get::<serde_json::Value>("/auth/me").await;
+    assert!(result.is_err(), "session should be expired after idle timeout");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("expired") || err.contains("idle") || err.contains("inactivity"),
+        "error should mention expiration: {}",
+        err
+    );
+}
+
+// ── TOTP clock drift (C10) ────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn totp_accepts_clock_drift() {
+    let (base_url, _server) = start_server().await;
+
+    let api = ApiClient::new(base_url.clone(), false).expect("api client");
+    api.register("totp@example.com", "correct horse battery staple", None)
+        .await
+        .expect("register");
+
+    let login = api
+        .login("totp@example.com", "correct horse battery staple", None)
+        .await
+        .expect("login");
+    let token = login.session_token.expect("session token");
+    api.set_auth_token(Some(token.clone())).await;
+
+    // Setup TOTP
+    let setup_resp: serde_json::Value = api.get("/auth/totp/setup").await.expect("totp setup");
+    let secret = setup_resp["secret"].as_str().expect("secret");
+
+    // Generate a valid TOTP code using the secret
+    let secret_bytes = base32::decode(base32::Alphabet::RFC4648 { padding: false }, &secret).unwrap();
+    let totp = totp_rs::Builder::new()
+        .with_algorithm(totp_rs::Algorithm::SHA256)
+        .with_digits(6)
+        .with_skew(1)
+        .with_step_duration(30)
+        .with_secret(secret_bytes)
+        .build()
+        .expect("create totp");
+
+    let code = totp.generate_current().to_string();
+
+    // Verify the TOTP code
+    let verify_resp: serde_json::Value = api
+        .post("/auth/totp/verify", &serde_json::json!({ "code": code }))
+        .await
+        .expect("totp verify");
+    assert_eq!(verify_resp["success"], true);
+
+    // Now test with a code from +1 time step (simulating clock drift)
+    let now_secs = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let code_future = totp.generate(now_secs + 30).to_string();
+
+    // Should accept ±1 step drift
+    let verify_resp: serde_json::Value = api
+        .post("/auth/totp/verify", &serde_json::json!({ "code": code_future }))
+        .await
+        .expect("totp verify future");
+    assert_eq!(verify_resp["success"], true);
+}
+
+// ── TOTP without envelope (C12) ────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn totp_setup_without_age_key() {
+    let (base_url, _server) = start_server().await;
+
+    let api = ApiClient::new(base_url.clone(), false).expect("api client");
+    // Register WITHOUT age public key - no envelope
+    api.register("totp2@example.com", "correct horse battery staple", None)
+        .await
+        .expect("register");
+
+    let login = api
+        .login("totp2@example.com", "correct horse battery staple", None)
+        .await
+        .expect("login");
+    let token = login.session_token.expect("session token");
+    api.set_auth_token(Some(token.clone())).await;
+
+    // TOTP setup should work even without an enrolled age key
+    // (the server auto-creates an envelope sealed to the server key)
+    let setup_resp: serde_json::Value = api.get("/auth/totp/setup").await.expect("totp setup");
+    assert!(setup_resp["secret"].is_string());
+    assert!(setup_resp["uri"].is_string());
+
+    // Verify it works
+    let secret = setup_resp["secret"].as_str().expect("secret");
+    let secret_bytes = base32::decode(base32::Alphabet::RFC4648 { padding: false }, &secret).unwrap();
+    let totp = totp_rs::Builder::new()
+        .with_algorithm(totp_rs::Algorithm::SHA256)
+        .with_digits(6)
+        .with_skew(1)
+        .with_step_duration(30)
+        .with_secret(secret_bytes)
+        .build()
+        .expect("create totp");
+    let code = totp.generate_current().to_string();
+
+    let verify_resp: serde_json::Value = api
+        .post("/auth/totp/verify", &serde_json::json!({ "code": code }))
+        .await
+        .expect("totp verify");
+    assert_eq!(verify_resp["success"], true);
+    assert_eq!(verify_resp["enabled"], true);
+}
+
+// ── GitOps atomic write (F14) ──────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gitops_push_atomic_write() {
+    let (base_url, _server) = start_server().await;
+
+    // Use a fresh temp directory for the GitOps repo
+    let repo_dir = std::env::temp_dir().join(format!("pandapass-gitops-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&repo_dir).expect("temp dir");
+
+    let age_identity = AgeIdentity::generate();
+    let age_path = repo_dir.join("age.key");
+    std::fs::write(&age_path, age_identity.expose()).expect("write age identity");
+
+    let api = ApiClient::new(base_url.clone(), false).expect("api client");
+    api.register("gitops@example.com", "correct horse battery staple", Some(age_identity.public_key().unwrap().as_str()))
+        .await
+        .expect("register");
+    let login = api
+        .login("gitops@example.com", "correct horse battery staple", None)
+        .await
+        .expect("login");
+    let token = login.session_token.expect("session token");
+    api.set_auth_token(Some(token.clone())).await;
+
+    // Create project and env
+    let project = api
+        .create_project(&CreateProjectRequest {
+            name: "gitopsapp-atomic".into(),
+            slug: "gitopsapp-atomic".into(),
+            description: None,
+        })
+        .await
+        .expect("create project");
+    let _env = api
+        .create_env(
+            &project.project.slug,
+            &pandapass_core::models::CreateEnvRequest {
+                name: "Production".into(),
+                slug: "prod-atomic".into(),
+                description: None,
+            },
+        )
+        .await
+        .expect("create env");
+
+    // Set some secrets
+    api.set_secret("gitopsapp-atomic", "prod-atomic", "KEY1", "value1").await.expect("set secret 1");
+    api.set_secret("gitopsapp-atomic", "prod-atomic", "KEY2", "value2").await.expect("set secret 2");
+
+    // Pull to local directory
+    let mut config = CliConfig {
+        server_url: base_url.clone(),
+        auth_token: Some(token.clone()),
+        default_project: None,
+        default_env: None,
+        age_identity_file: Some(age_path.clone()),
+        command_allowlist: vec![],
+        command_timeout_secs: None,
+    };
+
+    run_command(
+        &api,
+        &mut config,
+        Command::GitOps(pandapass_cli::commands::GitOpsCmd::Pull(pandapass_cli::commands::GitOpsPullArgs {
+            project: "gitopsapp-atomic".into(),
+            env: "prod-atomic".into(),
+            dir: repo_dir.clone(),
+        })),
+    )
+    .await
+    .expect("gitops pull");
+
+    // Verify files exist
+    let secrets_dir = repo_dir.join("secrets");
+    assert!(secrets_dir.join("prod-atomic.yaml.age").exists(), "prod-atomic.yaml.age should exist");
+    assert!(repo_dir.join(".sync-state.json").exists(), ".sync-state.json should exist");
+
+    // Now push again WITHOUT changes - should be atomic (no partial writes)
+    run_command(
+        &api,
+        &mut config,
+        Command::GitOps(pandapass_cli::commands::GitOpsCmd::Push(pandapass_cli::commands::GitOpsPushArgs {
+            project: "gitopsapp-atomic".into(),
+            env: "prod-atomic".into(),
+            dir: repo_dir.clone(),
+            allow_delete: false,
+        })),
+    )
+    .await
+    .expect("gitops push (no changes)");
+
+    // The sync-state should not have changed secrets
+    let sync_state_content = std::fs::read_to_string(repo_dir.join(".sync-state.json")).expect("read sync state");
+    let sync_state: serde_json::Value = serde_json::from_str(&sync_state_content).expect("parse sync state");
+    // Should have 2 secrets tracked
+    let secrets = sync_state["secrets"].as_object().expect("secrets object");
+    assert_eq!(secrets.len(), 2, "should track 2 secrets");
+    // Each secret should have version and updated_at
+    for (key, info) in secrets {
+        assert!(info["version"].is_number(), "secret {key} should have version");
+        assert!(info["updated_at"].is_string(), "secret {key} should have updated_at");
+    }
 }

@@ -42,6 +42,10 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --workspace
 
+      # CLI integration tests — part of the merge gate (not continue-on-error)
+      - name: cargo test (CLI integration)
+        run: cargo test --manifest-path integration/cli/Cargo.toml
+
   # ── Web: type-check + production build ─────────────────────────────────
   web:
     name: web build
@@ -72,7 +76,6 @@ jobs:
     name: playwright e2e
     runs-on: ubuntu-latest
     continue-on-error: true
-    needs: rust
     steps:
       - uses: actions/checkout@v4
 
@@ -83,9 +86,6 @@ jobs:
 
       - name: Build debug binaries (server + cli)
         run: cargo build -p pandapass-server -p pandapass-cli
-
-      - name: Run CLI integration tests (Rust)
-        run: cargo test --manifest-path integration/cli/Cargo.toml
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
