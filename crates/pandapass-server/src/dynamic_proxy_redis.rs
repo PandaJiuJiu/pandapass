@@ -471,7 +471,7 @@ mod tests {
         // The proxy replies with the upstream's +OK (relayed).
         let mut resp = [0u8; 5];
         client.read_exact(&mut resp).await.unwrap();
-        assert_eq!(&resp, b"+OK\r\n", "expected +OK, got {:?}", &resp);
+        assert_eq!(&resp, b"+OK\r\n", "expected +OK, got {:?}", resp);
 
         // Prove the byte stream is a live relay, not a closed connection.
         client.write_all(b"PING").await.unwrap();
