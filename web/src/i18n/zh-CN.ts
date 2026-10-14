@@ -57,6 +57,7 @@ export default {
     audit: '审计日志',
     users: '用户',
     dynamicCreds: '动态凭据',
+    help: '快速开始',
     signOut: '退出登录',
   },
   login: {

@@ -92,6 +92,9 @@ onMounted(() => {
           <UiSidebarItem to="/tokens" @click="sidebarOpen = false">
             {{ t('nav.tokens') }}
           </UiSidebarItem>
+          <UiSidebarItem to="/help" @click="sidebarOpen = false">
+            {{ t('nav.help') }}
+          </UiSidebarItem>
         </UiSidebarGroup>
 
         <UiSidebarGroup :title="t('nav.security')">

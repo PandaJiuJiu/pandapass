@@ -55,6 +55,7 @@ export default {
     audit: 'Audit Log',
     users: 'Users',
     dynamicCreds: 'Dynamic Credentials',
+    help: 'Quick Start',
     signOut: 'Sign out',
   },
   login: {
