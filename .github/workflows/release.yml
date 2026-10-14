@@ -27,9 +27,12 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             archive: tar.gz
-          # macOS: build both Intel and Apple Silicon.
+          # macOS: build both Intel and Apple Silicon. Both jobs run on
+          # macos-14 (Apple Silicon) — aarch64 compiles natively, x86_64 is
+          # cross-compiled. macos-13 (Intel) is deprecated by GitHub and its
+          # runners queue for hours, so we avoid it.
           - name: macos-x86_64
-            os: macos-13
+            os: macos-14
             target: x86_64-apple-darwin
             archive: tar.gz
           - name: macos-aarch64
