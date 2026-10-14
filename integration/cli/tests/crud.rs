@@ -984,7 +984,7 @@ async fn totp_accepts_clock_drift() {
     let secret = setup_resp["secret"].as_str().expect("secret");
 
     // Generate a valid TOTP code using the secret
-    let secret_bytes = base32::decode(base32::Alphabet::RFC4648 { padding: false }, &secret).unwrap();
+    let secret_bytes = base32::decode(base32::Alphabet::RFC4648 { padding: false }, secret).unwrap();
     let totp = totp_rs::Builder::new()
         .with_algorithm(totp_rs::Algorithm::SHA256)
         .with_digits(6)
@@ -1045,7 +1045,7 @@ async fn totp_setup_without_age_key() {
 
     // Verify it works
     let secret = setup_resp["secret"].as_str().expect("secret");
-    let secret_bytes = base32::decode(base32::Alphabet::RFC4648 { padding: false }, &secret).unwrap();
+    let secret_bytes = base32::decode(base32::Alphabet::RFC4648 { padding: false }, secret).unwrap();
     let totp = totp_rs::Builder::new()
         .with_algorithm(totp_rs::Algorithm::SHA256)
         .with_digits(6)

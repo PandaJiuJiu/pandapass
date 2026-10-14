@@ -169,7 +169,7 @@ async fn internal_exec_injects_secrets_and_runs_command() {
     let (api, mut config) = make_cli(&base_url, &service_token_plain, &age_path).await;
 
     // Run internal exec with the secret injected
-    let _result = run_command(
+    run_command(
         &api,
         &mut config,
         Command::InternalExec(InternalExecArgs {
