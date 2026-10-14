@@ -34,10 +34,11 @@ jobs:
       # in core signatures (too_many_arguments, inherent from_str methods,
       # complex policy-engine type). Keeping -D warnings strict otherwise.
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-          -A clippy::too_many_arguments
-          -A clippy::should_implement_trait
-          -A clippy::type_complexity
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings \
+            -A clippy::too_many_arguments \
+            -A clippy::should_implement_trait \
+            -A clippy::type_complexity
 
       - name: cargo test --workspace
         run: cargo test --workspace
