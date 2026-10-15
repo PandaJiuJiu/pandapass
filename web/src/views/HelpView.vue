@@ -80,11 +80,11 @@ const zh: DocStep[] = [
   {
     title: '2. 下载 CLI',
     body: [
-      '从 GitHub Release 下载对应平台的压缩包。解压后把二进制放到 PATH 中（例如 /usr/local/bin）。',
+      '从 GitHub Release 下载对应平台的压缩包。解压后把二进制放到 PATH 中（例如 ~/.local/bin，无需 sudo）。',
     ],
     code: [
-      { label: 'Linux / macOS', cmd: `curl -L -o pandapass-cli.tar.gz ${releaseBase}/pandapass-cli-0.0.1-linux-x86_64.tar.gz\ntar -xzf pandapass-cli.tar.gz\nsudo mv pandapass-cli /usr/local/bin/` },
-      { label: 'macOS (Apple Silicon)', cmd: `curl -L -o pandapass-cli.tar.gz ${releaseBase}/pandapass-cli-0.0.1-macos-aarch64.tar.gz\ntar -xzf pandapass-cli.tar.gz\nsudo mv pandapass-cli /usr/local/bin/` },
+      { label: 'Linux / macOS', cmd: `curl -L -o pandapass-cli.tar.gz ${releaseBase}/pandapass-cli-0.0.1-linux-x86_64.tar.gz\ntar -xzf pandapass-cli.tar.gz\nmkdir -p ~/.local/bin\nmv pandapass-cli ~/.local/bin/` },
+      { label: 'macOS (Apple Silicon)', cmd: `curl -L -o pandapass-cli.tar.gz ${releaseBase}/pandapass-cli-0.0.1-macos-aarch64.tar.gz\ntar -xzf pandapass-cli.tar.gz\nmkdir -p ~/.local/bin\nmv pandapass-cli ~/.local/bin/` },
       { label: 'Windows (PowerShell)', cmd: `Invoke-WebRequest -Uri "${releaseBase}/pandapass-cli-0.0.1-windows-x86_64.zip" -OutFile pandapass-cli.zip\nExpand-Archive pandapass-cli.zip\nMove-Item pandapass-cli.exe $env:LOCALAPPDATA\\pandapass\\` },
     ],
   },
@@ -159,11 +159,11 @@ const en: DocStep[] = [
   {
     title: '2. Download the CLI',
     body: [
-      'Download the archive for your platform from the GitHub Release. Extract it and put the binary on your PATH (e.g. /usr/local/bin).',
+      'Download the archive for your platform from the GitHub Release. Extract it and put the binary on your PATH (e.g. ~/.local/bin, no sudo needed).',
     ],
     code: [
-      { label: 'Linux / macOS', cmd: `curl -L -o pandapass-cli.tar.gz ${releaseBase}/pandapass-cli-0.0.1-linux-x86_64.tar.gz\ntar -xzf pandapass-cli.tar.gz\nsudo mv pandapass-cli /usr/local/bin/` },
-      { label: 'macOS (Apple Silicon)', cmd: `curl -L -o pandapass-cli.tar.gz ${releaseBase}/pandapass-cli-0.0.1-macos-aarch64.tar.gz\ntar -xzf pandapass-cli.tar.gz\nsudo mv pandapass-cli /usr/local/bin/` },
+      { label: 'Linux / macOS', cmd: `curl -L -o pandapass-cli.tar.gz ${releaseBase}/pandapass-cli-0.0.1-linux-x86_64.tar.gz\ntar -xzf pandapass-cli.tar.gz\nmkdir -p ~/.local/bin\nmv pandapass-cli ~/.local/bin/` },
+      { label: 'macOS (Apple Silicon)', cmd: `curl -L -o pandapass-cli.tar.gz ${releaseBase}/pandapass-cli-0.0.1-macos-aarch64.tar.gz\ntar -xzf pandapass-cli.tar.gz\nmkdir -p ~/.local/bin\nmv pandapass-cli ~/.local/bin/` },
       { label: 'Windows (PowerShell)', cmd: `Invoke-WebRequest -Uri "${releaseBase}/pandapass-cli-0.0.1-windows-x86_64.zip" -OutFile pandapass-cli.zip\nExpand-Archive pandapass-cli.zip\nMove-Item pandapass-cli.exe $env:LOCALAPPDATA\\pandapass\\` },
     ],
   },
