@@ -89,9 +89,10 @@ const zh: DocStep[] = [
     ],
   },
   {
-    title: '3. 生成 age 密钥',
+    title: '3. （可选）生成你自己的 age 密钥',
     body: [
-      'age 密钥对用于加解密你的密钥。运行 keygen 生成身份文件，它会输出公钥——注册账户时需要填写。',
+      '默认情况下，服务端会自动托管你的主密钥——无需任何配置即可在任何设备、CI 中使用。',
+      '如果你希望在自己的机器上也能离线解密（不依赖服务端），可以生成一对 age 密钥并绑定到账户。',
     ],
     code: [
       { label: '生成并保存到默认路径', cmd: 'pandapass-cli keygen' },
@@ -101,7 +102,7 @@ const zh: DocStep[] = [
   {
     title: '4. 注册 / 登录',
     body: [
-      '使用 Web 界面或 CLI 注册账户。注册时需要提供 age 公钥（来自上一步）。',
+      '使用 Web 界面或 CLI 注册账户。服务端会自动托管主密钥，无需填写 age 公钥。',
     ],
     code: [
       { label: '注册（需先在 Web 界面创建管理员账户）', cmd: `pandapass-cli login --server ${serverBase.value.replace(':15173', ':18233')} --email you@example.com --password-stdin` },
@@ -110,11 +111,11 @@ const zh: DocStep[] = [
   {
     title: '5. 配置 CLI',
     body: [
-      '把服务器地址写入配置，后续命令就不用每次带 --server 了。',
+      '把服务器地址写入配置，后续命令就不用每次带 --server 了。设置 age 身份文件是可选的高级功能（仅当你绑定了自己的 age 密钥时）。',
     ],
     code: [
       { label: '设置服务器地址', cmd: `pandapass-cli config set-server ${serverBase.value.replace(':15173', ':18233')}` },
-      { label: '设置 age 身份文件', cmd: 'pandapass-cli config set-age-identity ~/.pandapass/age.key' },
+      { label: '设置 age 身份文件（可选）', cmd: 'pandapass-cli config set-age-identity ~/.pandapass/age.key' },
       { label: '查看当前配置', cmd: 'pandapass-cli config show' },
     ],
   },
@@ -132,7 +133,7 @@ const zh: DocStep[] = [
     ],
   },
   {
-    title: '7. 在命令中���入密钥（run）',
+    title: '7. 在命令中注入密钥（run）',
     body: [
       'run 子命令会把指定密钥注入环境变量后执行命令，适合 CI/CD 或脚本。',
     ],
@@ -182,9 +183,10 @@ const en: DocStep[] = [
     ],
   },
   {
-    title: '3. Generate an age key',
+    title: '3. (Optional) Generate your own age key',
     body: [
-      'The age keypair seals and unseals your secrets. Run keygen to create an identity file; it prints the public key you need when registering.',
+      'By default the server auto-manages your master key — no configuration needed, works from any device and CI.',
+      'If you want to decrypt on your own machine without the server, generate an age keypair and bind it to your account.',
     ],
     code: [
       { label: 'Generate and save to default path', cmd: 'pandapass-cli keygen' },
@@ -194,7 +196,7 @@ const en: DocStep[] = [
   {
     title: '4. Register / Log in',
     body: [
-      'Register through the Web UI or the CLI. Registration requires your age public key from the previous step.',
+      'Register through the Web UI or the CLI. The server auto-manages your master key — no age public key required.',
     ],
     code: [
       { label: 'Log in (admin account must be created in the Web UI first)', cmd: `pandapass-cli login --server ${serverBase.value.replace(':15173', ':18233')} --email you@example.com --password-stdin` },
@@ -203,11 +205,11 @@ const en: DocStep[] = [
   {
     title: '5. Configure the CLI',
     body: [
-      'Persist the server URL in your config so later commands do not need --server every time.',
+      'Persist the server URL in your config so later commands do not need --server every time. Setting an age identity file is optional — only needed if you bound your own age key.',
     ],
     code: [
       { label: 'Set server URL', cmd: `pandapass-cli config set-server ${serverBase.value.replace(':15173', ':18233')}` },
-      { label: 'Set age identity file', cmd: 'pandapass-cli config set-age-identity ~/.pandapass/age.key' },
+      { label: 'Set age identity file (optional)', cmd: 'pandapass-cli config set-age-identity ~/.pandapass/age.key' },
       { label: 'Show current config', cmd: 'pandapass-cli config show' },
     ],
   },

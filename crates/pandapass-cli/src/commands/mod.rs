@@ -759,12 +759,13 @@ async fn run_login(
     if resp.key_enrolled {
         println!("Logged in as {} (master key enrolled)", resp.user.email);
     } else {
-        // Without an age key this account exists but cannot store or read a
-        // single secret — worth saying before they wonder why writes 403.
+        // Without a server age identity the account exists but cannot store
+        // or read a secret. Tell the user how to fix it, rather than leaving
+        // them with a login that silently 403s on every write.
         println!("Logged in as {}", resp.user.email);
         println!(
-            "Note: no master key enrolled. Run `pandapass keygen`, then \
-             POST /api/v1/auth/key/enroll to become able to use secrets."
+            "Note: no master key enrolled. If the server has an age identity configured, \
+             try logging in again; otherwise ask your administrator to re-enrol your key."
         );
     }
     Ok(())

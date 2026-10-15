@@ -275,6 +275,25 @@ fn create_envelope(
     .map_err(ApiError::from)
 }
 
+/// Create an envelope sealed only to the server (server-managed mode).
+///
+/// This lets an account use secrets immediately without the user generating
+/// an age key: the master key is minted here and wrapped to the server's own
+/// age identity, so `get_master_key` can unwrap it on the member's behalf.
+/// The user can later re-enrol with `enroll_key rotate=true` to add their own
+/// age public key as an additional recipient.
+fn create_server_managed_envelope(state: &AppState, user_id: Uuid) -> Result<Envelope, ApiError> {
+    let server_pub = server_recipient(state).ok_or_else(|| {
+        ApiError::Forbidden(
+            "This server has no age identity, so it cannot auto-manage master keys. \
+             Configure PANDAPASS_SERVER_AGE_IDENTITY."
+                .into(),
+        )
+    })?;
+    let mk = MasterKey::generate();
+    Envelope::create(user_id, &mk, &server_pub, &SealOptions::default()).map_err(ApiError::from)
+}
+
 pub async fn register(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -330,6 +349,10 @@ pub async fn register(
     }
 
     // Seal a master key to the caller's public key, if they supplied one.
+    // Otherwise the server auto-manages the key (server-managed mode): the
+    // master key is minted here and wrapped to the server's age identity, so
+    // the account can use secrets immediately from any device. A user who
+    // wants offline access can re-enrol later with `enroll_key rotate=true`.
     let mut enrolled = false;
     if let Some(pk) = req.age_public_key.as_deref().filter(|s| !s.is_empty()) {
         let recipient = AgePublicKey(pk.trim().to_string());
@@ -351,6 +374,22 @@ pub async fn register(
         let env = create_envelope(&state, user.id, &recipient)?;
         db::put_envelope(&state.db, user.id, &env.ciphertext).await?;
         enrolled = true;
+    } else if server_recipient(&state).is_some() {
+        // Server-managed mode (default): no user age key required.
+        let env = create_server_managed_envelope(&state, user.id)?;
+        db::put_envelope(&state.db, user.id, &env.ciphertext).await?;
+        enrolled = true;
+    } else {
+        // No server identity and no user key: the account exists but cannot
+        // use secrets until a key is enrolled. Preserve historical behaviour
+        // so a server without an age identity can still onboard users who
+        // bring their own key (member-only, client-side decryption).
+        tracing::warn!(
+            "No server age identity configured; account {} created without a \
+             master-key envelope. Configure PANDAPASS_SERVER_AGE_IDENTITY to \
+             enable server-managed keys.",
+            user.id
+        );
     }
 
     db::touch_last_login(&state.db, user.id).await?;

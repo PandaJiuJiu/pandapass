@@ -438,8 +438,10 @@ pub struct AdminCreateUserRequest {
 /// Admin: create a user account. The new account is always a plain
 /// `GlobalRole::User` — an admin cannot be minted through this endpoint, so
 /// a compromised admin session cannot silently create a second administrator.
-/// The account is created without an age key envelope; the user enrolls one
-/// later via `POST /api/v1/auth/key/enroll`.
+/// The account's master-key envelope is sealed to the server automatically
+/// (server-managed mode), so the user can use secrets immediately. A user who
+/// wants offline access can enroll their own age key later via
+/// `POST /api/v1/auth/key/enroll`.
 pub async fn create_user_admin(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -451,6 +453,32 @@ pub async fn create_user_admin(
     validate_password_policy(&req.password)?;
     let password_hash = hash_password(&req.password)?;
     let user = db::create_user(&state.db, &req.email, &password_hash, GlobalRole::User).await?;
+
+    // Server-managed master key: seal the user's envelope to the server's age
+    // identity so the account works immediately. If the server has no age
+    // identity, the user must enroll their own key later.
+    use pandapass_core::crypto::{AgeIdentity, Envelope, MasterKey, SealOptions};
+    if let Some(identity) = state
+        .config
+        .server_age_identity
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
+        let server_pub = AgeIdentity::parse(identity)
+            .ok()
+            .and_then(|a| a.public_key().ok());
+        if let Some(server_pub) = server_pub {
+            let mk = MasterKey::generate();
+            let env = Envelope::create(
+                user.id,
+                &mk,
+                &server_pub,
+                &SealOptions::default(),
+            )
+            .map_err(ApiError::from)?;
+            pandapass_db::put_envelope(&state.db, user.id, &env.ciphertext).await?;
+        }
+    }
 
     let mut audit = AuditContext::new(&auth, AuditAction::UserCreate)
         .with_meta(serde_json::json!({ "target_user_id": user.id.to_string() }));
