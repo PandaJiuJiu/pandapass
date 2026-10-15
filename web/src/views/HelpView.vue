@@ -318,7 +318,7 @@ const serverLabel = computed(() =>
 
 <style scoped>
 .help-page {
-  max-width: 1000px;
+  max-width: 1200px;
   margin: 0 auto;
 }
 
@@ -351,7 +351,7 @@ const serverLabel = computed(() =>
   font-size: 13.5px;
   line-height: 1.6;
   color: var(--text-dim);
-  max-width: 720px;
+  max-width: 1200px;
   margin-left: auto;
   margin-right: auto;
 }
@@ -361,7 +361,7 @@ const serverLabel = computed(() =>
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: var(--space-3);
   margin: var(--space-4) auto;
-  max-width: 720px;
+  max-width: 1200px;
 }
 
 .download-link {
@@ -397,7 +397,7 @@ const serverLabel = computed(() =>
 
 .code-block {
   margin: var(--space-3) auto;
-  max-width: 720px;
+  max-width: 1200px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: hidden;
