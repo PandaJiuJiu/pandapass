@@ -92,9 +92,6 @@ onMounted(() => {
           <UiSidebarItem to="/tokens" @click="sidebarOpen = false">
             {{ t('nav.tokens') }}
           </UiSidebarItem>
-          <UiSidebarItem to="/help" @click="sidebarOpen = false">
-            {{ t('nav.help') }}
-          </UiSidebarItem>
         </UiSidebarGroup>
 
         <UiSidebarGroup :title="t('nav.security')">
@@ -115,6 +112,9 @@ onMounted(() => {
         <UiSidebarGroup v-if="isAdmin" :title="t('nav.admin')">
           <UiSidebarItem to="/users" @click="sidebarOpen = false">
             {{ t('nav.users') }}
+          </UiSidebarItem>
+          <UiSidebarItem to="/help" @click="sidebarOpen = false">
+            {{ t('nav.help') }}
           </UiSidebarItem>
         </UiSidebarGroup>
 

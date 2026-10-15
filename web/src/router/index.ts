@@ -57,7 +57,7 @@ export const router = createRouter({
     { path: '/scan', component: ScanView, meta: { title: 'nav.scan' } },
     { path: '/users', component: UsersView, meta: { title: 'nav.users', admin: true } },
     { path: '/users/new', component: UserCreateView, meta: { title: 'nav.users', parent: '/users', admin: true } },
-    { path: '/help', component: HelpView, meta: { title: 'nav.help' } },
+    { path: '/help', component: HelpView, meta: { public: true, title: 'nav.help' } },
   ],
 })
 

@@ -66,7 +66,19 @@ interface DocStep {
 
 const zh: DocStep[] = [
   {
-    title: '1. 下载 CLI',
+    title: '1. AI Agent 快速使用',
+    body: [
+      '想让 AI 助手（如 Claude Code）自动学会管理 PandaPass 吗？把下面这句话发送给你的 AI 助手，它会访问这个帮助页面，并自动创建一个 PandaPass SKILL。',
+    ],
+    code: [
+      {
+        label: '发送给 AI 的一句话',
+        cmd: `请访问 ${serverBase.value}/help 获取 PandaPass 的完整使用说明，然后创建一个 PandaPass SKILL，让我能通过命令行管理密钥——包括登录、创建项目/环境、设置/读取密钥，以及用 run 注入密钥执行命令。`,
+      },
+    ],
+  },
+  {
+    title: '2. 下载 CLI',
     body: [
       '从 GitHub Release 下载对应平台的压缩包。解压后把二进制放到 PATH 中（例如 /usr/local/bin）。',
     ],
@@ -77,7 +89,7 @@ const zh: DocStep[] = [
     ],
   },
   {
-    title: '2. 生成 age 密钥',
+    title: '3. 生成 age 密钥',
     body: [
       'age 密钥对用于加解密你的密钥。运行 keygen 生成身份文件，它会输出公钥——注册账户时需要填写。',
     ],
@@ -87,7 +99,7 @@ const zh: DocStep[] = [
     ],
   },
   {
-    title: '3. 注册 / 登录',
+    title: '4. 注册 / 登录',
     body: [
       '使用 Web 界面或 CLI 注册账户。注册时需要提供 age 公钥（来自上一步）。',
     ],
@@ -96,7 +108,7 @@ const zh: DocStep[] = [
     ],
   },
   {
-    title: '4. 配置 CLI',
+    title: '5. 配置 CLI',
     body: [
       '把服务器地址写入配置，后续命令就不用每次带 --server 了。',
     ],
@@ -107,7 +119,7 @@ const zh: DocStep[] = [
     ],
   },
   {
-    title: '5. 管理项目、环境与密钥',
+    title: '6. 管理项目、环境与密钥',
     body: [
       '密钥按 项目(Project) → 环境(Environment) → 密钥(Secret) 三级组织。先创建项目和环境，再写入密钥。',
     ],
@@ -120,7 +132,7 @@ const zh: DocStep[] = [
     ],
   },
   {
-    title: '6. 在命令中注入密钥（run）',
+    title: '7. 在命令中注入密钥（run）',
     body: [
       'run 子命令会把指定密钥注入环境变量后执行命令，适合 CI/CD 或脚本。',
     ],
@@ -133,7 +145,19 @@ const zh: DocStep[] = [
 
 const en: DocStep[] = [
   {
-    title: '1. Download the CLI',
+    title: '1. AI Agent Quick Start',
+    body: [
+      'Want an AI assistant (e.g. Claude Code) to manage PandaPass for you? Send the prompt below to your AI assistant — it will visit this help page and create a PandaPass SKILL automatically.',
+    ],
+    code: [
+      {
+        label: 'One-line prompt for your AI',
+        cmd: `Visit ${serverBase.value}/help for the PandaPass guide, then create a SKILL for PandaPass so I can manage secrets from the command line — login, project/env/secret operations, and run injection.`,
+      },
+    ],
+  },
+  {
+    title: '2. Download the CLI',
     body: [
       'Download the archive for your platform from the GitHub Release. Extract it and put the binary on your PATH (e.g. /usr/local/bin).',
     ],
@@ -144,7 +168,7 @@ const en: DocStep[] = [
     ],
   },
   {
-    title: '2. Generate an age key',
+    title: '3. Generate an age key',
     body: [
       'The age keypair seals and unseals your secrets. Run keygen to create an identity file; it prints the public key you need when registering.',
     ],
@@ -154,7 +178,7 @@ const en: DocStep[] = [
     ],
   },
   {
-    title: '3. Register / Log in',
+    title: '4. Register / Log in',
     body: [
       'Register through the Web UI or the CLI. Registration requires your age public key from the previous step.',
     ],
@@ -163,7 +187,7 @@ const en: DocStep[] = [
     ],
   },
   {
-    title: '4. Configure the CLI',
+    title: '5. Configure the CLI',
     body: [
       'Persist the server URL in your config so later commands do not need --server every time.',
     ],
@@ -174,7 +198,7 @@ const en: DocStep[] = [
     ],
   },
   {
-    title: '5. Manage projects, environments and secrets',
+    title: '6. Manage projects, environments and secrets',
     body: [
       'Secrets are organised as Project → Environment → Secret. Create a project and environment first, then write secrets.',
     ],
@@ -187,7 +211,7 @@ const en: DocStep[] = [
     ],
   },
   {
-    title: '6. Inject secrets into commands (run)',
+    title: '7. Inject secrets into commands (run)',
     body: [
       'The run subcommand injects selected secrets into the environment and executes a command — ideal for CI/CD or scripts.',
     ],
@@ -208,17 +232,32 @@ const serverLabel = computed(() =>
 </script>
 
 <template>
-  <div>
+  <div class="help-page">
     <UiPageHeader
       :title="t('nav.help')"
       :description="isZh ? '在局域网中安装并使用 PandaPass CLI 的快速指南。' : 'Quick guide to installing and using the PandaPass CLI on your LAN.'"
     />
 
-    <UiCard variant="outlined" padding class="help-card">
+    <UiCard variant="outlined" padding>
       <!-- Download links -->
       <section class="help-section">
         <h2>{{ steps[0].title }}</h2>
         <p v-for="(line, i) in steps[0].body" :key="i">{{ line }}</p>
+        <div v-for="(c, i) in steps[0].code ?? []" :key="`code-${i}`" class="code-block">
+          <div class="code-head">
+            <span class="code-label">{{ c.label }}</span>
+            <UiButton variant="ghost" size="sm" @click="copy(c.cmd, `step0-${i}`)">
+              {{ copied === `step0-${i}` ? copiedLabel : copyLabel }}
+            </UiButton>
+          </div>
+          <pre class="code-body"><code>{{ c.cmd }}</code></pre>
+        </div>
+      </section>
+
+      <!-- Download links -->
+      <section class="help-section">
+        <h2>{{ steps[1].title }}</h2>
+        <p v-for="(line, i) in steps[1].body" :key="i">{{ line }}</p>
         <div class="download-grid">
           <a
             v-for="d in downloads"
@@ -232,11 +271,11 @@ const serverLabel = computed(() =>
             <span class="dl-file mono">{{ d.file.replace('pandapass-cli-0.0.1-', '') }}</span>
           </a>
         </div>
-        <div v-for="(c, i) in steps[0].code ?? []" :key="`code-${i}`" class="code-block">
+        <div v-for="(c, i) in steps[1].code ?? []" :key="`code-${i}`" class="code-block">
           <div class="code-head">
             <span class="code-label">{{ c.label }}</span>
-            <UiButton variant="ghost" size="sm" @click="copy(c.cmd, `step0-${i}`)">
-              {{ copied === `step0-${i}` ? copiedLabel : copyLabel }}
+            <UiButton variant="ghost" size="sm" @click="copy(c.cmd, `step1-${i}`)">
+              {{ copied === `step1-${i}` ? copiedLabel : copyLabel }}
             </UiButton>
           </div>
           <pre class="code-body"><code>{{ c.cmd }}</code></pre>
@@ -244,14 +283,14 @@ const serverLabel = computed(() =>
       </section>
 
       <!-- Remaining steps -->
-      <section v-for="(step, idx) in steps.slice(1)" :key="idx" class="help-section">
+      <section v-for="(step, idx) in steps.slice(2)" :key="idx" class="help-section">
         <h2>{{ step.title }}</h2>
         <p v-for="(line, i) in step.body" :key="i">{{ line }}</p>
         <div v-for="(c, i) in step.code ?? []" :key="`code-${i}`" class="code-block">
           <div class="code-head">
             <span class="code-label">{{ c.label }}</span>
-            <UiButton variant="ghost" size="sm" @click="copy(c.cmd, `step${idx + 1}-${i}`)">
-              {{ copied === `step${idx + 1}-${i}` ? copiedLabel : copyLabel }}
+            <UiButton variant="ghost" size="sm" @click="copy(c.cmd, `step${idx + 2}-${i}`)">
+              {{ copied === `step${idx + 2}-${i}` ? copiedLabel : copyLabel }}
             </UiButton>
           </div>
           <pre class="code-body"><code>{{ c.cmd }}</code></pre>
@@ -278,14 +317,21 @@ const serverLabel = computed(() =>
 </template>
 
 <style scoped>
-.help-card {
-  padding: var(--space-8);
+.help-page {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+/* Override UiPageHeader description max-width */
+:deep(.ui-page-header .description) {
+  max-width: none;
 }
 
 .help-section {
   margin-bottom: var(--space-8);
   padding-bottom: var(--space-8);
   border-bottom: 1px solid var(--border);
+  text-align: center;
 }
 
 .help-section:last-child {
@@ -306,18 +352,22 @@ const serverLabel = computed(() =>
   line-height: 1.6;
   color: var(--text-dim);
   max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .download-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: var(--space-3);
-  margin: var(--space-4) 0;
+  margin: var(--space-4) auto;
+  max-width: 720px;
 }
 
 .download-link {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 2px;
   padding: var(--space-3);
   border: 1px solid var(--border);
@@ -325,6 +375,7 @@ const serverLabel = computed(() =>
   background: var(--surface-2);
   text-decoration: none;
   color: var(--text);
+  text-align: center;
   transition: border-color var(--transition-fast),
     background-color var(--transition-fast);
 }
@@ -345,10 +396,12 @@ const serverLabel = computed(() =>
 }
 
 .code-block {
-  margin: var(--space-3) 0;
+  margin: var(--space-3) auto;
+  max-width: 720px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: hidden;
+  text-align: left;
 }
 
 .code-head {
