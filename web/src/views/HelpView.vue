@@ -132,7 +132,7 @@ const zh: DocStep[] = [
     ],
   },
   {
-    title: '7. 在命令中注入密钥（run）',
+    title: '7. 在命令中���入密钥（run）',
     body: [
       'run 子命令会把指定密钥注入环境变量后执行命令，适合 CI/CD 或脚本。',
     ],
@@ -140,6 +140,20 @@ const zh: DocStep[] = [
       { label: '注入密钥并运行命令', cmd: 'pandapass-cli run --project myapp --env prod --only DATABASE_URL -- echo "$DATABASE_URL"' },
     ],
     note: '出于安全考虑，run 默认受服务端命令白名单限制。如需放开，请联系管理员调整 PANDAPASS_COMMAND_ALLOWLIST。',
+  },
+  {
+    title: '8. CI/CD 服务令牌',
+    body: [
+      'CI/CD 流水线（GitLab CI、GitHub Actions 等）运行在临时沙箱中，不应使用 age 私钥。请创建**服务令牌**，把令牌存入 CI 变量，流水线用它拉取业务密钥。',
+      '令牌可按项目、环境、权限（读/写）最小化授权，支持设置过期时间，随时可吊销。',
+    ],
+    code: [
+      { label: '创建只读令牌（90 天过期）', cmd: 'pandapass-cli token create --name "gitlab-ci-prod" --scope readSecret --project myapp --env prod --expires-days 90' },
+      { label: '创建读写令牌（无过期）', cmd: 'pandapass-cli token create --name "github-actions-deploy" --scope writeSecret --project myapp --env prod' },
+      { label: '列出令牌', cmd: 'pandapass-cli token list' },
+      { label: '吊销令牌', cmd: 'pandapass-cli token revoke <token-id>' },
+    ],
+    note: '令牌值只在创建时显示一次——立即复制到 GitLab CI Variables / GitHub Secrets（变量名建议：PANDAPASS_TOKEN）。CI 中直接用：`pandapass-cli --token $PANDAPASS_TOKEN secret get ...`',
   },
 ]
 
@@ -219,6 +233,20 @@ const en: DocStep[] = [
       { label: 'Inject a secret and run', cmd: 'pandapass-cli run --project myapp --env prod --only DATABASE_URL -- echo "$DATABASE_URL"' },
     ],
     note: 'For security, run is restricted by the server-side command allowlist. Ask an administrator to adjust PANDAPASS_COMMAND_ALLOWLIST if needed.',
+  },
+  {
+    title: '8. CI/CD Service Tokens',
+    body: [
+      'CI/CD pipelines (GitLab CI, GitHub Actions, etc.) run in ephemeral sandboxes — do not use age private keys there. Create a **service token**, store it in CI variables, and let the pipeline fetch business secrets with it.',
+      'Tokens can be scoped to a project, environment, and permission (read/write), support expiry, and can be revoked instantly.',
+    ],
+    code: [
+      { label: 'Create read-only token (90-day expiry)', cmd: 'pandapass-cli token create --name "gitlab-ci-prod" --scope readSecret --project myapp --env prod --expires-days 90' },
+      { label: 'Create read-write token (no expiry)', cmd: 'pandapass-cli token create --name "github-actions-deploy" --scope writeSecret --project myapp --env prod' },
+      { label: 'List tokens', cmd: 'pandapass-cli token list' },
+      { label: 'Revoke a token', cmd: 'pandapass-cli token revoke <token-id>' },
+    ],
+    note: 'The token value is shown only once at creation — immediately copy it to GitLab CI Variables / GitHub Secrets (suggested var name: PANDAPASS_TOKEN). In CI: `pandapass-cli --token $PANDAPASS_TOKEN secret get ...`',
   },
 ]
 
