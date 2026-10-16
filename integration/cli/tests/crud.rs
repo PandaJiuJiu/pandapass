@@ -56,6 +56,9 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
         trusted_proxy_cidrs: vec![],
         audit_chain_key_file: None,
         backup_dir: None,
+        tls_cert_file: None,
+        tls_key_file: None,
+        tls_ca_file: None,
     };
 
     let db = connect(&config.db_url).await.expect("connect");
@@ -98,6 +101,7 @@ async fn make_cli(
         default_project: None,
         default_env: None,
         age_identity_file: Some(age_identity_path.to_path_buf()),
+        ca_cert: None,
         command_allowlist: vec![],
         command_timeout_secs: None,
     };
@@ -178,6 +182,7 @@ async fn login_fails_with_wrong_password() {
         default_project: None,
         default_env: None,
         age_identity_file: None,
+        ca_cert: None,
         command_allowlist: vec![],
         command_timeout_secs: None,
     };
@@ -207,6 +212,7 @@ async fn login_fails_for_unknown_email() {
         default_project: None,
         default_env: None,
         age_identity_file: None,
+        ca_cert: None,
         command_allowlist: vec![],
         command_timeout_secs: None,
     };
@@ -908,6 +914,9 @@ async fn session_idle_timeout() {
         trusted_proxy_cidrs: vec![],
         audit_chain_key_file: None,
         backup_dir: None,
+        tls_cert_file: None,
+        tls_key_file: None,
+        tls_ca_file: None,
     };
 
     let db = connect(&config.db_url).await.expect("connect");
@@ -1121,6 +1130,7 @@ async fn gitops_push_atomic_write() {
         default_project: None,
         default_env: None,
         age_identity_file: Some(age_path.clone()),
+        ca_cert: None,
         command_allowlist: vec![],
         command_timeout_secs: None,
     };

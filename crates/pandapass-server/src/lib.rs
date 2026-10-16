@@ -33,6 +33,7 @@ pub mod middleware {
 
 pub mod dynamic_proxy;
 pub mod dynamic_proxy_redis;
+pub mod tls;
 
 /// Build the main application router
 pub fn build_router(state: AppState) -> Router {
@@ -67,6 +68,7 @@ pub fn build_router(state: AppState) -> Router {
     // enforcement — `SameSite=Lax` is a second line of defence, not the only one.
     let public_routes = Router::new()
         .route("/api/v1/health", get(tokens::health))
+        .route("/api/v1/ca.pem", get(tokens::ca_pem))
         .route("/api/v1/setup/status", get(auth::setup_status))
         .route("/api/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))

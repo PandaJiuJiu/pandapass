@@ -312,6 +312,33 @@ pub async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok", "service": "pandapass-server" }))
 }
 
+// ─────────────────────────── TLS CA ───────────────────────────
+
+/// Public endpoint to fetch the server's TLS CA certificate (PEM).
+/// Used by clients for CA pinning (TOFU). Returns 404 when TLS is not enabled.
+pub async fn ca_pem(
+    State(state): State<AppState>,
+) -> Result<axum::response::Response, ApiError> {
+    // Prefer tls_ca_file; fall back to tls_cert_file (self-signed case where
+    // the leaf cert contains the CA in its chain).
+    let path = state
+        .config
+        .tls_ca_file
+        .as_ref()
+        .or(state.config.tls_cert_file.as_ref())
+        .ok_or_else(|| ApiError::NotFound("TLS is not enabled".into()))?;
+
+    let pem = std::fs::read_to_string(path)
+        .map_err(|e| ApiError::Internal(format!("read CA file: {e}")))?;
+
+    use axum::response::IntoResponse;
+    Ok((
+        [(http::header::CONTENT_TYPE, "application/x-pem-file")],
+        pem,
+    )
+        .into_response())
+}
+
 // ─────────────────────────── audit chain verification ───────────────────────────
 
 #[derive(Serialize)]

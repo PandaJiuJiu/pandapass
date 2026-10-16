@@ -32,6 +32,10 @@ ipnet = "2.10"
 hex = { workspace = true }
 base64 = { workspace = true }
 x509-parser = { workspace = true }
+reqwest = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = "0.26"
+rustls-pki-types = "1"
 
 [dev-dependencies]
 # The integration tests drive the router in-process, so they need a body

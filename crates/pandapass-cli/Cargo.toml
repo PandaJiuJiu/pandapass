@@ -24,6 +24,7 @@ age = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
+pem = "4.0"
 dirs = "5.0"
 rpassword = "7.0"
 qrcode = { version = "0.14", features = ["svg"] }

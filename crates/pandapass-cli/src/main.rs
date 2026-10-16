@@ -28,6 +28,11 @@ struct Cli {
     /// Disable TLS verification (for self-signed certs)
     #[arg(long, global = true)]
     insecure: bool,
+
+    /// PEM file containing the server's CA certificate for CA pinning (TOFU).
+    /// The CLI will verify the server's TLS certificate against this CA.
+    #[arg(long, global = true)]
+    ca_cert: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -162,25 +167,42 @@ async fn main() -> Result<()> {
     if let Some(age_id) = cli.age_identity {
         config.age_identity_file = Some(age_id);
     }
+    if let Some(ca_cert_path) = &cli.ca_cert {
+        let pem = tokio::fs::read_to_string(ca_cert_path).await?;
+        config.ca_cert = Some(pem);
+    }
 
-    // Load age identity if configured. Its parse error is a plain &str, so it
-    // needs an explicit mapping into anyhow.
+    // Load age identity if configured. Best-effort only: a stale or unreadable
+    // identity file must not block unrelated commands (`config show`,
+    // `config set-ca-cert`, etc.). Commands that actually need the identity
+    // (gitops sync/encrypt/decrypt) load it lazily and report a precise error.
+    // The parse error is a plain &str, so it needs an explicit mapping into anyhow.
     let age_identity = if let Some(path) = &config.age_identity_file {
-        let content = tokio::fs::read_to_string(path).await?;
-        Some(
-            content
-                .trim()
-                .parse::<age::x25519::Identity>()
-                .map_err(|e| {
-                    anyhow::anyhow!("invalid age identity in {}: {}", path.display(), e)
-                })?,
-        )
+        match tokio::fs::read_to_string(path).await {
+            Ok(content) => Some(
+                content
+                    .trim()
+                    .parse::<age::x25519::Identity>()
+                    .map_err(|e| {
+                        anyhow::anyhow!("invalid age identity in {}: {}", path.display(), e)
+                    })?,
+            ),
+            Err(e) => {
+                eprintln!(
+                    "warning: could not read age identity {}: {e} \
+                     (only gitops commands need an age identity)",
+                    path.display()
+                );
+                None
+            }
+        }
     } else {
         None
     };
 
-    // Create API client
-    let api = ApiClient::new(config.server_url.clone(), cli.insecure)?;
+    // Validate `--insecure` before doing any network I/O: against a
+    // non-loopback host it is a hard error, and the TOFU fetch below would
+    // otherwise make a connection first.
     if cli.insecure {
         eprintln!(
             "WARNING: TLS certificate verification is disabled (--insecure). \
@@ -198,6 +220,34 @@ async fn main() -> Result<()> {
             std::process::exit(2);
         }
     }
+
+    // TOFU: if we are connecting to an HTTPS server and have not pinned its CA
+    // yet, fetch the CA certificate from /api/v1/ca.pem *before* building the
+    // API client. Without this the very first HTTPS request (e.g. `login`)
+    // would fail certificate verification - the CA is needed to establish the
+    // connection, so it cannot be fetched after the fact.
+    if config.server_url.starts_with("https://") && config.ca_cert.is_none() {
+        match commands::fetch_server_ca(&config.server_url).await {
+            Ok(pem) => {
+                config.ca_cert = Some(pem);
+                println!(
+                    "Trusted server CA certificate (TOFU). Run `pandapass pki ca fingerprint` to verify it."
+                );
+            }
+            Err(e) => {
+                // Do not hard-fail: an `--insecure` user may intentionally skip
+                // pinning, and a plain HTTP server URL never reaches this branch.
+                eprintln!("Warning: could not fetch server CA for pinning: {e}");
+            }
+        }
+    }
+
+    // Create API client
+    let api = ApiClient::with_ca_cert(
+        config.server_url.clone(),
+        cli.insecure,
+        config.ca_cert.clone(),
+    )?;
     if let Some(token) = &config.auth_token {
         api.set_auth_token(Some(token.clone())).await;
     }

@@ -295,12 +295,44 @@ async fn run() -> anyhow::Result<()> {
         }
     });
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await?;
+    // TLS listener setup
+    let use_tls = config.tls_cert_file.is_some()
+        && config.tls_key_file.is_some()
+        && config.tls_ca_file.is_some();
+
+    if use_tls {
+        let cert_file = config.tls_cert_file.as_deref().unwrap_or_default();
+        let key_file = config.tls_key_file.as_deref().unwrap_or_default();
+        let ca_file = config.tls_ca_file.as_deref().unwrap_or_default();
+        // Wrap the already-bound listener so the port is reserved exactly once.
+        let tls_listener = pandapass_server::tls::TlsListener::from_listener(
+            listener,
+            cert_file,
+            key_file,
+            ca_file,
+        )
+        .await?;
+
+        // `tap_io` keeps the SocketAddr connect-info implementation that axum
+        // provides for plain TcpListener, so the client-IP middleware works
+        // unchanged over TLS.
+        use axum::serve::ListenerExt;
+        let tls_listener = tls_listener.tap_io(|_| {});
+
+        axum::serve(
+            tls_listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    } else {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    }
 
     info!("Server stopped");
     Ok(())
@@ -322,12 +354,12 @@ fn init_storage() -> anyhow::Result<()> {
 
     let Some(path) = path else {
         // An inline identity was supplied, or there is no storage to manage.
-        return Ok(());
+        return init_tls_storage();
     };
     let path = std::path::Path::new(&path);
 
     if path.exists() {
-        return Ok(());
+        return init_tls_storage();
     }
 
     if let Some(dir) = path.parent() {
@@ -345,18 +377,107 @@ fn init_storage() -> anyhow::Result<()> {
          sealed to this server cannot be unwrapped by anyone, including you.",
         path.display()
     );
+    init_tls_storage()
+}
+
+/// Generate the TLS CA and server leaf certificates if TLS is configured and
+/// the files do not exist yet. Idempotent: existing files are left alone so a
+/// restart never rotates the pinned CA out from under clients.
+fn init_tls_storage() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let cert_file = std::env::var("PANDAPASS_TLS_CERT_FILE")
+        .ok()
+        .filter(|p| !p.is_empty());
+    let key_file = std::env::var("PANDAPASS_TLS_KEY_FILE")
+        .ok()
+        .filter(|p| !p.is_empty());
+    let ca_file = std::env::var("PANDAPASS_TLS_CA_FILE")
+        .ok()
+        .filter(|p| !p.is_empty());
+
+    // TLS is optional; only provision when all three are configured.
+    let (Some(cert_file), Some(key_file), Some(ca_file)) = (cert_file, key_file, ca_file) else {
+        return Ok(());
+    };
+
+    let cert_path = std::path::Path::new(&cert_file);
+    let key_path = std::path::Path::new(&key_file);
+    let ca_path = std::path::Path::new(&ca_file);
+
+    // All present → nothing to do. Any single missing file → regenerate all
+    // three so they never go out of sync (a leaf signed by a different CA
+    // than the one served at /api/v1/ca.pem would break every pinned client).
+    if cert_path.exists() && key_path.exists() && ca_path.exists() {
+        return Ok(());
+    }
+
+    if let Some(dir) = cert_path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    // SAN: derive hostnames from PANDAPASS_PUBLIC_URL, falling back to
+    // localhost when unset or unparsable.
+    let public_url = std::env::var("PANDAPASS_PUBLIC_URL").unwrap_or_default();
+    let hostnames = url_hostnames(&public_url);
+    let not_before = chrono::Utc::now() - chrono::Duration::days(1);
+    let not_after = chrono::Utc::now() + chrono::Duration::days(3650);
+
+    let (ca_pem, leaf_pem, key_pem) = pandapass_core::pki::generate_server_tls_pair(
+        &hostnames,
+        not_before,
+        not_after,
+    )
+    .map_err(|e| anyhow::anyhow!("failed to generate server TLS pair: {e}"))?;
+
+    std::fs::write(ca_path, ca_pem.as_bytes())?;
+    std::fs::set_permissions(ca_path, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::write(cert_path, leaf_pem.as_bytes())?;
+    std::fs::set_permissions(cert_path, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::write(key_path, key_pem.as_bytes())?;
+    std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
+
+    info!(
+        "Generated server TLS CA + leaf for {hostnames:?} (CA: {}, cert: {}, key: {})",
+        ca_path.display(),
+        cert_path.display(),
+        key_path.display()
+    );
     Ok(())
+}
+
+/// Extract hostname(s) from a URL for use as TLS Subject Alternative Names.
+/// Returns `["localhost"]` when the URL is missing or unparsable.
+fn url_hostnames(public_url: &str) -> Vec<String> {
+    let Some(rest) = public_url.split_once("://") else {
+        return vec!["localhost".to_string()];
+    };
+    let host_port = rest.1.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host_port
+        .rsplit_once(':')
+        .map(|(h, p)| {
+            if p.chars().all(|c| c.is_ascii_digit()) {
+                h.to_string()
+            } else {
+                host_port.to_string() // IPv6 literal without port
+            }
+        })
+        .unwrap_or_else(|| host_port.to_string());
+    let host = host.trim_matches(['[', ']']);
+    if host.is_empty() {
+        vec!["localhost".to_string()]
+    } else {
+        vec![host.to_string()]
+    }
 }
 
 /// Probe `/api/v1/health` on the configured listen address and exit non-zero if
 /// it does not answer. Intended for Docker `HEALTHCHECK`, not for humans.
 ///
-/// Written against a raw TCP socket rather than an HTTP client so the server
-/// keeps no client dependency it would otherwise never use — the request is
-/// three fixed lines against a known endpoint.
+/// When TLS is enabled (all three PANDAPASS_TLS_* files configured), the
+/// health check uses HTTPS with the server's CA for verification. Otherwise
+/// it uses a raw TCP socket for plain HTTP.
 async fn health_check() -> anyhow::Result<()> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
     let config = Config::from_env();
     let (bind_host, port) = config
         .listen_addr
@@ -374,27 +495,57 @@ async fn health_check() -> anyhow::Result<()> {
         bind_host
     };
 
-    let mut stream = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        tokio::net::TcpStream::connect((host, port)),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("timed out connecting to {host}:{port}"))??;
+    // If TLS is configured, use HTTPS with CA pinning. Otherwise use raw TCP.
+    let use_tls = config.tls_cert_file.is_some()
+        && config.tls_key_file.is_some()
+        && config.tls_ca_file.is_some();
 
-    stream
-        .write_all(b"GET /api/v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .await?;
+    if use_tls {
+        // Read CA for verification
+        let ca_pem = std::fs::read_to_string(config.tls_ca_file.as_ref().unwrap())
+            .context("read TLS CA file for health check")?;
+        let cert = reqwest::Certificate::from_pem(ca_pem.as_bytes())?;
 
-    let mut buf = vec![0u8; 256];
-    let n = stream.read(&mut buf).await?;
-    let response = String::from_utf8_lossy(&buf[..n]);
+        let client = reqwest::Client::builder()
+            .add_root_certificate(cert)
+            .timeout(std::time::Duration::from_secs(5))
+            .build()?;
 
-    anyhow::ensure!(
-        response.starts_with("HTTP/1.1 2"),
-        "health endpoint returned: {}",
-        response.lines().next().unwrap_or("<empty>")
-    );
-    Ok(())
+        let url = format!("https://{host}:{port}/api/v1/health");
+        let resp = client.get(&url).send().await?;
+
+        anyhow::ensure!(
+            resp.status().is_success(),
+            "health endpoint returned: {}",
+            resp.status()
+        );
+        Ok(())
+    } else {
+        // Original raw TCP implementation for plain HTTP
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut stream = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::net::TcpStream::connect((host, port)),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out connecting to {host}:{port}"))??;
+
+        stream
+            .write_all(b"GET /api/v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await?;
+
+        let mut buf = vec![0u8; 256];
+        let n = stream.read(&mut buf).await?;
+        let response = String::from_utf8_lossy(&buf[..n]);
+
+        anyhow::ensure!(
+            response.starts_with("HTTP/1.1 2"),
+            "health endpoint returned: {}",
+            response.lines().next().unwrap_or("<empty>")
+        );
+        Ok(())
+    }
 }
 
 async fn shutdown_signal() {

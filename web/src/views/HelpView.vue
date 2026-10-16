@@ -156,6 +156,20 @@ const zh: DocStep[] = [
     ],
     note: '令牌值只在创建时显示一次——立即复制到 GitLab CI Variables / GitHub Secrets（变量名建议：PANDAPASS_TOKEN）。CI 中直接用：`pandapass-cli --token $PANDAPASS_TOKEN secret get ...`',
   },
+  {
+    title: '9. HTTPS 与 CA 证书固定',
+    body: [
+      '服务器可启用 TLS（HTTPS）。由于是自签 CA，浏览器会告警，但 CLI 通过 **CA pinning** 安全地验证服务器身份——首次连接时自动下载并固定服务器 CA（TOFU），之后每次请求都会校验证书。',
+      '如果服务器未开启自动信任，可手动配置 CA 证书或查看指纹。',
+    ],
+    code: [
+      { label: '手动固定服务器 CA', cmd: 'pandapass-cli config set-ca-cert /path/to/ca.pem' },
+      { label: '查看 CA 指纹以核验服务器', cmd: 'pandapass-cli pki ca fingerprint' },
+      { label: '清除已固定的 CA', cmd: 'pandapass-cli config clear-ca-cert' },
+      { label: '登录时自动固定（TOFU）', cmd: 'pandapass-cli login --server https://pandapass.lan --email you@example.com --password-stdin' },
+    ],
+    note: '不要用 `--insecure` 跳过校验。首次登录时 CLI 会自动保存服务器 CA；如需在脚本中预先固定，先用 `curl -k https://<host>/api/v1/ca.pem` 下载 CA，再 `config set-ca-cert` 导入。',
+  },
 ]
 
 const en: DocStep[] = [
@@ -249,6 +263,20 @@ const en: DocStep[] = [
       { label: 'Revoke a token', cmd: 'pandapass-cli token revoke <token-id>' },
     ],
     note: 'The token value is shown only once at creation — immediately copy it to GitLab CI Variables / GitHub Secrets (suggested var name: PANDAPASS_TOKEN). In CI: `pandapass-cli --token $PANDAPASS_TOKEN secret get ...`',
+  },
+  {
+    title: '9. HTTPS and CA pinning',
+    body: [
+      'The server can terminate TLS (HTTPS). Because the CA is self-signed, browsers will warn, but the CLI verifies the server identity securely via **CA pinning** — on first login it automatically downloads and pins the server CA (TOFU), then every subsequent request verifies against it.',
+      'If the server did not auto-trust, configure the CA manually or inspect its fingerprint.',
+    ],
+    code: [
+      { label: 'Pin the server CA manually', cmd: 'pandapass-cli config set-ca-cert /path/to/ca.pem' },
+      { label: 'Show CA fingerprint to verify the server', cmd: 'pandapass-cli pki ca fingerprint' },
+      { label: 'Clear the pinned CA', cmd: 'pandapass-cli config clear-ca-cert' },
+      { label: 'Login auto-pins (TOFU)', cmd: 'pandapass-cli login --server https://pandapass.lan --email you@example.com --password-stdin' },
+    ],
+    note: 'Do not use `--insecure` to skip verification. On first login the CLI saves the server CA automatically; to pre-pin in scripts, first fetch it with `curl -k https://<host>/api/v1/ca.pem`, then `config set-ca-cert`.',
   },
 ]
 

@@ -46,6 +46,9 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
         trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
         audit_chain_key_file: None,
         backup_dir: None,
+        tls_cert_file: None,
+        tls_key_file: None,
+        tls_ca_file: None,
     };
 
     let db = connect(&config.db_url).await.expect("connect");

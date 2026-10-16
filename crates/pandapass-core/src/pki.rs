@@ -235,6 +235,90 @@ pub fn generate_root_ca(
     Ok((cert.pem(), key_pair.serialize_pem()))
 }
 
+/// Generate a self-signed TLS CA plus a server leaf certificate for TLS
+/// termination (Step 2: transport encryption).
+///
+/// The CA is used only to sign the server leaf; clients pin it via
+/// `GET /api/v1/ca.pem` (TOFU). The leaf carries `ServerAuth` EKU and the
+/// configured hostnames as Subject Alternative Names, and is explicitly
+/// **not** a CA (`IsCa::NoCa`).
+///
+/// Returns `(ca_cert_pem, leaf_cert_pem, leaf_key_pem)`.
+pub fn generate_server_tls_pair(
+    hostnames: &[String],
+    not_before: chrono::DateTime<chrono::Utc>,
+    not_after: chrono::DateTime<chrono::Utc>,
+) -> Result<(String, String, String)> {
+    let not_before_ts = not_before.timestamp();
+    let not_after_ts = not_after.timestamp();
+
+    // 1. Self-signed TLS CA.
+    let mut ca_params = CertificateParams::default();
+    ca_params.distinguished_name = {
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(DnType::CommonName, DnValue::Utf8String("PandaPass Server CA".into()));
+        dn.push(DnType::OrganizationName, DnValue::Utf8String("PandaPass".into()));
+        dn
+    };
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::CrlSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    ca_params.not_before = OffsetDateTime::from_unix_timestamp(not_before_ts)
+        .map_err(|e| PkiError::Rcgen(e.to_string()))?;
+    ca_params.not_after = OffsetDateTime::from_unix_timestamp(not_after_ts)
+        .map_err(|e| PkiError::Rcgen(e.to_string()))?;
+
+    let ca_key_pair = KeyPair::generate().map_err(|e| PkiError::Rcgen(e.to_string()))?;
+    let ca_cert = ca_params
+        .self_signed(&ca_key_pair)
+        .map_err(|e| PkiError::Rcgen(e.to_string()))?;
+    let ca_cert_pem = ca_cert.pem();
+
+    // 2. Server leaf signed by the CA.
+    let mut leaf_params = CertificateParams::default();
+    leaf_params.distinguished_name = {
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(DnType::CommonName, DnValue::Utf8String("PandaPass Server".into()));
+        dn.push(DnType::OrganizationName, DnValue::Utf8String("PandaPass".into()));
+        dn
+    };
+    for name in hostnames {
+        // If the hostname parses as an IP address, add it as an IP SAN.
+        // Otherwise treat it as a DNS name.
+        if let Ok(ip) = name.parse::<std::net::IpAddr>() {
+            leaf_params.subject_alt_names.push(SanType::IpAddress(ip));
+        } else {
+            let ia5: rcgen::string::Ia5String = name
+                .as_str()
+                .try_into()
+                .map_err(|_| PkiError::Internal(format!("hostname is not IA5 (ASCII): {name}")))?;
+            leaf_params.subject_alt_names.push(SanType::DnsName(ia5));
+        }
+    }
+    leaf_params.is_ca = IsCa::NoCa;
+    leaf_params.key_usages = vec![
+        KeyUsagePurpose::DigitalSignature,
+        KeyUsagePurpose::KeyEncipherment,
+    ];
+    leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    leaf_params.not_before = OffsetDateTime::from_unix_timestamp(not_before_ts)
+        .map_err(|e| PkiError::Rcgen(e.to_string()))?;
+    leaf_params.not_after = OffsetDateTime::from_unix_timestamp(not_after_ts)
+        .map_err(|e| PkiError::Rcgen(e.to_string()))?;
+
+    let leaf_key_pair = KeyPair::generate().map_err(|e| PkiError::Rcgen(e.to_string()))?;
+    let issuer = Issuer::from_ca_cert_pem(&ca_cert_pem, ca_key_pair)
+        .map_err(|e| PkiError::Rcgen(e.to_string()))?;
+    let leaf_cert = leaf_params
+        .signed_by(&leaf_key_pair, &issuer)
+        .map_err(|e| PkiError::Rcgen(e.to_string()))?;
+
+    Ok((ca_cert_pem, leaf_cert.pem(), leaf_key_pair.serialize_pem()))
+}
+
 /// Generate a new intermediate CA signed by an existing root CA.
 ///
 /// The parent CA's private key is age-encrypted; it is decrypted in-memory
@@ -730,6 +814,75 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, PkiError::SshKey(_)), "got {err:?}");
+    }
+
+    /// The TLS CA + leaf pair has the correct structure: CA is a CA, leaf is
+    /// not, leaf has ServerAuth EKU, leaf SAN matches input, CA validates leaf.
+    #[test]
+    fn generate_server_tls_pair_produces_valid_certs() {
+        let not_before = utc(1_700_000_000);
+        let not_after = utc(2_000_000_000);
+
+        let (ca_pem, leaf_pem, leaf_key_pem) = generate_server_tls_pair(
+            &["example.com".to_string(), "api.example.com".to_string()],
+            not_before,
+            not_after,
+        )
+        .unwrap();
+
+        assert!(ca_pem.contains("BEGIN CERTIFICATE"));
+        assert!(leaf_pem.contains("BEGIN CERTIFICATE"));
+        assert!(leaf_key_pem.contains("PRIVATE KEY"));
+
+        let ca_der = pem_decode(&ca_pem);
+        let (_, ca) = X509Certificate::from_der(&ca_der).unwrap();
+
+        let leaf_der = pem_decode(&leaf_pem);
+        let (_, leaf) = X509Certificate::from_der(&leaf_der).unwrap();
+
+        // CA is a CA, leaf is not
+        assert!(ca.is_ca(), "CA certificate must be a CA");
+        assert!(!leaf.is_ca(), "leaf certificate must NOT be a CA");
+
+        // Leaf subject CN
+        let subject = leaf.subject().to_string();
+        assert!(subject.contains("PandaPass Server"), "subject: {subject}");
+
+        // Leaf SANs - use parsed extension
+        let san_ext = leaf.subject_alternative_name().unwrap().expect("leaf must have SAN");
+        let san_names: Vec<String> = san_ext
+            .value
+            .general_names
+            .iter()
+            .filter_map(|n| match n {
+                x509_parser::extensions::GeneralName::DNSName(s) => Some(s.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            san_names.contains(&"example.com".to_string()),
+            "SAN must contain example.com, got: {:?}",
+            san_names
+        );
+        assert!(
+            san_names.contains(&"api.example.com".to_string()),
+            "SAN must contain api.example.com, got: {:?}",
+            san_names
+        );
+
+        // Leaf has ServerAuth EKU - use parsed extension
+        let eku_ext = leaf.extended_key_usage().unwrap().expect("leaf must have EKU");
+        assert!(
+            eku_ext.value.server_auth,
+            "EKU must have server_auth = true"
+        );
+
+        // Leaf signature verifies against CA
+        leaf.verify_signature(Some(ca.public_key())).unwrap();
+
+        // Validity matches requested window
+        assert_eq!(leaf.validity().not_after.timestamp(), not_after.timestamp());
+        assert_eq!(leaf.validity().not_before.timestamp(), not_before.timestamp());
     }
 
     /// PEM → DER without pulling in another pem crate at test time.

@@ -287,6 +287,13 @@ pub enum CaCmd {
     Revoke {
         id: Uuid,
     },
+    /// Print the SHA-256 fingerprint of the server's TLS CA certificate.
+    /// Uses --ca-cert, the pinned config CA, or fetches /api/v1/ca.pem.
+    Fingerprint {
+        /// PEM file with the server's CA certificate (overrides config).
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -407,6 +414,13 @@ pub enum ConfigCmd {
     SetAgeIdentity {
         path: PathBuf,
     },
+    /// Pin the server's TLS CA certificate (PEM file). The CLI will verify
+    /// the server against this CA instead of the system trust store.
+    SetCaCert {
+        path: PathBuf,
+    },
+    /// Clear the pinned server CA certificate.
+    ClearCaCert,
     SetDefaultProject {
         project: Option<String>,
     },
@@ -672,7 +686,7 @@ pub async fn run_command(
         Command::Config(cmd) => run_config(config, cmd).await,
         Command::Admin(cmd) => run_admin(api, cmd).await,
         Command::Policy(cmd) => run_policy(api, cmd).await,
-        Command::Pki(cmd) => run_pki(api, cmd).await,
+        Command::Pki(cmd) => run_pki(api, config, cmd).await,
         Command::GitOps(cmd) => run_gitops(api, config, cmd).await,
         Command::Backup(args) => run_backup(api, config, args).await,
         Command::Restore(args) => run_restore(api, config, args).await,
@@ -756,6 +770,10 @@ async fn run_login(
     config.auth_token = Some(session_token.clone());
     api.set_auth_token(Some(session_token)).await;
 
+    // TOFU CA pinning is handled in `main.rs` *before* the API client is built
+    // (the CA is needed to establish the first HTTPS connection). Nothing to do
+    // here.
+
     if resp.key_enrolled {
         println!("Logged in as {} (master key enrolled)", resp.user.email);
     } else {
@@ -769,6 +787,18 @@ async fn run_login(
         );
     }
     Ok(())
+}
+
+/// Fetch the server's TLS CA certificate (`/api/v1/ca.pem`) without verifying
+/// the TLS chain. Used only for the first-trust (TOFU) bootstrap: the caller
+/// pins whatever CA the server presents, then all subsequent requests verify
+/// against it.
+pub async fn fetch_server_ca(server_url: &str) -> Result<String> {
+    let client = ApiClient::new(server_url.to_string(), true)?;
+    let pem: String = client.get_text("/ca.pem").await?;
+    // Validate it parses as PEM before storing it.
+    pem::parse(&pem).map_err(|e| anyhow::anyhow!("server returned invalid PEM: {e}"))?;
+    Ok(pem)
 }
 
 async fn run_logout(api: &ApiClient, config: &mut crate::client::CliConfig) -> Result<()> {
@@ -1141,6 +1171,14 @@ async fn run_config(config: &mut crate::client::CliConfig, cmd: ConfigCmd) -> Re
             println!("Default env: {:?}", config.default_env);
             println!("Age identity: {:?}", config.age_identity_file);
             println!(
+                "CA certificate: {}",
+                if config.ca_cert.is_some() {
+                    "set"
+                } else {
+                    "none"
+                }
+            );
+            println!(
                 "Command allowlist: {:?}",
                 if config.command_allowlist.is_empty() {
                     vec!["<unrestricted>".to_string()]
@@ -1160,6 +1198,15 @@ async fn run_config(config: &mut crate::client::CliConfig, cmd: ConfigCmd) -> Re
         ConfigCmd::SetAgeIdentity { path } => {
             config.age_identity_file = Some(path);
             println!("Age identity file set");
+        }
+        ConfigCmd::SetCaCert { path } => {
+            let pem = tokio::fs::read_to_string(&path).await?;
+            config.ca_cert = Some(pem);
+            println!("CA certificate set. Run `pandapass pki ca fingerprint` to verify it.");
+        }
+        ConfigCmd::ClearCaCert => {
+            config.ca_cert = None;
+            println!("CA certificate cleared");
         }
         ConfigCmd::SetDefaultProject { project } => {
             config.default_project = project;
@@ -2316,14 +2363,22 @@ async fn run_policy(api: &ApiClient, cmd: PolicyCmd) -> Result<()> {
 
 // ─────────────────────────── PKI/CA and SSH (M4) ───────────────────────────
 
-async fn run_pki(api: &ApiClient, cmd: PkiCmd) -> Result<()> {
+async fn run_pki(
+    api: &ApiClient,
+    config: &crate::client::CliConfig,
+    cmd: PkiCmd,
+) -> Result<()> {
     match cmd {
-        PkiCmd::Ca { cmd } => run_ca(api, cmd).await,
+        PkiCmd::Ca { cmd } => run_ca(api, config, cmd).await,
         PkiCmd::Ssh { cmd } => run_ssh(api, cmd).await,
     }
 }
 
-async fn run_ca(api: &ApiClient, cmd: CaCmd) -> Result<()> {
+async fn run_ca(
+    api: &ApiClient,
+    config: &crate::client::CliConfig,
+    cmd: CaCmd,
+) -> Result<()> {
     match cmd {
         CaCmd::List { include_revoked } => {
             let keys = api.list_ca_keys(include_revoked).await?;
@@ -2391,6 +2446,32 @@ async fn run_ca(api: &ApiClient, cmd: CaCmd) -> Result<()> {
         CaCmd::Revoke { id } => {
             api.revoke_ca_key(id).await?;
             println!("CA key revoked");
+        }
+        CaCmd::Fingerprint { ca_cert } => {
+            let pem = if let Some(path) = ca_cert {
+                tokio::fs::read_to_string(&path).await?
+            } else if let Some(ref pinned) = config.ca_cert {
+                pinned.clone()
+            } else {
+                // Fetch from server (no verification - TOFU bootstrap)
+                let client = ApiClient::new(config.server_url.clone(), true)?;
+                let resp: String = client.get_text("/ca.pem").await?;
+                resp
+            };
+
+            // Compute SHA-256 fingerprint of the DER certificate
+            use sha2::{Digest, Sha256};
+            use base64::engine::general_purpose;
+            let parsed = pem::parse(&pem)
+                .map_err(|e| anyhow::anyhow!("invalid PEM: {e}"))?;
+            let hash = Sha256::digest(&parsed.contents());
+            let fp = general_purpose::STANDARD.encode(hash);
+
+            println!("SHA256: {fp}");
+            println!();
+            println!("To verify against a running server:");
+            println!("  openssl s_client -connect <host>:<port> </dev/null | openssl x509 -fingerprint -sha256 -noout");
+            println!("  # Should match: SHA256:{fp}");
         }
     }
     Ok(())

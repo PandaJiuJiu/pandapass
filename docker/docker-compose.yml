@@ -78,6 +78,27 @@ services:
       # is in front (common with reverse proxies on a private port).
       PANDAPASS_COOKIE_SECURE: ${PANDAPASS_COOKIE_SECURE:-}
 
+      # ── TLS (optional) ───────────────────────────────────────────────────
+      # To enable HTTPS served by the server itself (not a reverse proxy),
+      # set all three paths and mount the PEM files into the container.
+      # The server auto-generates a self-signed CA + leaf on first boot if
+      # the files are missing; you can also provide your own certs.
+      #
+      # Example (mount host certs at /data/tls/):
+      #   PANDAPASS_TLS_CERT_FILE: /data/tls/tls-cert.pem
+      #   PANDAPASS_TLS_KEY_FILE: /data/tls/tls-key.pem
+      #   PANDAPASS_TLS_CA_FILE: /data/tls/tls-ca.pem
+      #   volumes:
+      #     - ./tls:/data/tls:ro
+      #
+      # CLI then pins the CA automatically on first login (TOFU), or manually:
+      #   pandapass-cli config set-ca-cert /path/to/ca.pem
+      #   pandapass-cli pki ca fingerprint
+      # Note: when TLS is enabled, PUBLIC_URL should be https://...
+      PANDAPASS_TLS_CERT_FILE: ${PANDAPASS_TLS_CERT_FILE:-}
+      PANDAPASS_TLS_KEY_FILE: ${PANDAPASS_TLS_KEY_FILE:-}
+      PANDAPASS_TLS_CA_FILE: ${PANDAPASS_TLS_CA_FILE:-}
+
       # ── CORS ──────────────────────────────────────────────────────────────
       # Comma-separated. Empty means same-origin only, which is right behind
       # nginx serving the web UI from the same host.

@@ -22,7 +22,7 @@ pub use error::{CoreError, Result};
 pub use gitops::{diff_metadata, DiffEntry, DiffReport, SecretDiffState};
 pub use models::Permission;
 pub use models::*;
-pub use pki::{generate_root_ca, sign_ssh_cert, sign_x509_from_csr, PkiError};
+pub use pki::{generate_root_ca, generate_server_tls_pair, sign_ssh_cert, sign_x509_from_csr, PkiError};
 pub use policy::{PolicyDecision, PolicyEngine, PolicyError, PolicyInput};
 pub use rbac::{AuditContext, Rbac, RbacError, ResourceAccess};
 pub use scanner::{builtin_rules, RegexScanner, ScanFinding, ScanRule, ScanSeverity, Scanner};

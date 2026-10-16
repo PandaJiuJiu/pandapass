@@ -29,6 +29,11 @@ pub struct CliConfig {
     pub default_env: Option<String>,
     /// Path to the age identity file holding this user's master-key unwrap key.
     pub age_identity_file: Option<PathBuf>,
+    /// PEM-encoded server CA certificate for CA pinning (TOFU). When set,
+    /// the CLI verifies the server's TLS certificate against this CA instead
+    /// of the system trust store.
+    #[serde(default)]
+    pub ca_cert: Option<String>,
     /// Allowlist of programs permitted as `pandapass run`'s `command[0]`.
     /// Empty means no restriction (the historical default); set to a
     /// comma-separated list of absolute paths to lock `run` down.
@@ -49,6 +54,7 @@ impl Default for CliConfig {
             default_project: None,
             default_env: None,
             age_identity_file: None,
+            ca_cert: None,
             command_allowlist: Vec::new(),
             command_timeout_secs: None,
         }
@@ -71,13 +77,32 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn new(base_url: String, insecure: bool) -> Result<Self> {
-        let client = Client::builder()
+        Self::with_ca_cert(base_url, insecure, None)
+    }
+
+    /// Create a client with an optional pinned CA certificate (PEM).
+    ///
+    /// When `ca_cert` is `Some`, the client verifies the server's TLS
+    /// certificate against this CA (CA pinning) instead of the system trust
+    /// store. This is how the CLI trusts a PandaPass server that uses a
+    /// self-signed TLS CA (TOFU). `insecure` still disables verification
+    /// entirely and takes precedence when both are set.
+    pub fn with_ca_cert(
+        base_url: String,
+        insecure: bool,
+        ca_cert: Option<String>,
+    ) -> Result<Self> {
+        let mut builder = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
-            .danger_accept_invalid_certs(insecure)
-            .build()?;
+            .danger_accept_invalid_certs(insecure);
+
+        if let Some(pem) = &ca_cert {
+            let cert = reqwest::Certificate::from_pem(pem.as_bytes())?;
+            builder = builder.add_root_certificate(cert);
+        }
 
         Ok(Self {
-            client,
+            client: builder.build()?,
             base_url,
             auth_token: Arc::new(RwLock::new(None)),
             age_identity: Arc::new(RwLock::new(None)),
@@ -135,6 +160,37 @@ impl ApiClient {
 
     pub async fn get<R: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<R> {
         self.request(Method::GET, path, None::<&()>).await
+    }
+
+    /// GET a path and return the raw response body as text. Used for endpoints
+    /// that serve non-JSON content (e.g. `GET /api/v1/ca.pem` returns PEM).
+    pub async fn get_text(&self, path: &str) -> Result<String> {
+        let url = format!("{}/api/v1{}", self.base_url.trim_end_matches('/'), path);
+        let token = self.auth_token.read().await.clone();
+
+        let mut req = self
+            .client
+            .request(Method::GET, &url)
+            .header(CONTENT_TYPE, "application/json")
+            .header("x-pandapass-agent", "cli");
+        if let Some(t) = token {
+            req = req.header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {t}"))?,
+            );
+        }
+
+        let resp = req.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let detail = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+                .unwrap_or(text);
+            anyhow::bail!("{status}: {detail}");
+        }
+        Ok(resp.text().await?)
     }
 
     pub async fn post<T: Serialize, R: for<'de> Deserialize<'de>>(

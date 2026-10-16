@@ -128,6 +128,17 @@ pub struct Config {
     /// Directory where the admin backup endpoint may create temporary
     /// `VACUUM INTO` snapshots. Defaults to the system temp dir when unset.
     pub backup_dir: Option<String>,
+    /// Optional TLS certificate file (PEM). When set together with
+    /// `tls_key_file` and `tls_ca_file`, the server terminates TLS.
+    /// Configure via `PANDAPASS_TLS_CERT_FILE`.
+    pub tls_cert_file: Option<String>,
+    /// Optional TLS private key file (PEM). Must be paired with
+    /// `tls_cert_file` and `tls_ca_file`. Configure via
+    /// `PANDAPASS_TLS_KEY_FILE`.
+    pub tls_key_file: Option<String>,
+    /// Optional TLS CA certificate file (PEM). Served at `GET /api/v1/ca.pem`
+    /// for client CA pinning. Configure via `PANDAPASS_TLS_CA_FILE`.
+    pub tls_ca_file: Option<String>,
 }
 
 impl Config {
@@ -236,6 +247,16 @@ impl Config {
             .ok()
             .filter(|s| !s.is_empty());
 
+        let tls_cert_file = std::env::var("PANDAPASS_TLS_CERT_FILE")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let tls_key_file = std::env::var("PANDAPASS_TLS_KEY_FILE")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let tls_ca_file = std::env::var("PANDAPASS_TLS_CA_FILE")
+            .ok()
+            .filter(|s| !s.is_empty());
+
         Self {
             listen_addr,
             public_url,
@@ -261,6 +282,9 @@ impl Config {
             trusted_proxy_cidrs,
             audit_chain_key_file,
             backup_dir,
+            tls_cert_file,
+            tls_key_file,
+            tls_ca_file,
         }
     }
 }
